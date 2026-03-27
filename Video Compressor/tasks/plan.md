@@ -43,10 +43,10 @@ T5, T6, T7 and T8 depend only on T4 and don't depend on each other. All three to
 ## Task List
 
 ### Phase 1: Foundation
-- [ ] T1: CMake skeleton, empty window, startup check for ffmpeg/ffprobe/libx265, fixture script
+- [x] T1: CMake skeleton, empty window, startup check for ffmpeg/ffprobe/libx265, fixture script
 
 ### Checkpoint 1
-- [ ] Builds clean with `-Wall -Wextra -Werror`, `ctest` runs (even with 0–1 tests), window opens, missing-ffmpeg dialog shown when PATH is broken
+- [x] Builds clean with `-Wall -Wextra -Werror`, `ctest` runs (even with 0–1 tests), window opens, missing-ffmpeg dialog shown when PATH is broken
 
 ### Phase 2: See your videos
 - [ ] T2: Folder chooser → list video files with size

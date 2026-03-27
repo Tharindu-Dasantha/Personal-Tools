@@ -12,7 +12,7 @@ Shared commands (run from the repo root):
 
 ## Phase 1: Foundation
 
-### - [ ] T1: Skeleton, startup check, fixture script
+### - [x] T1: Skeleton, startup check, fixture script
 **Description:** Build files that produce `video-compressor` and `test_compress`. The app opens an empty GTK4 window titled "Video Compressor". At startup it confirms that `ffmpeg` and `ffprobe` are on PATH and that `ffmpeg -encoders` lists `libx265`. If not, it shows an error dialog and does not crash. The fixture script generates sample videos with `testsrc` + a sine tone:
 - 240p, 480p and 720p (60 s at 8 Mbps)
 - 1080p, and portrait 1080×1920
@@ -21,20 +21,20 @@ Shared commands (run from the repo root):
 - a `.txt` decoy
 
 **Acceptance criteria:**
-- [ ] Debug build is clean with `-Wall -Wextra -Werror`, and the app window opens
-- [ ] `PATH=/nonexistent ./video-compressor` shows the error dialog and exits cleanly
-- [ ] The fixture script creates all the files listed above in the given directory
+- [x] Debug build is clean with `-Wall -Wextra -Werror`, and the app window opens
+- [x] `PATH=/nonexistent ./video-compressor` shows the error dialog and exits cleanly
+- [x] The fixture script creates all the files listed above in the given directory
 
 **Verification:**
-- [ ] Build succeeds, and `ctest` runs (one placeholder test)
-- [ ] Manual: launch normally, then with a broken PATH
+- [x] Build succeeds, and `ctest` runs (one placeholder test)
+- [x] Manual: launch normally, then with a broken PATH
 
 **Dependencies:** None
 **Files:** `CMakeLists.txt`, `src/main.c`, `src/compress.c`, `src/compress.h`, `tests/test_compress.c`, `tests/make-fixtures.sh` (the file count is high, but most are stubs)
 **Scope:** M
 
 ### Checkpoint 1
-- [ ] Build clean, ctest green, window opens, missing-ffmpeg dialog works
+- [x] Build clean, ctest green, window opens, missing-ffmpeg dialog works
 
 ---
 
@@ -48,7 +48,7 @@ Shared commands (run from the repo root):
 - [ ] Choosing another folder replaces the list
 
 **Verification:**
-- [ ] Unit: `vc_is_video_name` accepts `.MP4`/`.mkv` and rejects `.txt`, `.jpg`, `.name.part.mp4` and `compressed`
+- [x] Unit: `vc_is_video_name` accepts `.MP4`/`.mkv` and rejects `.txt`, `.jpg`, `.name.part.mp4` and `compressed`
 - [ ] Manual: pick the fixture folder
 
 **Dependencies:** T1
@@ -64,8 +64,8 @@ Shared commands (run from the repo root):
 - [ ] The UI stays responsive while probing (async)
 
 **Verification:**
-- [ ] Unit: class boundaries for 426×240, 640×360, 854×480, 1280×720, 1920×1080, 1080×1920 and 3840×2160
-- [ ] Unit: `vc_parse_probe` on captured good output, output with missing duration, and garbage
+- [x] Unit: class boundaries for 426×240, 640×360, 854×480, 1280×720, 1920×1080, 1080×1920 and 3840×2160
+- [x] Unit: `vc_parse_probe` on captured good output, output with missing duration, and garbage
 - [ ] Manual: fixture folder plus a `fake.mp4` that is actually text
 
 **Dependencies:** T2
@@ -87,15 +87,15 @@ Shared commands (run from the repo root):
 - On exit 0 the temp file is renamed and the row shows `new size · −78%`. On failure the `.part` is deleted and the row shows `Failed` (with the last stderr line as a tooltip). Either way the queue moves on.
 
 **Acceptance criteria:**
-- [ ] Start on the fixtures produces `compressed/*.mp4` for every video, and all of them play
-- [ ] The filename with spaces, quotes and unicode encodes correctly
-- [ ] Originals are byte-identical afterwards (`sha256sum` before and after)
-- [ ] The 10-bit HLG fixture's output shows `yuv420p10le`, `Main 10` and `arib-std-b67` in ffprobe. 8-bit fixtures stay `yuv420p`.
+- [x] Start on the fixtures produces `compressed/*.mp4` for every video, and all of them play
+- [x] The filename with spaces, quotes and unicode encodes correctly
+- [x] Originals are byte-identical afterwards (`sha256sum` before and after)
+- [x] The 10-bit HLG fixture's output shows `yuv420p10le`, `Main 10` and `arib-std-b67` in ffprobe. 8-bit fixtures stay `yuv420p`.
 
 **Verification:**
-- [ ] Unit: 8-bit vs 10-bit HLG argv (pix_fmt, profile, colour tags, `unknown` tags omitted)
-- [ ] Unit: argv elements for a name containing a space, `'`, `$` and unicode; CRF and audio bitrate per class; output/temp path naming
-- [ ] Manual: full fixture run, then `ffprobe` an output (hevc, hvc1)
+- [x] Unit: 8-bit vs 10-bit HLG argv (pix_fmt, profile, colour tags, `unknown` tags omitted)
+- [x] Unit: argv elements for a name containing a space, `'`, `$` and unicode; CRF and audio bitrate per class; output/temp path naming
+- [x] Manual: full fixture run, then `ffprobe` an output (hevc, hvc1)
 
 **Dependencies:** T3
 **Files:** `src/main.c`, `src/compress.c/.h`, `tests/test_compress.c`
@@ -109,7 +109,7 @@ Shared commands (run from the repo root):
 - [ ] The window stays draggable and responsive during an encode
 
 **Verification:**
-- [ ] Unit: `out_time_us=30000000` with a 60 s duration gives 0.5. Junk lines and `progress=end` are handled.
+- [x] Unit: `out_time_us=30000000` with a 60 s duration gives 0.5. Junk lines and `progress=end` are handled.
 - [ ] Manual: watch the 1080p fixture encode
 
 **Dependencies:** T4
@@ -134,12 +134,12 @@ Shared commands (run from the repo root):
 **Description:** Before encoding, if `compressed/<name>.mp4` exists, the row shows `Skipped – already done`. After encoding, if the output is not at least 5% smaller than the source, it is deleted and the row shows `Skipped – already efficient`. The decision lives in `vc_output_is_worth_keeping(src_bytes, out_bytes)`.
 
 **Acceptance criteria:**
-- [ ] A second run on the fixture folder skips every file without encoding
-- [ ] An already-tiny low-bitrate fixture produces no output and shows `already efficient`
+- [x] A second run on the fixture folder skips every file without encoding
+- [x] An already-tiny low-bitrate fixture produces no output and shows `already efficient`
 
 **Verification:**
-- [ ] Unit: `vc_output_is_worth_keeping` at 94%, 95%, 96% and 120% of the source size
-- [ ] Manual: run twice, plus a low-bitrate fixture (add it to `make-fixtures.sh`)
+- [x] Unit: `vc_output_is_worth_keeping` at 94%, 95%, 96% and 120% of the source size
+- [x] Manual: run twice, plus a low-bitrate fixture (add it to `make-fixtures.sh`)
 
 **Dependencies:** T4
 **Files:** `src/main.c`, `src/compress.c/.h`, `tests/test_compress.c`, `tests/make-fixtures.sh`
@@ -155,12 +155,12 @@ Shared commands (run from the repo root):
 - `make-fixtures.sh` adds a clip with an SRT subtitle track (`.mkv`) and a clip with a `mov_text` subtitle track (`.mp4`).
 
 **Acceptance criteria:**
-- [ ] With the default settings, `ffprobe` on an output shows hevc in `.mp4` with no subtitle stream. `ps`/the log shows `-preset slow`.
+- [x] With the default settings, `ffprobe` on an output shows hevc in `.mp4` with no subtitle stream. `ps`/the log shows `-preset slow`.
 - [ ] With Keep subtitles on, both subtitle fixtures produce `.mkv` files whose subtitles show in mpv
-- [ ] Choosing `faster` passes `-preset faster`, and the encode is visibly quicker
+- [x] Choosing `faster` passes `-preset faster`, and the encode is visibly quicker
 
 **Verification:**
-- [ ] Unit: argv for each preset; subs off (mp4, `-sn`, `hvc1`); subs on (mkv, `-map 0:s?`, `-c:s copy`); `mov_text` gives `-c:s srt`; probe parse picks up subtitle codecs
+- [x] Unit: argv for each preset; subs off (mp4, `-sn`, `hvc1`); subs on (mkv, `-map 0:s?`, `-c:s copy`); `mov_text` gives `-c:s srt`; probe parse picks up subtitle codecs
 - [ ] Manual: encode both subtitle fixtures with the option on and with it off
 
 **Dependencies:** T4 (T7 for the skip-existing extension check)
