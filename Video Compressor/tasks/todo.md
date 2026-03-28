@@ -40,40 +40,40 @@ Shared commands (run from the repo root):
 
 ## Phase 2: See your videos
 
-### - [ ] T2: Choose a folder → list the videos
+### - [x] T2: Choose a folder → list the videos
 **Description:** A **Choose Folder** button opens `GtkFileDialog` (folder mode). `vc_is_video_name()` filters entries: it is case-insensitive over mp4, mkv, mov, avi, wmv, flv, webm, m4v, mpg, mpeg, ts, m2ts and 3gp, and skips hidden files and the `compressed/` directory. Each match becomes a row in a `GtkListBox` showing the filename and a human-readable size.
 
 **Acceptance criteria:**
-- [ ] The fixture folder shows only the video files, and the `.txt` and `compressed/` are absent
-- [ ] Choosing another folder replaces the list
+- [x] The fixture folder shows only the video files, and the `.txt` and `compressed/` are absent
+- [x] Choosing another folder replaces the list
 
 **Verification:**
 - [x] Unit: `vc_is_video_name` accepts `.MP4`/`.mkv` and rejects `.txt`, `.jpg`, `.name.part.mp4` and `compressed`
-- [ ] Manual: pick the fixture folder
+- [x] Manual: pick the fixture folder
 
 **Dependencies:** T1
 **Files:** `src/main.c`, `src/compress.c/.h`, `tests/test_compress.c`
 **Scope:** S
 
-### - [ ] T3: ffprobe → class, codec, duration in each row
+### - [x] T3: ffprobe → class, codec, duration in each row
 **Description:** For each listed file, run `ffprobe -v error -select_streams v:0 -show_entries stream=width,height,codec_name,pix_fmt,color_primaries,color_transfer,color_space:format=duration,bit_rate -of default=nw=1` asynchronously. `vc_parse_probe()` turns that text into a `VcProbe` struct, returning a `GError` on missing or garbage fields. `vc_class_for()` (the SPEC table, based on the short side) chooses the class. The row shows, for example, `720p · h264 · 1:00 · 60 MB`. Files that can't be probed show `Unreadable` and are excluded from encoding. `vc_probe_is_10bit()` checks whether `pix_fmt` contains `10` or `12`. Those rows get a `10-bit` tag, or `10-bit HDR` when `color_transfer` is `arib-std-b67` or `smpte2084`.
 
 **Acceptance criteria:**
-- [ ] All fixtures show the correct class, and portrait 1080×1920 shows `1080p`
-- [ ] A corrupt or renamed non-video file shows `Unreadable` and does not crash
-- [ ] The UI stays responsive while probing (async)
+- [x] All fixtures show the correct class, and portrait 1080×1920 shows `1080p`
+- [x] A corrupt or renamed non-video file shows `Unreadable` and does not crash
+- [x] The UI stays responsive while probing (async)
 
 **Verification:**
 - [x] Unit: class boundaries for 426×240, 640×360, 854×480, 1280×720, 1920×1080, 1080×1920 and 3840×2160
 - [x] Unit: `vc_parse_probe` on captured good output, output with missing duration, and garbage
-- [ ] Manual: fixture folder plus a `fake.mp4` that is actually text
+- [x] Manual: fixture folder plus a `fake.mp4` that is actually text
 
 **Dependencies:** T2
 **Files:** `src/main.c`, `src/compress.c/.h`, `tests/test_compress.c`
 **Scope:** M
 
 ### Checkpoint 2
-- [ ] Success Criterion 1 passes on fixtures. ctest green.
+- [x] Success Criterion 1 passes on fixtures. ctest green.
 
 ---
 
