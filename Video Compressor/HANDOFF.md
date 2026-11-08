@@ -16,6 +16,12 @@ and [tasks/todo.md](tasks/todo.md). Checkboxes in `todo.md` are ticked only for 
 
 Pushed to `origin/main` (Phase 2 checks: `026de4e`).
 
+**New work (specced 2026-11-08):** the app grows into **Media Tools**, with four modules mapped in
+[CAPABILITIES.md](CAPABILITIES.md): `app-shell` → `web-video` → `video-frames` → `image-compress`, each with a `SPEC-<id>.md`.
+State: the specs are written and **awaiting the user's approval**. After that, write the plan and tasks (extend
+`tasks/plan.md`/`todo.md` with Phase 7+). Commit Phases 5–6 before `app-shell` starts refactoring `main.c`.
+`image-compress` needs `sudo dnf install pngquant` (approved).
+
 **Next step:** review Phase 6 with the user, then commit (ask for the date). Still only the user can do:
 1. Supply a real 200 MB+ phone clip and judge it at `slow` and `faster` (Criterion 4). Fill the empty row in `plan.md`, and use it
    to recalibrate `EST_VIDEO_KBPS` (the size estimate) in `compress.c`.

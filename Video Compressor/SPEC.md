@@ -1,5 +1,10 @@
 # Spec: Video Compressor
 
+> Module `video-compress` of [CAPABILITIES.md](CAPABILITIES.md). The app is growing into **Media Tools**, with web video,
+> video → frames and image compression as further modes (each with its own `SPEC-<id>.md`). This file stays the spec for the
+> `Compress video` mode and the source of the shared rules in **Boundaries**. The host window changes (mode dropdown,
+> Choose Files, multi-step jobs) are in [SPEC-app-shell.md](SPEC-app-shell.md).
+
 ## Objective
 
 A small Linux desktop app, written in C with GTK4. You pick a folder, it finds every video in it, works out what each video is (resolution, codec, size), and compresses each one with H.265 (x265) by calling `ffmpeg`. This is the kind of "keep the quality, cut the size" job HandBrake does, but it runs on a whole folder with no settings to choose.
@@ -105,7 +110,9 @@ Debug:     cmake -S "Video Compressor" -B "Video Compressor/build-dbg" -DCMAKE_B
 ## Project Structure
 ```
 Video Compressor/
-  SPEC.md               → this file
+  CAPABILITIES.md       → module map for Media Tools (index of the SPEC-*.md files)
+  SPEC.md               → this file (video-compress + shared rules)
+  SPEC-*.md             → one spec per further module (app-shell, web-video, video-frames, image-compress)
   CMakeLists.txt        → app target + test target
   src/main.c            → GTK window: folder chooser, file list, Start/Cancel, progress
   src/compress.c/.h     → GTK-free logic: scan folder, parse ffprobe output,
@@ -173,7 +180,8 @@ vc_class_for (int width, int height)
   - keep the UI responsive (all subprocess I/O async on the GLib main loop)
   - run the tests before every commit
 - **Ask first:**
-  - adding any dependency beyond GTK4/GLib
+  - adding any dependency beyond GTK4/GLib (already approved 2026-11-08: ImageMagick `magick` and `pngquant` as runtime
+    tools for `image-compress`)
   - changing the CRF/audio table or the codec
   - recursive scanning
   - any deletion beyond the Delete-originals option (e.g. permanent delete, deleting outputs)
