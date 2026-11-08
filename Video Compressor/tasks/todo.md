@@ -276,3 +276,300 @@ Shared commands (run from the repo root):
 ### Checkpoint 6
 - [x] ctest green (Debug and ASan builds), Debug build clean
 - [ ] Review with you
+
+---
+
+# Media Tools (Phases 7–10)
+
+Map: [../CAPABILITIES.md](../CAPABILITIES.md). Each phase follows its module spec. Shared rules for every task: argv only,
+`.part` then rename, never overwrite, one job at a time, async I/O, an `app.closing` check in every new callback, ctest green
+before every commit. Manual GUI checks use Xvfb as described in [../HANDOFF.md](../HANDOFF.md).
+
+## Phase 7: App shell ([SPEC-app-shell.md](../SPEC-app-shell.md))
+
+### - [ ] T16: `modes.c` core
+**Description:** Add `src/modes.c/.h` to `vc_core` with `VcMode`, `VcStep`, `VcOptions`, `vc_mode_accepts()`,
+`vc_mode_out_dir()`, `vc_mode_can_trash()`, `vc_mode_missing_tool()` (`VC_HAVE_*` bits), `vc_mode_steps()` and
+`vc_step_free()`. Only the `VC_MODE_COMPRESS` branch of `vc_mode_steps()` is real: it wraps `vc_output_path()` +
+`vc_build_ffmpeg_argv()` into one step, and the existing-output skip moves into it (same text:
+`compressed/<name> exists`). The other modes return NULL for now. Add `vc_remove_part()`: it deletes a `.part` file, or
+empties a `.part` directory of its regular files and removes it. It refuses any path whose name doesn't end in `.part`
+(before the extension) and any directory that contains a subdirectory.
+
+**Acceptance criteria:**
+- [ ] `test_compress` passes unchanged
+- [ ] `vc_mode_steps(VC_MODE_COMPRESS, …)` gives exactly what `main.c` builds today
+
+**Verification:**
+- [ ] Unit (`tests/test_modes.c`): every test listed in the spec's Testing Strategy (accepts, out dir, can-trash,
+      missing tool per mode, compress step equals the existing argv/part/output for 8-bit, 10-bit HLG and keep-subs)
+- [ ] Unit: `vc_remove_part()` on a temp file, a temp `.part` dir with files, a non-`.part` path (refused, untouched)
+      and a dir with a subdirectory (refused, untouched)
+
+**Dependencies:** None (Phases 1–6 are committed)
+**Files:** `src/modes.c/.h`, `tests/test_modes.c`, `CMakeLists.txt`
+**Scope:** M
+
+### - [ ] T17: Multi-step job runner
+**Description:** `Item` holds the `GPtrArray` of `VcStep` from `vc_mode_steps()`. `start_job()` runs the steps in order,
+and the next step starts only after the previous one's three events (stdout EOF, stderr EOF, exit). Exit 0 or the step's
+`soft_exit` continues. When the last step ends, each step with an `output` and an existing `part` is moved with
+`g_file_move(..., G_FILE_COPY_NONE)`, and intermediate parts are removed. On stop, failure or close, every step's part goes
+through `vc_remove_part()`. Steps without `progress` pulse the bar. Pause sends `SIGSTOP` to the current step's process.
+The `State` machine, selection rules and the trash path are unchanged. Compress video is the only mode, so it is a
+one-step job.
+
+**Acceptance criteria:**
+- [ ] Compress video behaves exactly as before: progress, pause/resume, stop, skip, "already efficient", trash, close
+      mid-encode
+- [ ] `grep -nE 'unlink|g_file_delete|remove\(' src/` shows deletes only in `vc_remove_part()` and rejected-output cleanup
+
+**Verification:**
+- [ ] ctest green (Debug and ASan builds)
+- [ ] Manual (Xvfb, ASan): full fixture run at `faster` with subtitles and auto-trash, stop mid-file, pause/resume,
+      close mid-encode (exit 0, no ffmpeg, no `.part`), then restore the trashed originals and compare checksums
+
+**Dependencies:** T16
+**Files:** `src/main.c`
+**Scope:** M
+
+### - [ ] T18: Choose Files and the list source
+**Description:** A **Choose Files** button next to Choose Folder opens `gtk_file_dialog_open_multiple()` with the video
+filter. The app keeps the list source (one folder, or a list of files) so that a later mode switch can reload it. Each
+file's output goes into `<its folder>/compressed/`. The window title becomes `Media Tools`. Folder, repo and binary names
+stay the same.
+
+**Acceptance criteria:**
+- [ ] Choosing two videos from two folders lists only those two, and each output lands in its own folder's `compressed/`
+      (app-shell criterion 2)
+- [ ] Choose Folder afterwards replaces the list, and vice versa
+- [ ] Both buttons are greyed while anything is queued, encoding or being checked
+
+**Verification:**
+- [ ] Manual (Xvfb): the two-folder run, then Choose Folder on the fixtures
+- [ ] Manual: the window title reads `Media Tools`
+
+**Dependencies:** T17
+**Files:** `src/main.c`
+**Scope:** S
+
+### Checkpoint 7
+- [ ] SPEC.md criteria 1–3 and 5–13 still pass in Compress video mode (Xvfb, ASan). Criterion 4 is still waiting on your clip
+- [ ] App-shell criterion 2 passes, ctest green, Debug build clean
+- [ ] Review with you, then commit before Phase 8
+
+---
+
+## Phase 8: Web video ([SPEC-web-video.md](../SPEC-web-video.md))
+
+### - [ ] T19: `web_video.c` core and fixtures
+**Description:** `vc_web_video_steps()` returns one ffmpeg step writing `web/.<name>.part.mp4` → `web/<name>.mp4`
+(lowercase extension), or NULL + `web/<name>.mp4 exists`. It builds the argv from the spec's "Encode settings": even-width
+scale capped at Max width, the zscale + `tonemap=hable` chain when `vc_probe_is_hdr()` (`bt2020` fallback for missing
+primaries/matrix), `-crf 23 -preset slow`, `-an` or AAC 128k stereo, metadata and chapters stripped, `+faststart` and
+progress. `vc_mode_steps()` dispatches to it. `make-fixtures.sh` adds `odd-853x479.mp4` and a 10-bit PQ `hdr10-pq.mov`
+(using `setparams`, as for HLG).
+
+**Acceptance criteria:**
+- [ ] Every test in the spec's unit list passes
+- [ ] The fixture script creates both new files, and ffprobe shows 853×479 and `smpte2084`
+
+**Verification:**
+- [ ] Unit (`tests/test_web_video.c`): 8-bit 1080p at 1920 / 1280 / Original (each element), Remove audio on/off, HLG
+      and PQ tone-map with the right `tin`, no tone-map for 10-bit SDR and 8-bit, `bt2020` fallback, path naming,
+      existing-output skip, special-character filename
+- [ ] Headless: run the argv on the HLG and PQ fixtures through a throwaway driver, and check `yuv420p`/`bt709`
+
+**Dependencies:** T16
+**Files:** `src/web_video.c`, `src/modes.c/.h`, `tests/test_web_video.c`, `tests/make-fixtures.sh`, `CMakeLists.txt`
+**Scope:** M
+
+### - [ ] T20: Mode dropdown, options bar, tool check, web mode UI
+**Description:**
+- A **Mode** dropdown in the header lists only the modes that exist: `Compress video` (default) and `Web video (Safari)`.
+- The options bar under the header shows only the current mode's controls. Compress video: Speed + ⓘ, Keep subtitles,
+  Move to Trash. Web video: **Max width** (`Original`, `3840`, `2560`, `1920` default, `1280`, `960`, `640`) and
+  **Remove audio**.
+- Startup check split: missing `ffmpeg`/`ffprobe` is still fatal. `ffmpeg -encoders` and `ffmpeg -filters` run once and set
+  the `VC_HAVE_*` bits. A mode with a missing tool shows a banner (`vc_mode_missing_tool()` text) and greys Start.
+- Mode, Choose Folder and Choose Files are locked while anything is queued, encoding or being checked.
+- Switching mode rebuilds the list from the same source with the new filter, resets row state and shows
+  `N files hidden (not videos/images)` when some are filtered out.
+- In Web video mode, the Trash button and checkbox are hidden, the size estimate is hidden, there is no "not smaller"
+  rule, and a finished row shows `4.1 MB · −63%` or `+12%`.
+
+**Acceptance criteria:**
+- [ ] Web-video criteria 1–4 and 7 pass on the fixtures
+- [ ] The mode is locked during a job (app-shell criterion 4)
+- [ ] Without `libx264` (a fake `ffmpeg` wrapper that filters `-encoders`), Web video shows the banner and Compress video
+      still works
+
+**Verification:**
+- [ ] Manual (Xvfb): run Web video on the fixture folder, then ffprobe each output (h264, High, yuv420p, avc1, even
+      dimensions, aac or none) and do the `moov`-before-`mdat` check
+- [ ] Manual: Max width 1280 on 1080p / 720p / portrait; `odd-853x479.mp4` at Original → 852×478
+- [ ] Manual: HLG and PQ outputs are `bt709`, plus a screenshot next to the source
+- [ ] Manual: stop mid-file, re-run skip, close mid-encode (no `.part`, exit 0)
+
+**Dependencies:** T18, T19
+**Files:** `src/main.c`
+**Scope:** M
+
+### Checkpoint 8
+- [ ] Web-video criteria 1–4 and 7 and app-shell criterion 4 pass, ctest green
+- [ ] You check web-video 5 (no GPS tag on a real phone clip's output) and 6 (plays in Safari on iOS before fully downloaded)
+- [ ] Review with you, then commit
+
+---
+
+## Phase 9: Video → frames ([SPEC-video-frames.md](../SPEC-video-frames.md))
+
+### - [ ] T21: `frames.c` core
+**Description:** `vc_parse_time()`, `vc_frames_jpeg_qscale()`, `vc_frames_estimate()` and `vc_frames_steps()` as in the
+spec. The step writes the directory part `frames/.<stem>.part/frame_%04d.<ext>` and has output `frames/<stem>/`. It skips
+with `frames/<stem>/ exists`, or with `starts after the end` when Start ≥ duration. Trim goes before `-i`. The step's
+progress duration is the range length. `vc_build_ffprobe_argv()` also asks for `avg_frame_rate`, and `vc_parse_probe()`
+fills `VcProbe.fps` (`30000/1001`; `0/0` → 0).
+
+**Acceptance criteria:**
+- [ ] Every test in the spec's unit list passes, and `test_compress` still passes with the extra probe field
+
+**Verification:**
+- [ ] Unit (`tests/test_frames.c`): time parsing accepts/rejects, qscale 1/80/100 → 31/8/2 and monotonic, estimates
+      (whole, range, End past end, Start past end = 0, `Every frame` at 30000/1001), WebP and JPG argv with and without
+      range, no `fps=` for `Every frame`, Original width, tone-map present or absent, dir naming, special-character name
+- [ ] Unit: `avg_frame_rate` parsing in `vc_parse_probe()`
+
+**Dependencies:** T16
+**Files:** `src/frames.c`, `src/compress.c/.h`, `src/modes.c/.h`, `tests/test_frames.c`, `tests/test_compress.c`,
+`CMakeLists.txt`
+**Scope:** M
+
+### - [ ] T22: Frames mode UI
+**Description:** Add `Video → frames` to the Mode dropdown. Options bar: **FPS** (`5`, `10`, `12`, `15` default, `24`,
+`30`, `Every frame`), **Start** and **End** entries (an invalid value turns the field red and greys Start), **Max width**
+(default `1920`), **Format** (`WebP` default, `JPG`) and **Quality** (1–100, default 80). Each row's hint shows
+`≈ N frames` and updates when FPS or the range changes. A finished row shows `150 frames · 9.8 MB` (count and total size
+of the folder). Trash controls are hidden. The runner moves the finished directory part into place, and stop, failure
+or close removes it.
+
+**Acceptance criteria:**
+- [ ] Video-frames criteria 1–7 pass
+
+**Verification:**
+- [ ] Manual (Xvfb): `720p.mp4` at 15 fps WebP q80 → 900 frames (±1), with `≈ 900 frames` shown beforehand
+- [ ] Manual: Start `10`, End `0:12` at 12 fps → 24 frames (±1), and the first frame matches the source at 10 s
+- [ ] Manual: Max width 640 → 1080p gives 640 wide, portrait gives 640×1138
+- [ ] Manual: JPG q80 and HLG frames look right next to a source screenshot
+- [ ] Manual: stop mid-extraction (no `.part` dir, no final dir), re-run extracts, a second re-run skips
+- [ ] Manual: Start `abc` turns red and greys Start. A Start past one video's length skips only that video
+
+**Dependencies:** T20, T21
+**Files:** `src/main.c`
+**Scope:** M
+
+### Checkpoint 9
+- [ ] Video-frames criteria 1–7 pass, ctest green, ASan run of the mode clean
+- [ ] Review with you, then commit
+
+---
+
+## Phase 10: Compress images ([SPEC-image-compress.md](../SPEC-image-compress.md))
+
+### - [ ] T23: `images.c` core
+**Description:** Accepted extensions (`.jpg .jpeg .png .webp .bmp .tif .tiff`), `vc_probe_has_alpha()`,
+`vc_image_steps()` and `vc_image_should_trash()` as in the spec. Step plan: JPEG → magick jpg + webp. PNG → pngquant
+(`soft_exit = 99`) + webp, with an extra intermediate magick resize step when Max width is set. WebP → webp only.
+BMP/TIFF → png (alpha) or jpg (no alpha) + webp. Each output that already exists is dropped from the plan, and the row is
+skipped only when all of them exist. Add captured ffprobe output for a JPEG, a PNG with alpha and a `pal8` PNG to the
+probe tests, so still images parse (no duration).
+
+**Acceptance criteria:**
+- [ ] Every test in the spec's unit list passes
+- [ ] `vc_parse_probe()` accepts the captured image probes
+
+**Verification:**
+- [ ] Unit (`tests/test_images.c`): extensions (GIF/SVG/HEIC rejected), plan per source type including the 3-step PNG
+      resize, argv element by element (`-resize '1280>'` only with a Max width, `--` before the pngquant input), output
+      naming `IMG.JPEG` → `IMG.jpg` + `IMG.webp`, per-output and all-exist skip, special-character name
+- [ ] Unit: `vc_probe_has_alpha()` for `rgba`, `ya8`, `yuva420p`, `rgb24`, `yuvj420p`, `pal8`
+- [ ] Unit: `vc_image_should_trash()` truth table, height ±1 accepted, ±2 rejected
+
+**Dependencies:** T16
+**Files:** `src/images.c`, `src/modes.c/.h`, `tests/test_images.c`, `tests/test_compress.c`, `CMakeLists.txt`
+**Scope:** M
+
+### - [ ] T24: Image fixtures
+**Description:** `make-fixtures.sh` writes `images/` with magick: a noisy photo-like `photo.jpg` (wider than 1280),
+`rotated.jpg` with EXIF orientation 6, `screenshot.png`, `alpha.png`, `already-tiny.png`, `scan.tiff`, `logo.bmp`,
+`photo.webp`, a 1001×667 `.jpg`, a name with quotes/`$`/unicode, and the decoys `anim.gif` and `fake.png` (text).
+
+**Acceptance criteria:**
+- [ ] All files exist, `magick identify` shows orientation 6 on `rotated.jpg` and alpha on `alpha.png`
+
+**Verification:**
+- [ ] Run the script into a fresh directory and list the files with `magick identify`
+
+**Dependencies:** None
+**Files:** `tests/make-fixtures.sh`
+**Scope:** S
+
+### - [ ] T25: Images mode UI
+**Description:** Add `Compress images` to the Mode dropdown, with the banner when `magick` or `pngquant` is missing.
+Rows show dimensions, format and size. Options bar: **Max width** (default `Original`). Jobs run the multi-step plan with
+a pulsing bar. After the last step, each output that isn't at least 5% smaller than the source is deleted on its own, and
+the row shows e.g. `jpg 412 kB −58% · webp 288 kB −71%`, `jpg already optimized`, or `Skipped – already optimized` when
+nothing was kept. pngquant exit 99 counts as "no output".
+
+**Acceptance criteria:**
+- [ ] Image criteria 1–5, 7 and 9 pass
+- [ ] Switching from a video mode to Compress images on a mixed folder shows the right hidden count (app-shell criterion 3)
+- [ ] Without pngquant on PATH, only Compress images shows the banner and greys Start (app-shell criterion 5)
+
+**Verification:**
+- [ ] Manual (Xvfb): run the mode on `images/`, open every output, check `rotated.jpg` is upright with no orientation/GPS
+      tag, `alpha.png` outputs keep transparency, and nothing larger than its source is kept
+- [ ] Manual: Max width 1280 → the 1001×667 file keeps its size, `photo.jpg` comes out 1280 wide
+- [ ] Manual: stop mid-batch (no `.part` or intermediate file), a re-run skips finished images (app-shell criterion 6)
+
+**Dependencies:** T20, T23, T24
+**Files:** `src/main.c`
+**Scope:** M
+
+### - [ ] T26: Trash for images
+**Description:** In Compress images, the Move to Trash checkbox and button come back. The check probes the same-type
+output (`.png`/`.jpg` for BMP/TIFF) and calls `vc_image_should_trash()` with the expected width `min(src, W)` and height.
+If only the `.webp` survived, the row says `original kept (no jpg copy)`. Removal is `g_file_trash()` only.
+
+**Acceptance criteria:**
+- [ ] Image criterion 8 passes: verified originals are in the Trash and restore byte-identical, and an original with only
+      a webp kept or a failed step stays put
+
+**Verification:**
+- [ ] Manual (Xvfb): run with trash on over a copy of `images/`, `gio list trash://`, restore all, compare checksums
+- [ ] Manual: stop during the output check keeps the original
+
+**Dependencies:** T25
+**Files:** `src/main.c`
+**Scope:** S
+
+### - [ ] T27: Calibrate image quality
+**Description:** On 5 of your real photos and 5 real PNG screenshots/graphics, compare output sizes against TinyJPG and
+TinyPNG and have you judge the look. If the sizes are more than about 15% off, propose new values for 82 / 65-90 / 80
+(ask first) and record the numbers in `SPEC-image-compress.md`.
+
+**Acceptance criteria:**
+- [ ] Image criterion 6 passes, judged by you
+
+**Verification:**
+- [ ] Results table (file, source, ours, Tiny*, difference) appended to `plan.md`
+
+**Dependencies:** T25. Needs your files and your eyes
+**Files:** `tasks/plan.md`, possibly `src/images.c` and the spec (only with your approval)
+**Scope:** S
+
+### Checkpoint 10 (Media Tools complete)
+- [ ] Image criteria 1–9 pass, and app-shell criteria 3, 5, 6 and 7 pass
+- [ ] ASan run of every mode clean, ctest green, Debug build clean
+- [ ] `CAPABILITIES.md` State column says Built for every module, HANDOFF.md updated
+- [ ] Review with you

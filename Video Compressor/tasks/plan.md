@@ -1,6 +1,7 @@
 # Implementation Plan: Video Compressor
 
 Source of truth: [../SPEC.md](../SPEC.md). Task checklist: [todo.md](todo.md).
+Phases 7–10 (Media Tools) follow [../CAPABILITIES.md](../CAPABILITIES.md) and the four `SPEC-<id>.md` module specs.
 
 ## Overview
 This plan builds the GTK4 C app that compresses every video in a folder with ffmpeg/x265, choosing settings from each file's resolution class. Results go to `compressed/`, and there is an option to move the originals to the Trash. The work is ordered so that each phase ends with something runnable. The riskiest parts (calling ffmpeg asynchronously from GTK, and cancelling it) come early.
@@ -31,6 +32,20 @@ CMake skeleton + startup check (T1)
 ```
 T5, T6, T7 and T8 depend only on T4 and don't depend on each other. All three touch `main.c`, so they run in sequence rather than in parallel.
 
+Media Tools (Phases 7–10):
+```
+modes core (T16)
+   └── multi-step runner (T17)
+         └── Choose Files + list source (T18)
+               ├── web_video core (T19)
+               │     └── Mode dropdown + options bar + tool check + web mode UI (T20)
+               │           ├── frames core (T21) → frames UI (T22)
+               │           └── images core (T23) + image fixtures (T24)
+               │                 └── images UI (T25) → images trash (T26) → calibration (T27)
+```
+T19, T21, T23 and T24 are pure logic or scripts and could be written in any order after T16. They're done in module order so
+that each phase ends with a usable mode. Every UI task touches `main.c`, so they run one after another.
+
 ## Roadmap
 
 | Phase | Goal | Tasks | You can… |
@@ -41,6 +56,10 @@ T5, T6, T7 and T8 depend only on T4 and don't depend on each other. All three to
 | 4. Delete originals | Optionally move verified originals to the Trash | T9, T10 | free up disk space automatically |
 | 5. Harden | Edge cases, sanitizers, real-world size/quality calibration | T11 | trust it on your actual library |
 | 6. Controls and estimates | Size estimates, speed guide, Start/Pause/Stop/Trash buttons, multi-select | T12–T15 | control exactly which videos run, and see the expected savings first |
+| 7. App shell | Multi-step job runner, Choose Files, window becomes "Media Tools". Video compression unchanged | T16–T18 | pick individual files from different folders |
+| 8. Web video | Mode dropdown, options bar, per-mode tool check, plus the `Web video (Safari)` mode | T19–T20 | make Safari-ready H.264 MP4s for a website |
+| 9. Video → frames | Numbered WebP/JPG frame folders with fps, trim, width, quality | T21–T22 | export frame sequences for scroll animations |
+| 10. Compress images | Same-type copy + `.webp` per image (magick, pngquant), opt-in trash | T23–T27 | shrink a folder of photos/PNGs TinyPNG-style |
 
 ## Task List
 
@@ -90,9 +109,48 @@ T5, T6, T7 and T8 depend only on T4 and don't depend on each other. All three to
 - [x] ctest green (Debug and ASan builds), Debug build clean
 - [ ] Review with you
 
+### Phase 7: App shell ([SPEC-app-shell.md](../SPEC-app-shell.md))
+- [ ] T16: `src/modes.c/.h` core: `VcMode`, `VcStep`, `VcOptions`, filters, out dirs, tool check, `vc_mode_steps(COMPRESS)` (pure logic, tested)
+- [ ] T17: Multi-step job runner in `main.c` (steps in order, move outputs, remove file *and* directory parts), Compress video only
+- [ ] T18: **Choose Files** (multi-select), list source = folder or files, outputs next to each file, title `Media Tools`
+
+### Checkpoint 7
+- [ ] Compress video passes SPEC.md criteria 1–3 and 5–13 again on Xvfb with ASan (app-shell criterion 1). App-shell criterion 2 passes. ctest green
+
+### Phase 8: Web video ([SPEC-web-video.md](../SPEC-web-video.md))
+- [ ] T19: `src/web_video.c` (output path, scale/tone-map argv) + fixtures `odd-853x479.mp4`, `hdr10-pq.mov` (pure logic, tested)
+- [ ] T20: Mode dropdown, per-mode options bar, split tool check + banner, mode lock, relist on switch, with `Web video (Safari)` wired in
+
+### Checkpoint 8
+- [ ] Web-video criteria 1–4 and 7 pass on fixtures, app-shell criterion 4 passes. You check 5 (GPS on a phone clip) and 6 (Safari on iOS)
+
+### Phase 9: Video → frames ([SPEC-video-frames.md](../SPEC-video-frames.md))
+- [ ] T21: `src/frames.c` (`vc_parse_time`, JPG qscale, frame estimate, argv) + `VcProbe.fps` from `avg_frame_rate` (pure logic, tested)
+- [ ] T22: Frames mode UI: FPS / Start / End / Max width / Format / Quality, `≈ N frames` hint, directory output via the runner
+
+### Checkpoint 9
+- [ ] Video-frames criteria 1–7 pass on fixtures
+
+### Phase 10: Compress images ([SPEC-image-compress.md](../SPEC-image-compress.md))
+- [ ] T23: `src/images.c` (accepted types, step plan, magick/pngquant argv, `vc_probe_has_alpha`, `vc_image_should_trash`) (pure logic, tested)
+- [ ] T24: Image fixtures in `make-fixtures.sh` (`images/`: photo, EXIF-rotated, alpha, tiny PNG, TIFF, BMP, WebP, odd size, decoys)
+- [ ] T25: Images mode UI: list with dimensions/format, run the multi-step plan, per-output "not smaller" rule, row results
+- [ ] T26: Trash for images (checkbox + button) using `vc_image_should_trash()` and an output dimension check
+- [ ] T27: Calibrate 82 / 65-90 / 80 against TinyJPG/TinyPNG on your real files (quality changes are ask-first)
+
+### Checkpoint 10 (Media Tools complete)
+- [ ] Image criteria 1–9 pass (6 with you). App-shell criteria 3, 5, 6, 7 pass. ASan run of every mode is clean
+- [ ] `CAPABILITIES.md` State column says Built for all modules, and HANDOFF.md is updated. Ready for your review
+
 ## Risks and Mitigations
 | Risk | Impact | Mitigation |
 |---|---|---|
+| **T17 rewires the runner that Phases 3–6 verified** (pause, stop, close mid-encode, trash) | High | T17 changes only how steps run, not the `State` machine. Compress video stays one step. Full Xvfb + ASan regression at Checkpoint 7 before any new mode lands |
+| Removing a `.part` **directory** (frames) could delete the wrong thing | High | One GTK-free helper removes only regular files directly inside a path ending in `.part`, then `rmdir`s it. Unit-tested on a temp dir (refuses non-`.part` paths, refuses subdirectories) |
+| ffprobe on still images (no duration, `pal8`/`ya8` formats) may trip `vc_parse_probe()` | Med | T23 adds captured image probe strings to the tests before the UI uses them |
+| Mode dropdown with only one entry can't be tested | Low | The dropdown, options bar and tool banner are app-shell code but are built in T20 with web video, so each has a second mode to switch to |
+| zscale tone-map washes out or crushes HDR on real iPhone clips | Med | Smoke-tested on HLG already. Fixtures add 10-bit PQ. Screenshot comparison in Checkpoints 8/9, real clip judged by you |
+| Image quality numbers (82, 65-90, 80) are guesses | Med | T27 compares against TinyJPG/TinyPNG on your files. Changes are ask-first |
 | Async subprocess + GTK wiring is the trickiest part | High | It is built first (T4) as one plain path. Progress and cancel are added on top only after it works. |
 | Cancel races: deleting `.part` while ffmpeg still has it open | Med | `g_subprocess_force_exit()`, then delete only in the `wait_async` callback |
 | x265 `slow` (the default) on 1080p/4K is slow on this laptop (16 threads, 7 GB RAM): roughly 2× `medium` | Med | One encode at a time. You can pick a faster preset from the Speed dropdown. Measure fps per preset in T11 and report it. |
