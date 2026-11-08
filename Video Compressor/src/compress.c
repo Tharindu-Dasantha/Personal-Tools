@@ -285,6 +285,15 @@ vc_output_is_worth_keeping (guint64 src_bytes, guint64 out_bytes)
     return out_bytes > 0 && out_bytes * 100 <= src_bytes * 95;
 }
 
+/* A duration of 0 means unknown (or the output probe failed), which never matches. */
+gboolean
+vc_should_trash_original (gboolean opt_on, gboolean exit_ok, double src_dur, double out_dur,
+                          gboolean kept)
+{
+    return opt_on && exit_ok && kept && src_dur > 0 && out_dur > 0
+           && fabs (src_dur - out_dur) <= 1.0;
+}
+
 char *
 vc_format_duration (double seconds)
 {

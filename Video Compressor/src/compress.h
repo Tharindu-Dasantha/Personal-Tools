@@ -41,4 +41,6 @@ char **vc_build_ffmpeg_argv (const char *input, const char *output, const VcProb
                              const char *preset, gboolean keep_subs);
 gboolean vc_parse_progress_line (const char *line, double duration, double *fraction);
 gboolean vc_output_is_worth_keeping (guint64 src_bytes, guint64 out_bytes);
+gboolean vc_should_trash_original (gboolean opt_on, gboolean exit_ok, double src_dur,
+                                   double out_dur, gboolean kept);
 char *vc_format_duration (double seconds);

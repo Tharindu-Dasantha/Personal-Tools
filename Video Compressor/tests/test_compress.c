@@ -307,6 +307,28 @@ test_worth_keeping (void)
 }
 
 static void
+test_should_trash (void)
+{
+    g_assert_true (vc_should_trash_original (TRUE, TRUE, 60.0, 60.0, TRUE));
+    /* each condition failing alone */
+    g_assert_false (vc_should_trash_original (FALSE, TRUE, 60.0, 60.0, TRUE));
+    g_assert_false (vc_should_trash_original (TRUE, FALSE, 60.0, 60.0, TRUE));
+    g_assert_false (vc_should_trash_original (TRUE, TRUE, 60.0, 60.0, FALSE));
+    /* durations: 0.9 s off is fine, 1.1 s is not, either direction */
+    g_assert_true (vc_should_trash_original (TRUE, TRUE, 60.0, 60.9, TRUE));
+    g_assert_true (vc_should_trash_original (TRUE, TRUE, 60.0, 59.1, TRUE));
+    g_assert_false (vc_should_trash_original (TRUE, TRUE, 60.0, 61.1, TRUE));
+    g_assert_false (vc_should_trash_original (TRUE, TRUE, 60.0, 58.9, TRUE));
+    /* unknown source duration, or output probe failed (0) */
+    g_assert_false (vc_should_trash_original (TRUE, TRUE, 0.0, 0.0, TRUE));
+    g_assert_false (vc_should_trash_original (TRUE, TRUE, 0.5, 0.0, TRUE));
+    g_assert_false (vc_should_trash_original (TRUE, TRUE, 0.0, 0.5, TRUE));
+    /* every other combination of the three flags */
+    for (int m = 0; m < 7; m++)
+        g_assert_false (vc_should_trash_original (m & 1, m & 2, 60.0, 60.0, m & 4));
+}
+
+static void
 test_format_duration (void)
 {
     struct { double s; const char *text; } cases[] = {
@@ -337,6 +359,7 @@ main (int argc, char **argv)
     g_test_add_func ("/ffmpeg/argv-subtitles", test_ffmpeg_argv_subtitles);
     g_test_add_func ("/progress/line", test_progress_line);
     g_test_add_func ("/rules/worth-keeping", test_worth_keeping);
+    g_test_add_func ("/rules/should-trash", test_should_trash);
     g_test_add_func ("/format/duration", test_format_duration);
     return g_test_run ();
 }

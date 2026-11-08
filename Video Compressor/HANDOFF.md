@@ -9,14 +9,14 @@ and [tasks/todo.md](tasks/todo.md). Checkboxes in `todo.md` are ticked only for 
 |---|---|---|
 | 1. Foundation | T1 | **Done, all checks verified** (incl. error dialogs, screenshotted on Xvfb) |
 | 2. See your videos | T2, T3 | **Done, all checks verified** (GUI on Xvfb, 2026-11-08) |
-| 3. Compress (MVP) | T4–T8 | Code done, unit tests pass, ffmpeg path verified headlessly. **GUI checks not yet done** |
-| 4. Delete originals | T9, T10 | **Not started** |
+| 3. Compress (MVP) | T4–T8 | **Done, all checks verified** (GUI on Xvfb, 2026-11-08) |
+| 4. Delete originals | T9, T10 | **Done, all checks verified** (GUI on Xvfb, 2026-11-08). Uncommitted; awaiting Checkpoint 4 review |
 | 5. Harden | T11 | **Not started** |
 
-Pushed to `origin/main` as `d32fd96`.
+Pushed to `origin/main` (Phase 2 checks: `026de4e`).
 
-**Next step:** finish the unticked GUI checks for T4–T8 (Phase 3) (see "Testing the GUI" below), then
-**stop and review with the user (Checkpoint 3) before starting Phase 4.** The plan requires this.
+**Next step:** **review with the user (Checkpoint 4) before starting Phase 5.** Phase 4 is not
+committed yet; ask for the commit date. Open points are listed under "Open issues".
 
 ## Build, test, run (from the repo root; the folder name has a space)
 
@@ -49,6 +49,13 @@ Debug builds use `-Werror`. Run the tests before every commit (SPEC rule).
     Closing the window mid-encode kills ffmpeg, waits for it and unlinks the `.part`
     synchronously (`on_close`).
   - The output is renamed with `g_file_move(..., G_FILE_COPY_NONE)`, which never overwrites.
+  - Trash (Phase 4): `finish_job()` → on a kept output with the option on, `verify_output()`
+    probes the output → `verify_done()` asks `vc_should_trash_original()` → `g_file_trash_async()`
+    → `trash_done()`. Each path ends in `next_job()`, which stops the batch if Cancel was pressed
+    meanwhile. A cancel during the output check keeps the original. The widget is `app.trash`; the
+    batch's snapshot of it is `app.trash_on`.
+  - `on_start()` shows the confirm dialog only when the option is on and at least one file has no
+    output yet; `start_batch()` does the real start.
 - `tests/make-fixtures.sh` writes these fixtures:
   - `240p.avi`, `480p.webm`, `720p.mp4` (60 s, 8 Mbps), `1080p.mkv`, `portrait.mov`
   - a name with quotes, `$` and unicode
@@ -64,7 +71,23 @@ The classes match ffprobe dimensions, portrait shows `1080p`, `fake.mp4` shows `
 `10-bit HDR`. Choosing another folder replaces the list, including mid-probe (no stale rows). While
 probes run, rows show `Reading…`, Start is disabled and the Speed dropdown still opens.
 
-Phase 3, headless:
+Phase 4 GUI, on Xvfb, on copies of the fixtures:
+- The option is on and the dialog says "Up to 10 originals…". Its Cancel starts nothing. Confirming at `faster`
+  takes 60 s: 9 rows show `Done – original trashed`, `lowbitrate.mp4` shows `already efficient` and stays,
+  and `fake.mp4` stays. `gio list trash://` lists all 9. `gio trash --restore` brings them back, with
+  matching checksums.
+- Cancel during 1080p: the original and the pending file are still there, and the Trash is empty.
+- Read-only folder: `Compressed – original kept (trash failed)`.
+- An ffprobe wrapper that fails on `compressed/` paths gives `177.3 kB · −98% – original kept`.
+- With the option off there is no dialog, the checksums are unchanged and the Trash is empty.
+
+Phase 3 GUI, on Xvfb (default `slow`): the full fixture run took 112 s. All 9 outputs decode without
+errors, `ps` showed `-preset slow`, and the bars advance with the header showing `n / 10`. Cancel kills
+ffmpeg in 66 ms and leaves no `.part`. Start works again after a cancel, and closing the window
+mid-encode kills ffmpeg and removes the `.part`. A second Start skips everything. Keep subtitles plus
+`faster` gives `.mkv` files with `subrip` (`mov_text` becomes `-c:s srt`), and both show in VLC.
+
+Phase 3, headless (earlier):
 
 The app's exact argv was run on all fixtures through a throwaway driver linked against `vc_core`:
 
@@ -92,11 +115,11 @@ sleep 3; import -window root shot.png                                   # then v
 ./xkey 200 150 Escape          # move pointer (focus follows it, there is no WM) and press a key
 ./xkey 70 26 click             # click at x,y; Choose Folder is around (70,26)
 ./xkey 500 150 ctrl+l; ./xkey 500 150 type "$DIR"; ./xkey 500 150 Return   # pick a folder in the dialog
-./xkey 380 400 scroll          # wheel down over the list; close the window with a click at (734,26)
+./xkey 380 400 scroll          # wheel down over the list (scrollup = wheel up); close the window with a click at (734,26)
 ```
 
 ```c
-/* xkey <x> <y> click | scroll | <keysym> | ctrl+<keysym> | type <string> */
+/* xkey <x> <y> click | scroll | scrollup | <keysym> | ctrl+<keysym> | type <string> */
 #include <X11/Xlib.h>
 #include <X11/XKBlib.h>
 #include <X11/keysym.h>
@@ -122,6 +145,8 @@ int main (int argc, char **argv) {
         XTestFakeButtonEvent (d, 1, True, 0); XTestFakeButtonEvent (d, 1, False, 0);
     } else if (!strcmp (argv[3], "scroll")) {
         for (int i = 0; i < 10; i++) { XTestFakeButtonEvent (d, 5, True, 0); XTestFakeButtonEvent (d, 5, False, 0); }
+    } else if (!strcmp (argv[3], "scrollup")) {
+        for (int i = 0; i < 10; i++) { XTestFakeButtonEvent (d, 4, True, 0); XTestFakeButtonEvent (d, 4, False, 0); }
     } else if (!strcmp (argv[3], "type") && argc > 4) {
         for (const char *c = argv[4]; *c; c++) tap (d, (KeySym) (unsigned char) *c, 0);
     } else if (!strncmp (argv[3], "ctrl+", 5)) {
@@ -138,6 +163,17 @@ Gotchas:
 - If PATH goes before `dbus-run-session`, it hides `dbus-daemon` and the app never starts.
 - Under `GDK_BACKEND=x11` the portal has no FileChooser backend and clicking Choose Folder does nothing.
   `GDK_DEBUG=no-portals` forces GTK's own chooser; Ctrl+L, type the path, Return selects the folder.
+- The chooser's location entry auto-completes to the common prefix of the folder's files (`w3` became
+  `w3/subs-`), and selecting a folder name that doesn't exist **creates it**. Make sure the folder
+  has files without a shared prefix.
+- Header coordinates: Start (577,26), Cancel (501,26), Speed dropdown (240,75), whose first item is
+  `faster` at (241,125), Keep subtitles (297,75), Move to Trash (462,75). The trash confirm dialog has
+  Cancel at (163,130) and "Compress and Move to Trash" at (491,130).
+- Trash tests use the real `~/.local/share/Trash`, which needs the test folder on the same filesystem
+  as home (`build/` is). Restore everything afterwards with `gio trash --restore`.
+- Don't wait on `pgrep -f <path>` in a loop: it matches the loop's own shell. Use `pgrep -x ffmpeg`.
+- VLC on Xvfb: `cvlc --no-audio --avcodec-hw=none --vout=xcb_x11 --start-time=5.5 f.mkv` (VA-API
+  renders solid green). Add `--sub-track=0` for a track without the default flag.
 - To see the async probe state, put a wrapper `ffprobe` that does `sleep 3; exec /usr/bin/ffprobe "$@"`
   first on PATH.
 - `pkill -f video-compressor` kills your own shell (its command line matches). Close the window instead.
@@ -145,6 +181,19 @@ Gotchas:
   `ls -A compressed/` (no `.part`) and `sha256sum` the original.
 
 ## Open issues and limits
+
+- An empty folder (or one with no videos) shows a blank list, not the "No videos" placeholder.
+  `gtk_list_box_remove_all()` in `load_folder` appears to drop the placeholder. Minor; not fixed.
+- `subs-srt.mkv` has `default=0` on its subtitle track, and the output copies that, so players don't
+  show it until it's picked. That matches the source. Forcing `-disposition:s:0 default` is an option
+  to raise at review.
+- The row text is `Skipped – compressed/<name> exists`, where the plan said `Skipped – already done`.
+- The confirm dialog says "**Up to** N originals…" (the SPEC has no "Up to"). N counts readable files
+  with no output yet, but "already efficient" or failed ones won't be trashed, so N is a maximum.
+- `Done – original trashed` replaces the size/percent text in the row (as the SPEC wording says). The new
+  size is no longer visible there. Could be `20 MB · −78% · original trashed` if wanted.
+- If the output check fails, the row shows `<size> · −N% – original kept`, with the reason in the tooltip.
+  The SPEC doesn't name this text.
 
 - **ASan/UBSan can't link**: `libasan`/`libubsan` aren't installed. The user needs to run
   `sudo dnf install libasan libubsan`. Required for T11 and Criterion 13.

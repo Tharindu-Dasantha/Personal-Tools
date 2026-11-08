@@ -15,14 +15,14 @@ typedef struct {
 typedef struct {
     GtkWindow *win;
     GtkWidget *list, *folder_label, *count_label;
-    GtkWidget *choose_btn, *start_btn, *cancel_btn, *speed, *subs;
+    GtkWidget *choose_btn, *start_btn, *cancel_btn, *speed, *subs, *trash;
     char *folder;
     GPtrArray *items;
     GCancellable *probe_cancel;
     guint probe_next;
 
     /* the running batch */
-    gboolean running, cancelled, keep_subs;
+    gboolean running, cancelled, keep_subs, trash_on;
     const char *preset;
     guint current, n_todo, n_started;
     GSubprocess *proc;
@@ -33,6 +33,7 @@ typedef struct {
 static App app;
 
 static void encode_next (void);
+static void verify_output (Item *it, const char *out);
 
 static void
 item_free (Item *it)
@@ -63,6 +64,7 @@ update_controls (void)
     gtk_widget_set_sensitive (app.cancel_btn, app.running && !app.cancelled);
     gtk_widget_set_sensitive (app.speed, !app.running);
     gtk_widget_set_sensitive (app.subs, !app.running);
+    gtk_widget_set_sensitive (app.trash, !app.running);
 }
 
 static void
@@ -255,6 +257,83 @@ finish_batch (void)
 }
 
 static void
+next_job (void)
+{
+    /* A cancel during output checks lands here, after this file's encode has finished. */
+    if (app.cancelled) {
+        finish_batch ();
+        return;
+    }
+    app.current++;
+    encode_next ();
+}
+
+static void
+keep_original (Item *it, const char *why)
+{
+    g_autofree char *text = g_strdup_printf ("%s – original kept",
+                                             gtk_label_get_text (GTK_LABEL (it->status)));
+    set_status (it, text, why);
+    next_job ();
+}
+
+static void
+trash_done (GObject *source, GAsyncResult *res, gpointer user_data)
+{
+    (void) user_data;
+    Item *it = app.items->pdata[app.current];
+    g_autoptr (GError) error = NULL;
+    if (g_file_trash_finish (G_FILE (source), res, &error))
+        set_status (it, "Done – original trashed", NULL);
+    else
+        set_status (it, "Compressed – original kept (trash failed)", error->message);
+    next_job ();
+}
+
+static void
+verify_done (GObject *source, GAsyncResult *res, gpointer user_data)
+{
+    (void) user_data;
+    g_autoptr (GSubprocess) proc = G_SUBPROCESS (source);
+    g_autofree char *out = NULL;
+    g_autoptr (GError) error = NULL;
+    g_autoptr (VcProbe) probe = NULL;
+    if (g_subprocess_communicate_utf8_finish (proc, res, &out, NULL, &error)
+        && g_subprocess_get_successful (proc))
+        probe = vc_parse_probe (out, &error);
+
+    Item *it = app.items->pdata[app.current];
+    if (app.cancelled) {
+        keep_original (it, "Cancelled before the original was moved to Trash");
+        return;
+    }
+    /* Only reached after exit 0, a successful rename and passing the "not smaller" rule. */
+    if (!vc_should_trash_original (app.trash_on, TRUE, it->probe->duration,
+                                   probe != NULL ? probe->duration : 0, TRUE)) {
+        g_autofree char *why = g_strdup_printf (
+            "Output check failed: %s", error != NULL ? error->message : "duration differs");
+        keep_original (it, why);
+        return;
+    }
+    g_autoptr (GFile) file = g_file_new_for_path (it->path);
+    g_file_trash_async (file, G_PRIORITY_DEFAULT, NULL, trash_done, NULL);
+}
+
+static void
+verify_output (Item *it, const char *out)
+{
+    g_auto (GStrv) argv = vc_build_ffprobe_argv (out);
+    g_autoptr (GError) error = NULL;
+    GSubprocess *proc = g_subprocess_newv ((const char *const *) argv,
+                                           G_SUBPROCESS_FLAGS_STDOUT_PIPE
+                                           | G_SUBPROCESS_FLAGS_STDERR_SILENCE, &error);
+    if (proc == NULL)
+        keep_original (it, error->message);
+    else
+        g_subprocess_communicate_utf8_async (proc, NULL, NULL, verify_done, NULL);
+}
+
+static void
 finish_job (void)
 {
     Item *it = app.items->pdata[app.current];
@@ -292,10 +371,13 @@ finish_job (void)
                 "%s · −%d%%", size,
                 (int) (100 - (st.st_size * 100.0 / it->size) + 0.5));
             set_status (it, text, out);
+            if (app.trash_on) {
+                verify_output (it, out);   /* continues with next_job () */
+                return;
+            }
         }
     }
-    app.current++;
-    encode_next ();
+    next_job ();
 }
 
 static void
@@ -415,9 +497,8 @@ encode_next (void)
 }
 
 static void
-on_start (GtkButton *button, gpointer user_data)
+start_batch (void)
 {
-    (void) button; (void) user_data;
     g_autofree char *dir = g_build_filename (app.folder, "compressed", NULL);
     if (g_mkdir_with_parents (dir, 0755) != 0) {
         alert ("Cannot create the compressed folder", g_strerror (errno), NULL);
@@ -427,6 +508,7 @@ on_start (GtkButton *button, gpointer user_data)
     app.cancelled = FALSE;
     app.preset = VC_PRESETS[gtk_drop_down_get_selected (GTK_DROP_DOWN (app.speed))];
     app.keep_subs = gtk_check_button_get_active (GTK_CHECK_BUTTON (app.subs));
+    app.trash_on = gtk_check_button_get_active (GTK_CHECK_BUTTON (app.trash));
     app.current = app.n_started = app.n_todo = 0;
     for (guint i = 0; i < app.items->len; i++) {
         Item *it = app.items->pdata[i];
@@ -437,6 +519,42 @@ on_start (GtkButton *button, gpointer user_data)
     }
     update_controls ();
     encode_next ();
+}
+
+static void
+trash_confirmed (GObject *source, GAsyncResult *res, gpointer user_data)
+{
+    (void) user_data;
+    if (gtk_alert_dialog_choose_finish (GTK_ALERT_DIALOG (source), res, NULL) == 1)
+        start_batch ();
+}
+
+static void
+on_start (GtkButton *button, gpointer user_data)
+{
+    (void) button; (void) user_data;
+    guint n = 0;
+    gboolean keep_subs = gtk_check_button_get_active (GTK_CHECK_BUTTON (app.subs));
+    for (guint i = 0; i < app.items->len; i++) {
+        Item *it = app.items->pdata[i];
+        g_autofree char *out = it->probe != NULL ? vc_output_path (it->path, keep_subs, NULL)
+                                                 : NULL;
+        n += out != NULL && !g_file_test (out, G_FILE_TEST_EXISTS);
+    }
+    if (!gtk_check_button_get_active (GTK_CHECK_BUTTON (app.trash)) || n == 0) {
+        start_batch ();
+        return;
+    }
+    g_autoptr (GtkAlertDialog) d = gtk_alert_dialog_new (
+        "Up to %u original%s will be moved to Trash after compressing. Continue?",
+        n, n == 1 ? "" : "s");
+    gtk_alert_dialog_set_detail (d, "An original is moved only after its compressed copy "
+                                    "has been checked. Files can be restored from the Trash.");
+    const char *buttons[] = { "Cancel", "Compress and Move to Trash", NULL };
+    gtk_alert_dialog_set_buttons (d, buttons);
+    gtk_alert_dialog_set_cancel_button (d, 0);
+    gtk_alert_dialog_set_default_button (d, 0);
+    gtk_alert_dialog_choose (d, app.win, NULL, trash_confirmed, NULL);
 }
 
 static void
@@ -527,6 +645,7 @@ activate (GtkApplication *gapp, gpointer user_data)
     gtk_label_set_mnemonic_widget (GTK_LABEL (speed_label), app.speed);
     gtk_widget_set_tooltip_text (app.speed, "Slower gives smaller files and takes longer");
     app.subs = gtk_check_button_new_with_mnemonic ("Keep _subtitles (.mkv)");
+    app.trash = gtk_check_button_new_with_mnemonic ("Move originals to _Trash after compressing");
     app.folder_label = gtk_label_new ("No folder chosen");
     gtk_label_set_ellipsize (GTK_LABEL (app.folder_label), PANGO_ELLIPSIZE_START);
     gtk_label_set_xalign (GTK_LABEL (app.folder_label), 0);
@@ -544,6 +663,7 @@ activate (GtkApplication *gapp, gpointer user_data)
     gtk_box_append (GTK_BOX (bar), speed_label);
     gtk_box_append (GTK_BOX (bar), app.speed);
     gtk_box_append (GTK_BOX (bar), app.subs);
+    gtk_box_append (GTK_BOX (bar), app.trash);
 
     app.list = gtk_list_box_new ();
     gtk_list_box_set_selection_mode (GTK_LIST_BOX (app.list), GTK_SELECTION_NONE);

@@ -79,7 +79,7 @@ Shared commands (run from the repo root):
 
 ## Phase 3: Compress (MVP)
 
-### - [ ] T4: Encode queue → `.part` → rename → result
+### - [x] T4: Encode queue → `.part` → rename → result
 **Description:**
 - `vc_output_path()` maps `dir/clip.MOV` to `dir/compressed/clip.mp4` and the temp file `dir/compressed/.clip.part.mp4`.
 - `vc_build_ffmpeg_argv()` builds the full argv from the probe result and class: `-map 0:v:0 -map 0:a?`, x265 at the class CRF, `-preset slow`, bit depth (8-bit gives `yuv420p`; 10-bit gives `yuv420p10le -profile:v main10` plus the known colour tags), `-sn`, `hvc1`, AAC at the class bitrate, and `+faststart`.
@@ -101,36 +101,36 @@ Shared commands (run from the repo root):
 **Files:** `src/main.c`, `src/compress.c/.h`, `tests/test_compress.c`
 **Scope:** M
 
-### - [ ] T5: Live progress
+### - [x] T5: Live progress
 **Description:** Add `-progress pipe:1 -nostats` and read stdout line by line asynchronously. `vc_parse_progress_line()` turns `out_time_us=` into a fraction of the probed duration. The row's `GtkProgressBar` updates, and a header label shows `3 / 12`. If the duration is unknown, the bar pulses.
 
 **Acceptance criteria:**
-- [ ] The progress bar advances smoothly to 100% on each fixture
-- [ ] The window stays draggable and responsive during an encode
+- [x] The progress bar advances smoothly to 100% on each fixture
+- [x] The window stays draggable and responsive during an encode (drag itself untestable on Xvfb with no WM; the list scrolls and repaints and Cancel responds mid-encode)
 
 **Verification:**
 - [x] Unit: `out_time_us=30000000` with a 60 s duration gives 0.5. Junk lines and `progress=end` are handled.
-- [ ] Manual: watch the 1080p fixture encode
+- [x] Manual: watch the 1080p fixture encode
 
 **Dependencies:** T4
 **Files:** `src/main.c`, `src/compress.c/.h`, `tests/test_compress.c`
 **Scope:** S
 
-### - [ ] T6: Cancel
+### - [x] T6: Cancel
 **Description:** A **Cancel** button (enabled while encoding) calls `g_subprocess_force_exit()`. In the `wait_async` callback the `.part` file is deleted and the queue stops. The current row shows `Cancelled` and the remaining rows stay `Pending`. **Start** can be pressed again.
 
 **Acceptance criteria:**
-- [ ] Cancel mid-encode stops ffmpeg within 1 s (`pgrep ffmpeg` is empty)
-- [ ] No `.part` file remains, and the original is byte-identical
+- [x] Cancel mid-encode stops ffmpeg within 1 s (`pgrep ffmpeg` is empty)
+- [x] No `.part` file remains, and the original is byte-identical
 
 **Verification:**
-- [ ] Manual: cancel during the 1080p fixture, then check `ls -a compressed/` and `sha256sum`
+- [x] Manual: cancel during the 1080p fixture, then check `ls -a compressed/` and `sha256sum`
 
 **Dependencies:** T4
 **Files:** `src/main.c`
 **Scope:** S
 
-### - [ ] T7: Skip existing outputs and the "not smaller" rule
+### - [x] T7: Skip existing outputs and the "not smaller" rule
 **Description:** Before encoding, if `compressed/<name>.mp4` exists, the row shows `Skipped – already done`. After encoding, if the output is not at least 5% smaller than the source, it is deleted and the row shows `Skipped – already efficient`. The decision lives in `vc_output_is_worth_keeping(src_bytes, out_bytes)`.
 
 **Acceptance criteria:**
@@ -145,7 +145,7 @@ Shared commands (run from the repo root):
 **Files:** `src/main.c`, `src/compress.c/.h`, `tests/test_compress.c`, `tests/make-fixtures.sh`
 **Scope:** M
 
-### - [ ] T8: Speed dropdown + Keep subtitles option
+### - [x] T8: Speed dropdown + Keep subtitles option
 **Description:**
 - A `GtkDropDown` labelled "Speed" offers `faster`, `fast`, `medium`, `slow` (selected by default) and `slower`. The choice is passed into `vc_build_ffmpeg_argv()` as the `-preset`.
 - A `GtkCheckButton` "Keep subtitles" (off by default) switches the output to `.mkv` with `-map 0:s? -c:s copy` and no `hvc1`/`faststart`. If the file has a `mov_text` track, it uses `-c:s srt`.
@@ -156,42 +156,42 @@ Shared commands (run from the repo root):
 
 **Acceptance criteria:**
 - [x] With the default settings, `ffprobe` on an output shows hevc in `.mp4` with no subtitle stream. `ps`/the log shows `-preset slow`.
-- [ ] With Keep subtitles on, both subtitle fixtures produce `.mkv` files whose subtitles show in mpv
+- [x] With Keep subtitles on, both subtitle fixtures produce `.mkv` files whose subtitles show in mpv (checked in VLC; mpv isn't installed. The `subs-srt` source track has `default=0`, which is copied as-is, so that track must be picked in the player)
 - [x] Choosing `faster` passes `-preset faster`, and the encode is visibly quicker
 
 **Verification:**
 - [x] Unit: argv for each preset; subs off (mp4, `-sn`, `hvc1`); subs on (mkv, `-map 0:s?`, `-c:s copy`); `mov_text` gives `-c:s srt`; probe parse picks up subtitle codecs
-- [ ] Manual: encode both subtitle fixtures with the option on and with it off
+- [x] Manual: encode both subtitle fixtures with the option on and with it off
 
 **Dependencies:** T4 (T7 for the skip-existing extension check)
 **Files:** `src/main.c`, `src/compress.c/.h`, `tests/test_compress.c`, `tests/make-fixtures.sh`
 **Scope:** M
 
 ### Checkpoint 3 (MVP)
-- [ ] Success Criteria 2, 3, 5, 6, 7, 10, 11 and 12 pass on fixtures
-- [ ] ctest green, Debug build clean
-- [ ] **Review with you before starting Phase 4**
+- [x] Success Criteria 2, 3, 5, 6, 7, 10, 11 and 12 pass on fixtures
+- [x] ctest green, Debug build clean
+- [x] **Review with you before starting Phase 4** (user said to go ahead with Phase 4, 2026-11-08)
 
 ---
 
 ## Phase 4: Delete originals
 
-### - [ ] T9: Output verification + trash decision (logic only)
+### - [x] T9: Output verification + trash decision (logic only)
 **Description:** After a successful rename, ffprobe the output. `vc_should_trash_original(opt_on, exit_ok, src_dur, out_dur, kept)` returns TRUE only when the option is on, ffmpeg exited 0, the durations are within 1 s, and the output was kept by the T7 rule. This is pure logic. Nothing is trashed yet.
 
 **Acceptance criteria:**
-- [ ] Every combination except all-true returns FALSE
-- [ ] The output probe runs asynchronously, and a probe failure counts as "do not trash"
+- [x] Every combination except all-true returns FALSE
+- [x] The output probe runs asynchronously, and a probe failure counts as "do not trash"
 
 **Verification:**
-- [ ] Unit: a truth table covering each condition failing alone, duration difference 0.9 s vs 1.1 s, and the option off
-- [ ] Build + ctest green
+- [x] Unit: a truth table covering each condition failing alone, duration difference 0.9 s vs 1.1 s, and the option off
+- [x] Build + ctest green
 
 **Dependencies:** T7
 **Files:** `src/compress.c/.h`, `src/main.c`, `tests/test_compress.c`
 **Scope:** S
 
-### - [ ] T10: Delete-originals checkbox → confirm → Trash
+### - [x] T10: Delete-originals checkbox → confirm → Trash
 **Description:**
 - Add a `GtkCheckButton` labelled "Move originals to Trash after compressing", off by default.
 - When it is on, **Start** shows a `GtkAlertDialog`: "N originals will be moved to Trash after compressing. Continue?"
@@ -200,21 +200,21 @@ Shared commands (run from the repo root):
 - There is never a permanent delete.
 
 **Acceptance criteria:**
-- [ ] With the option on, the trashed originals appear in the Files Trash and can be restored
-- [ ] Cancelled, failed and "already efficient" files keep their originals
-- [ ] With the option off, nothing is removed (fixture checksums unchanged)
+- [x] With the option on, the trashed originals appear in the Files Trash and can be restored
+- [x] Cancelled, failed and "already efficient" files keep their originals
+- [x] With the option off, nothing is removed (fixture checksums unchanged)
 
 **Verification:**
-- [ ] Manual: run on a copy of the fixtures with the option on, then check `gio list trash://` and restore one file
-- [ ] Manual: option on with a cancel mid-file, and check that the original is still present
-- [ ] `grep -nE 'unlink|g_file_delete|remove\(' src/` shows only `.part` and rejected-output cleanup
+- [x] Manual: run on a copy of the fixtures with the option on, then check `gio list trash://` and restore one file (all 9 restored, checksums match)
+- [x] Manual: option on with a cancel mid-file, and check that the original is still present
+- [x] `grep -nE 'unlink|g_file_delete|remove\(' src/` shows only `.part` and rejected-output cleanup
 
 **Dependencies:** T9
 **Files:** `src/main.c`
 **Scope:** S
 
 ### Checkpoint 4
-- [ ] Success Criterion 9 passes
+- [x] Success Criterion 9 passes (GUI on Xvfb, 2026-11-08)
 - [ ] Review with you
 
 ---
