@@ -18,6 +18,8 @@ typedef struct {
     char *color_primaries, *color_transfer, *color_space;
     double duration;     /* seconds, 0 when unknown */
     double fps;          /* average frame rate, 0 when unknown */
+    int video_kbps;      /* the video stream's own bitrate, 0 when unknown (often in MKV) */
+    int rotation;        /* display rotation in degrees as ffprobe reports it (phones: -90), 0 if none */
     int aac_kbps;        /* > 0: every audio stream is AAC, and this is the highest bitrate */
     guint n_subtitles;
     gboolean has_mov_text;

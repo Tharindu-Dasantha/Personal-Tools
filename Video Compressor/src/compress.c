@@ -7,10 +7,12 @@ G_DEFINE_QUARK (vc-error-quark, vc_error)
 
 /* The only place to tune quality against size. Lower CRF on small frames because each
  * pixel covers more of the screen, so artifacts show more. */
+/* gpu_qp: the hevc_vaapi QP whose VMAF matches x265 medium at the class CRF. Measured for 720p and
+ * 1080p on real clips (tasks/plan-performance.md, R8); the other classes keep the same offset. */
 static const VcClass VC_CLASSES[] = {
-    { "240p",  300, 24, 27,  64 }, { "360p",   400, 24, 27,  96 },
-    { "480p",  576, 25, 28,  96 }, { "720p",   800, 26, 29, 128 },
-    { "1080p",1200, 27, 30, 128 }, { "4K", G_MAXINT, 28, 31, 160 },
+    { "240p",  300, 24, 26,  64 }, { "360p",   400, 24, 26,  96 },
+    { "480p",  576, 25, 27,  96 }, { "720p",   800, 26, 28, 128 },
+    { "1080p",1200, 27, 28, 128 }, { "4K", G_MAXINT, 28, 29, 160 },
 };
 
 const char *const VC_PRESETS[] = {
@@ -28,7 +30,7 @@ G_STATIC_ASSERT (G_N_ELEMENTS (EST_VIDEO_KBPS) == G_N_ELEMENTS (VC_CLASSES));
  * (tasks/plan.md, "Preset factors"). At a fixed CRF a slower preset keeps more detail; it does
  * not reliably make the file smaller. */
 static const struct { const char *name; double time, size; } PRESET_FACTORS[] = {
-    { VC_PRESET_GPU, 0.1, 1.5 },
+    { VC_PRESET_GPU, 0.08, 1.15 },   /* R8 medians over 6 clips (0.06-0.14x time, 1.06-1.41x size) */
     { "faster", 0.69, 0.99 }, { "fast", 0.85, 1.06 }, { "medium", 1.0, 1.0 },
     { "slow", 2.1, 1.08 },    { "slower", 8.2, 1.06 },
 };
@@ -78,7 +80,8 @@ vc_build_ffprobe_argv (const char *input)
         "ffprobe", "-v", "error",
         "-show_entries",
         "stream=index,codec_type,codec_name,width,height,pix_fmt,"
-        "color_primaries,color_transfer,color_space,avg_frame_rate,bit_rate:format=duration",
+        "color_primaries,color_transfer,color_space,avg_frame_rate,bit_rate"
+        ":stream_side_data=rotation:format=duration",
         "-of", "default=nw=1",
         "-i", input, NULL,
     };
@@ -87,7 +90,7 @@ vc_build_ffprobe_argv (const char *input)
 
 typedef struct {
     char *type, *codec, *pix_fmt, *primaries, *transfer, *space;
-    const char *width, *height, *fps, *bit_rate;   /* point into the parsed text */
+    const char *width, *height, *fps, *bit_rate, *rotation;   /* point into the parsed text */
 } Stream;
 
 static void
@@ -141,6 +144,12 @@ commit_stream (VcProbe *p, Stream *s, gboolean *have_video, GError **error)
         p->color_transfer = g_steal_pointer (&s->transfer);
         p->color_space = g_steal_pointer (&s->space);
         p->fps = parse_rate (s->fps);
+        gint64 bps;
+        if (s->bit_rate != NULL && g_ascii_string_to_signed (s->bit_rate, 10, 1, G_MAXINT32, &bps, NULL))
+            p->video_kbps = (int) (bps / 1000);
+        gint64 rot;
+        if (s->rotation != NULL && g_ascii_string_to_signed (s->rotation, 10, -360, 360, &rot, NULL))
+            p->rotation = (int) rot;
     } else if (g_strcmp0 (s->type, "audio") == 0) {
         gint64 bps;
         /* -1 marks a stream that can't be copied; vc_parse_probe turns it into 0 */
@@ -204,6 +213,8 @@ vc_parse_probe (const char *text, GError **error)
                 s.fps = val;
             } else if (strcmp (key, "bit_rate") == 0) {
                 s.bit_rate = val;
+            } else if (strcmp (key, "rotation") == 0) {
+                s.rotation = val;
             }
         }
     }
@@ -283,6 +294,13 @@ vc_output_class (const VcProbe *probe, const VcOptions *opt)
     return vc_class_for (side, side);
 }
 
+/* AAC already at about the target bitrate: copying saves a second lossy pass. */
+static gboolean
+copies_audio (const VcProbe *probe, const VcClass *cls)
+{
+    return probe->aac_kbps > 0 && probe->aac_kbps * 10 <= cls->audio_kbps * 11;
+}
+
 /* shortcut: the first render node; pick the device another way only on a multi-GPU machine. */
 #define GPU_DEVICE "/dev/dri/renderD128"
 
@@ -303,10 +321,18 @@ vc_build_ffmpeg_argv (const char *input, const char *output, const VcProbe *prob
         "-progress", "pipe:1", "-y", NULL,
     };
     g_strv_builder_addv (b, head);
-    if (gpu)
+    /* ffmpeg's autorotate does nothing for GPU frames and the rotation tag is lost, so a phone's
+     * portrait video would play sideways: rotate on the GPU instead (transpose_vaapi below).
+     * noautorotate keeps a CPU-decoded fallback from being rotated twice. */
+    int rot = ((probe->rotation % 360) + 360) % 360;
+    const char *transpose = rot == 90 ? "cclock" : rot == 270 ? "clock" : rot == 180 ? "reversal" : NULL;
+    if (gpu) {
         /* Decode on the GPU too; a codec it can't decode falls back to the CPU on its own. */
         g_strv_builder_add_many (b, "-vaapi_device", GPU_DEVICE, "-hwaccel", "vaapi",
                                  "-hwaccel_output_format", "vaapi", NULL);
+        if (transpose != NULL)
+            g_strv_builder_add (b, "-noautorotate");
+    }
     g_strv_builder_add_many (b, "-i", input, "-map", "0:v:0", "-map", "0:a?", NULL);
     if (opt->keep_subs)
         g_strv_builder_add_many (b, "-map", "0:s?", NULL);
@@ -318,6 +344,8 @@ vc_build_ffmpeg_argv (const char *input, const char *output, const VcProbe *prob
     if (gpu)
         /* format=…|vaapi takes GPU-decoded frames as they are and uploads CPU-decoded ones. */
         g_string_append (vf, ten ? "format=p010|vaapi,hwupload" : "format=nv12|vaapi,hwupload");
+    if (gpu && transpose != NULL)
+        g_string_append_printf (vf, ",transpose_vaapi=dir=%s", transpose);
     if (side < MIN (probe->width, probe->height))
         g_string_append_printf (vf, "%s%s=w='if(gt(iw,ih),-2,%d)':h='if(gt(iw,ih),%d,-2)'",
                                 vf->len > 0 ? "," : "", gpu ? "scale_vaapi" : "scale", side, side);
@@ -357,8 +385,7 @@ vc_build_ffmpeg_argv (const char *input, const char *output, const VcProbe *prob
             g_strv_builder_add_many (b, "-colorspace", probe->color_space, NULL);
     }
 
-    /* AAC already at about the target bitrate: copying saves a second lossy pass. */
-    if (probe->aac_kbps > 0 && probe->aac_kbps * 10 <= cls->audio_kbps * 11) {
+    if (copies_audio (probe, cls)) {
         g_strv_builder_add_many (b, "-c:a", "copy", NULL);
     } else {
         g_snprintf (num[2], sizeof num[2], "%dk", cls->audio_kbps);
@@ -457,11 +484,14 @@ vc_estimate_size (const VcProbe *probe, guint64 src_bytes, const VcOptions *opt)
     for (gsize i = 0; i < G_N_ELEMENTS (SOURCE_CAP); i++)
         if (g_strcmp0 (probe->codec, SOURCE_CAP[i].codec) == 0)
             cap = SOURCE_CAP[i].cap;
-    /* A lean source caps the guess. shortcut: ignores the frame-rate cap (fewer frames, smaller
-     * file), so the estimate is pessimistic there; refine if it hides real savings. */
-    double src_kbps = src_bytes * 8.0 / 1000.0 / probe->duration;
+    /* A lean source caps the guess: its own video bitrate, or the whole file's when the container
+     * doesn't report one (that counts the audio too, so it errs high). shortcut: ignores the
+     * frame-rate cap (fewer frames, smaller file), so the estimate is pessimistic there. */
+    double src_kbps = probe->video_kbps > 0 ? probe->video_kbps
+                                            : src_bytes * 8.0 / 1000.0 / probe->duration;
     double video_kbps = size * MIN (EST_VIDEO_KBPS[cls - VC_CLASSES], src_kbps * cap);
-    double bytes = (video_kbps + cls->audio_kbps) * 1000.0 / 8.0 * probe->duration;
+    double audio_kbps = copies_audio (probe, cls) ? probe->aac_kbps : cls->audio_kbps;
+    double bytes = (video_kbps + audio_kbps) * 1000.0 / 8.0 * probe->duration;
     return MIN ((guint64) bytes, src_bytes);
 }
 

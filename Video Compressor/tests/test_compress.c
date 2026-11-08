@@ -439,7 +439,7 @@ test_ffmpeg_argv_gpu (void)
         "-vaapi_device", "/dev/dri/renderD128", "-hwaccel", "vaapi", "-hwaccel_output_format", "vaapi",
         "-i", "/v/a.mp4", "-map", "0:v:0", "-map", "0:a?", "-map_metadata", "0",
         "-vf", "format=nv12|vaapi,hwupload",
-        "-c:v", "hevc_vaapi", "-low_power", "1", "-rc_mode", "CQP", "-qp", "27",
+        "-c:v", "hevc_vaapi", "-low_power", "1", "-rc_mode", "CQP", "-qp", "26",
         "-c:a", "aac", "-b:a", "96k",
         "-sn", "-tag:v", "hvc1", "-movflags", "+faststart+use_metadata_tags",
         "/v/o.mp4", NULL,
@@ -454,9 +454,31 @@ test_ffmpeg_argv_gpu (void)
                      "scale_vaapi=w='if(gt(iw,ih),-2,480)':h='if(gt(iw,ih),480,-2)'");
     g_assert_cmpstr (argv_value (b, "-profile:v"), ==, "main10");
     g_assert_cmpstr (argv_value (b, "-color_trc"), ==, "arib-std-b67");
-    g_assert_cmpstr (argv_value (b, "-qp"), ==, "28");   /* 480p class */
+    g_assert_cmpstr (argv_value (b, "-qp"), ==, "27");   /* 480p class */
     g_assert_cmpint (argv_find (b, "-pix_fmt"), ==, -1);
     g_assert_cmpint (argv_find (b, "-x265-params"), ==, -1);
+
+    /* phone portrait (rotation tag): rotated on the GPU, autorotate off; the CPU path is unchanged */
+    struct { const char *rot; const char *dir; } rots[] = {
+        { "-90", "clock" }, { "90", "cclock" }, { "180", "reversal" }, { "-180", "reversal" },
+        { "270", "clock" }, { "0", NULL },
+    };
+    for (gsize i = 0; i < G_N_ELEMENTS (rots); i++) {
+        g_autofree char *text = g_strdup_printf ("index=0\ncodec_name=hevc\ncodec_type=video\n"
+                                                 "width=1920\nheight=1080\nrotation=%s\n", rots[i].rot);
+        g_autoptr (VcProbe) r = vc_parse_probe (text, NULL);
+        g_auto (GStrv) ga = vc_build_ffmpeg_argv ("/a.mov", "/o.mp4", r,
+                                                  &(VcOptions) { .preset = VC_PRESET_GPU, .max_short_side = 720 });
+        g_auto (GStrv) ca = vc_build_ffmpeg_argv ("/a.mov", "/o.mp4", r, &(VcOptions) { .preset = "fast" });
+        g_autofree char *vf = rots[i].dir == NULL ? g_strdup ("format=nv12|vaapi,hwupload,scale_vaapi=w='if(gt(iw,ih),-2,720)':h='if(gt(iw,ih),720,-2)'")
+            : g_strdup_printf ("format=nv12|vaapi,hwupload,transpose_vaapi=dir=%s,"
+                               "scale_vaapi=w='if(gt(iw,ih),-2,720)':h='if(gt(iw,ih),720,-2)'", rots[i].dir);
+        g_assert_cmpstr (argv_value (ga, "-vf"), ==, vf);
+        g_assert_cmpint (argv_find (ga, "-noautorotate") >= 0, ==, rots[i].dir != NULL);
+        g_assert_cmpint (argv_find (ga, "-noautorotate"), <, argv_find (ga, "-i") + (rots[i].dir == NULL ? 1 : 0));
+        g_assert_cmpint (argv_find (ca, "-noautorotate"), ==, -1);
+        g_assert_cmpint (argv_find (ca, "-vf"), ==, -1);
+    }
 
     g_auto (GStrv) t = vc_build_gpu_test_argv ();
     g_assert_cmpstr (argv_value (t, "-c:v"), ==, "hevc_vaapi");
@@ -474,6 +496,19 @@ test_estimate_codec_aware (void)
     g_assert_true (vc_worth_encoding (h264, src, &med));
     /* 2.5 Mbps HEVC: the cap is its own bitrate, plus audio, so no 5% saving */
     g_assert_false (vc_worth_encoding (hevc, 18750000, &med));
+    /* a lean lecture recording: 128k video + 192k AAC in 60 s (2.5 MB). Capping by the whole file's
+     * bitrate counted the audio twice and predicted no saving; the real GPU result was −38%. */
+    g_autoptr (VcProbe) lec = probe_sized (1280, 720, "h264");
+    lec->video_kbps = 128;
+    lec->aac_kbps = 192;
+    VcOptions gpu = { .preset = VC_PRESET_GPU };
+    g_assert_true (vc_worth_encoding (lec, 2499199, &gpu));
+    g_assert_cmpuint (vc_estimate_size (lec, 2499199, &gpu), ==,
+                      (guint64) ((1.15 * 128 * 0.6 + 128) * 1000.0 / 8.0 * 60));
+    /* the video stream's bit_rate is parsed */
+    g_autoptr (VcProbe) vb = vc_parse_probe ("index=0\ncodec_name=h264\ncodec_type=video\nwidth=640\n"
+                                             "height=360\nbit_rate=128611\n", NULL);
+    g_assert_cmpint (vb->video_kbps, ==, 128);
     /* unknown duration always encodes */
     hevc->duration = 0;
     g_assert_true (vc_worth_encoding (hevc, 18750000, &med));

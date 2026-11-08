@@ -49,12 +49,55 @@ the same SSIM, and about 1.5× the size. `hevc_qsv` in its default mode is *slow
 H.265 at full resolution and full frame rate. Nearly all of the time is spent inside ffmpeg. The app's own code
 costs almost nothing.
 
+## Results (2026-11-08/09, real clips)
+Corpus in `build/perf/src/`: symlinks to `~/Downloads` plus one cut, replayed with the app's argv by
+`build/perf/perf.sh` (not committed). Chrome was using 1–2 cores during some runs, so times are ±5%.
+`fixture-720p` is synthetic `testsrc` and compresses unrealistically well; ignore its sizes.
+
+**R0 baseline, x265 `slow`** · **R3 `medium`** · **R8 GPU `hevc_vaapi` QP 28** (time s · size MB · VMAF · SSIM):
+
+| Clip | Source | `slow` (R0) | `medium` | GPU QP 28 |
+|---|---|---|---|---|
+| fixture-720p (60 s) | 60.9 MB | 35.1 · 1.64 · 97.6 · .9992 | 21.9 · 1.50 · 97.5 · .9990 | 3.1 · 1.88 · 97.2 · .9985 |
+| h264-1080-17m (Kne, 21 s) | 47.3 MB | 91.3 · 12.0 · 94.5 · .9845 | 35.6 · 11.2 · 92.1 · .9820 | 2.3 · 15.8 · 93.3 · .9837 |
+| h264-720-9m (finalFinal, 33 s) | 37.2 MB | 77.2 · 10.6 · 96.4 · .9817 | 29.1 · 9.4 · 93.7 · .9779 | 1.9 · 10.0 · 94.4 · .9746 |
+| hevc-portrait (Transport…, 33 s) | 30.1 MB | 107.2 · 7.6 · 95.1 · .9916 | 46.4 · 7.0 · 93.5 · .9899 | 3.3 · 7.4 · 93.9 · .9888 |
+| iphone-hlg (IMG_1211, 26 s) | 30.5 MB | 89.3 · 4.6 · 94.8 · .9880 | 37.8 · 3.8 · 92.8 · .9863 | 2.9 · 4.1 · 92.6 · .9816 |
+| screen-1080p60 (60 s cut) | 3.5 MB | 167.6 · 2.2 · 96.0 · .9970 | 87.6 · 2.2 · 95.7 · .9969 | 11.0 · 2.5 · 95.3 · .9961 |
+| **Corpus wall time** | | **567.7 s** | 258.4 s (46%) | **24.5 s (4.3%)** |
+
+- CPU: x265 870–1290% (all cores), GPU 33–58%. Peak RSS: `slow` 561–1316 MB, `medium` 537–1242 MB, GPU 126–204 MB.
+- **R3 fails its gate → default stays `slow`.** `medium` is 1.6–2.7 VMAF below `slow` on 4 of 6 clips (limit 1.0);
+  SSIM is within 0.004 everywhere. Part of the drop is that `medium` files are 7–18% smaller at the same CRF.
+- **R8 go.** QP 28 matches `medium`'s VMAF for 720p and 1080p (4 of 5 real clips equal or better, the 5th 0.3 lower),
+  at 1.06–1.41× `medium`'s size (median ≈ 1.1) and 6–14% of its time. HLG comes out `Main 10`, `hvc1`, with all three
+  colour tags. VP8 (not GPU-decodable) falls back to CPU decode and works. The full sweep (QP 26–32) is in
+  `build/perf/r8-gpu.csv`; QP 26 ≈ `slow`'s VMAF at 1.2–1.8× its size.
+- **R2:** idle-desktop encode (720p clip, `medium`, two runs each): 33.1 s normal, 33.3 s at nice 10 + idle I/O (+0.5%).
+- **R14:** 60 fps clip with the cap: x265 56.4 → 30.7 s (54%), GPU 11.3 → 6.7 s; 30 fps out, duration 60.00 → 60.07 s.
+- **R15:** 4K → 1080p on x265 `faster`: 31.8 → 10.3 s (32%; 4K decode keeps it above a quarter).
+- **R10:** 300-file folder, old one-at-a-time build (`a78e643`) 39.2 s; 4 at once 18.8 s (48%); 8 at once 15.3 s (39%).
+  The ≤ 30% target is not met: each ffprobe costs about 90 ms of CPU, mostly loading its libraries, and turning row
+  updates off did not help. Kept at 4.
+- **R5 estimate vs actual** (after the fixes below): `slow` h264-1080 −27%, h264-720 −28%, hevc-portrait +81%,
+  iphone-hlg +127%, screen +17%; GPU lecture clip +5%. Lean files are now close, but **no per-class constant can be
+  within 25%**: real 1080p output ranges from 1.3 to 4.5 Mbps depending on content. Per this task's own rule, the next
+  step is a sample encode (on the GPU, about 1 s per file). That is a new behaviour, so it waits for your go-ahead.
+
+**Bugs found by these measurements, all fixed:**
+- GPU outputs of phone portrait clips (stored landscape + rotation tag) came out sideways: ffmpeg neither rotates GPU
+  frames nor keeps the tag. Fixed with `-noautorotate` + `transpose_vaapi` from the probed rotation.
+- ffmpeg 8 drops the source's `creation_time` unless metadata is mapped: every output now gets `-map_metadata 0`.
+- The estimate's lean-source cap used the whole file's bitrate and then added audio again, so lean recordings with
+  rich audio showed "no saving" (a lecture clip: predicted 0%, real −38%). It now uses the video stream's own bitrate.
+- The GPU size factor guessed from one synthetic clip (1.5×) made most GPU estimates "no saving"; measured 1.15×.
+
 ## Decisions (SPEC "Ask first"), all answered yes on 2026-11-08
 | # | Decision | Task | Why it needs you | Answer |
 |---|---|---|---|---|
-| D1 | Default Speed `slow` → `medium` | R3 | SPEC Criterion 11 and plan.md say the default is `slow` | Yes (still gated on R3's SSIM/VMAF check) |
+| D1 | Default Speed `slow` → `medium` | R3 | SPEC Criterion 11 and plan.md say the default is `slow` | Yes, gated on R3, which **failed: stays `slow`** (see Results) |
 | D2 | Start skips files predicted "no saving" unless selected | R6 | Changes what Start does | Yes |
-| D3 | Add an Intel GPU encoder option (VA-API, see R8) | R9 | Same codec (HEVC), different encoder; treat as "changing the codec" | Yes (still gated on R8 go/no-go) |
+| D3 | Add an Intel GPU encoder option (VA-API, see R8) | R9 | Same codec (HEVC), different encoder; treat as "changing the codec" | Yes, gated on R8, which **passed** |
 | D4 | Keep GPS location and creation date in outputs | R12 | Today location is dropped. Keeping it matters if you share compressed copies | Yes: date and location |
 | D5 | Optional "Max frame rate: 30" (60 fps clips do half the work) | R14 | New option; SPEC has no frame-rate rule | Yes (opt-in, off by default) |
 | D6 | Optional "Max size: 1080p" (4K does a quarter of the work) | R15 | SPEC resolved "no downscale option"; this reverses it, as an opt-in | Yes (opt-in, default `Original`) |

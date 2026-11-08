@@ -2343,7 +2343,7 @@ activate (GtkApplication *gapp, gpointer user_data)
 
     app.win = GTK_WINDOW (gtk_application_window_new (gapp));
     gtk_window_set_title (app.win, "Video Compressor");
-    gtk_window_set_default_size (app.win, 1160, 720);
+    gtk_window_set_default_size (app.win, 1260, 720);
     g_signal_connect (app.win, "close-request", G_CALLBACK (on_close), NULL);
 
     app.title = styled_label ("Video Compressor", "heading", 0.5);
