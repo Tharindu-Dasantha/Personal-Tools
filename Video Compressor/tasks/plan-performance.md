@@ -30,6 +30,25 @@ Targets, measured on the corpus in R0 against today's build:
 Plus the existing preset table in [plan.md](plan.md#preset-factors-2026-11-08): `slow` is 2.1× the time of `medium` and
 1.08× the size. `libvmaf` and `ssim` filters are available in the installed ffmpeg.
 
+**Second run, closer to phone footage** (10 s 1080p60, light grain, 16 Mbps H.264, 600 frames):
+
+| Pipeline | fps | Size | SSIM |
+|---|---|---|---|
+| x265 `medium` CRF 27 (the app today) | 20–28 | 6.9 MB | 0.9870 |
+| x264 `fast` RF 22 (HandBrake-like) | 47 | 13.9 MB | — |
+| `hevc_qsv`, default mode (CPU or GPU decode) | 9–19 | 18.5 MB | — |
+| **`hevc_vaapi -low_power 1`, GPU decode, QP 30** | **261** | 10.4 MB | **0.9873** |
+| `hevc_vaapi -low_power 1`, GPU decode, QP 32 | 265 | 7.0 MB | 0.9846 |
+
+The GPU's dedicated encoder block (`low_power`/VDENC), with decoding also on the GPU, is about 10× faster than x265 at
+the same SSIM, and about 1.5× the size. `hevc_qsv` in its default mode is *slower* than x265, and `-low_power` with
+`global_quality` is rejected, so R8/R9 use VA-API.
+
+**Why HandBrake takes minutes:** its logs (`~/.var/app/fr.handbrake.ghb/config/ghb/EncodeLogs`) show **H.264 (x264)
+`veryfast`/`fast`**, output **downscaled to 720p/1080p** and **capped at 24–30 fps**, at 60–450 fps. The app does
+H.265 at full resolution and full frame rate. Nearly all of the time is spent inside ffmpeg. The app's own code
+costs almost nothing.
+
 ## Decisions needed from you (SPEC "Ask first")
 | # | Decision | Task | Why it needs you |
 |---|---|---|---|
@@ -37,6 +56,8 @@ Plus the existing preset table in [plan.md](plan.md#preset-factors-2026-11-08): 
 | D2 | Start skips files predicted "no saving" unless selected | R6 | Changes what Start does |
 | D3 | Add an Intel GPU (`hevc_qsv`) encoder option | R9 | Same codec (HEVC), different encoder; treat as "changing the codec" |
 | D4 | Keep GPS location and creation date in outputs | R12 | Today location is dropped. Keeping it matters if you share compressed copies |
+| D5 | Optional "Max frame rate: 30" (60 fps clips do half the work) | R14 | New option; SPEC has no frame-rate rule |
+| D6 | Optional "Max size: 1080p" (4K does a quarter of the work) | R15 | SPEC resolved "no downscale option"; this reverses it, as an opt-in |
 
 Not planned, on purpose: parallel encodes (x265 already uses all 16 threads; 7 GB RAM is tight for two 4K encodes),
 AV1 (many iPhones can't play it smoothly), GPU decode (`-hwaccel`; decoding is not the bottleneck while x265 runs),
@@ -47,13 +68,15 @@ AV1 (many iPhones can't play it smoothly), GPU decode (`-hwaccel`; decoding is n
 R0 baseline
  ├── Phase A: quick wins       R1 10-bit fix · R2 low priority · R3 default medium · R4 async tool check
  ├── Phase B: skip waste       R5 codec-aware estimate → R6 skip "no saving" · R7 copy AAC audio
- ├── Phase C: GPU encoder      R8 measure QSV quality → R9 GPU speed option
+ ├── Phase C: GPU encoder      R8 measure GPU on real clips → R9 GPU speed option · R14 30 fps cap · R15 1080p cap
  ├── Phase D: big folders      R10 parallel probing · R11 thread cap (only if R0/R2 show heat or lag)
  └── Phase E: output fixes     R12 keep date/location · R13 HDR10 headers
 ```
 - Do Phases A, B and E **before T16** (app shell). They are mostly `compress.c` (pure, tested) plus small `main.c` edits.
 - T17 rewrites the job runner in `main.c`. R2's launcher and R12's mtime copy must move into that runner, not be lost.
-- Phase C can wait until after T20. `web-video` can then reuse the same QSV path with `h264_qsv`.
+- **If speed is the goal, do Phase C first.** It is the only change that turns hours into minutes: about 10× from the
+  GPU, then 2× from the 30 fps cap and 4× from the 1080p cap, for the files where those apply.
+  `web-video` can later reuse the same path with `h264_vaapi`.
 - Every `main.c` task runs one after another (same file). `compress.c` tasks can go in any order.
 
 Shared commands: see [todo.md](todo.md) (build, test, fixtures, run).
@@ -184,33 +207,64 @@ lossy pass. `VcProbe` gains `gboolean audio_copyable`. The parser already sees e
 
 ## Phase C: Intel GPU encoder (needs D3)
 
-### R8: Measure `hevc_qsv` quality before building anything
+### R8: Measure the GPU encoder on real clips before building anything
 **Description:** On the R0 corpus, encode with
-`-c:v hevc_qsv -preset slow -global_quality N` for N in 22–30. For each class, pick the N whose VMAF matches x265
-`medium` at that class's CRF, and record size and time. If no N gets within 2 VMAF at ≤ 1.4× the x265 size, stop and
-record "not worth it" here.
+`-hwaccel vaapi -hwaccel_output_format vaapi -i IN -vf "format=nv12|vaapi,hwupload" -c:v hevc_vaapi -low_power 1 -rc_mode CQP -qp N`
+for N in 26–34. The `format=…,hwupload` filter keeps it working when a codec can't be decoded on the GPU (ffmpeg then
+decodes on the CPU and uploads). For each class, pick the QP whose VMAF matches x265 `medium` at that class's CRF, and
+record size and fps. Also check that a 10-bit HLG clip comes out `main10` with its colour tags. If `low_power` main10
+fails, record it here: 10-bit sources then stay on x265. Synthetic result so far: QP 30 matches x265 SSIM at 10× the speed.
 
 **Acceptance criteria:**
-- [ ] Table per class: chosen N, VMAF, size vs x265, time vs x265
+- [ ] Table per class: chosen QP, VMAF, size vs x265, fps vs x265
+- [ ] 10-bit / HLG result and decode fallback (e.g. an MPEG-4 `.avi`) recorded
 - [ ] Go / no-go written here
 
 **Verification:** `libvmaf` runs as in R3
 **Dependencies:** R0, D3 · **Files:** this file · **Scope:** S
 
-### R9: "Intel GPU (fast)" Speed option
-**Description:** A new last entry in the Speed dropdown. `vc_build_ffmpeg_argv` gets an encoder branch:
-`-c:v hevc_qsv -preset slow -global_quality <N from R8>`, `-pix_fmt nv12` (8-bit) or `p010le` + `-profile:v main10`
-(10-bit), colour tags, `-tag:v hvc1` and `+faststart` as today. The startup check (R4) does a 1-frame test encode
-(`-f lavfi -i color -frames:v 1 -c:v hevc_qsv -f null -`). The encoder list shows QSV even without working hardware,
-so the list alone isn't enough. The option is hidden when the test fails. Add its time/size factors to the speed guide and estimate.
+### R9: "GPU – fastest" Speed option
+**Description:** A new first entry in the Speed dropdown. `VcClass` gains a `gpu_qp` column (from R8), and
+`vc_build_ffmpeg_argv` gets an encoder branch with the R8 argv. It keeps colour tags (`-color_*` flags), `-tag:v hvc1`
+and `+faststart` as today, and adds `-profile:v main10` for 10-bit if R8 passed. The startup check (R4) does a 1-frame
+test encode (`-f lavfi -i color=s=256x256 -frames:v 1 -vf format=nv12,hwupload -c:v hevc_vaapi -low_power 1 -f null -`
+with `-init_hw_device vaapi`). The encoder list shows hardware encoders even when they don't work, so the list alone isn't
+enough. The option is hidden when the test fails. Add its time/size factors to the speed guide and estimate.
+`shortcut:` uses the first render node `/dev/dri/renderD128`. Pick the device another way only on a multi-GPU machine.
 
 **Acceptance criteria:**
-- [ ] 8-bit and 10-bit HLG fixtures encode, play in mpv, and keep `hvc1` and their colour tags
+- [ ] 8-bit, portrait and 10-bit HLG fixtures encode, play in mpv and QuickTime/iOS, and keep `hvc1` and colour tags
 - [ ] Option absent when `/dev/dri/renderD128` is unavailable (test by running inside `bwrap` without `/dev/dri`)
 - [ ] Corpus wall time ≤ 15% of R0; ffmpeg CPU % far below x265
+- [ ] Pause (SIGSTOP), Stop and close-mid-encode still work (no stuck GPU state after SIGKILL)
 
 **Verification:** argv unit tests; manual fixture run; `ffprobe` of outputs
 **Dependencies:** R4, R8 · **Files:** `src/compress.c/.h`, `src/main.c`, tests · **Scope:** M
+
+### R14: "Max frame rate: 30" option (needs D5)
+**Description:** Checkbox, off by default. When on and the source is above 30 fps, add `-fpsmax 30` (works for both
+CPU and GPU paths). Phone clips are often 60 fps, so this halves the frames to encode. Needs `VcProbe.fps`, which T21
+also adds from `avg_frame_rate`: do it once and share it. Verification compares durations, so it still passes.
+
+**Acceptance criteria:**
+- [ ] 60 fps source → 30 fps output with the same duration (±1 s); 24/30 fps sources unchanged
+- [ ] Encode time for a 60 fps clip ≈ half
+
+**Verification:** argv unit tests; `ffprobe -show_entries stream=avg_frame_rate` on output
+**Dependencies:** D5 · **Files:** `src/compress.c/.h`, `src/main.c`, tests · **Scope:** S
+
+### R15: "Max size: 1080p" option (needs D6)
+**Description:** Dropdown `Original / 1080p / 720p`, default `Original`. Downscale only, never upscale (SPEC "Never").
+Scale by the short side so portrait works: CPU path `scale` with `-2` for the long side, GPU path `scale_vaapi`
+(`w=-2:h=1080` or the reverse for portrait). The class (CRF/QP/audio) is chosen from the **output** size. Reuse the
+"Max width" idea from [SPEC-web-video.md](../SPEC-web-video.md) so both modes behave the same.
+
+**Acceptance criteria:**
+- [ ] 4K → 1080p, portrait 2160×3840 → 1080×1920, 720p source unchanged
+- [ ] Encode time for a 4K clip ≈ a quarter
+
+**Verification:** argv unit tests (including odd sizes → even dimensions); `ffprobe` on outputs
+**Dependencies:** D6 · **Files:** `src/compress.c/.h`, `src/main.c`, tests, `SPEC.md` · **Scope:** M
 
 ---
 
@@ -274,6 +328,7 @@ with `:`), so players switch to HDR. HLG (iPhone) is unchanged.
 |---|---|---|
 | `medium` loses detail on grainy phone footage | Med | R3 is gated on SSIM/VMAF from real clips; keep `slow` if it fails |
 | A wrong estimate skips a file that would have shrunk | Med | R5 calibrates on real clips first; R6 never skips selected rows or unknown durations |
-| QSV quality varies with driver versions | Med | R8 measures before R9; the startup test encode hides the option if the GPU is unavailable |
+| GPU quality or support varies with driver versions | Med | R8 measures before R9; the startup test encode hides the option if the GPU is unavailable |
+| GPU files are ~1.5× the size of x265 at the same quality | Low | Still far smaller than phone originals; x265 stays in the dropdown for maximum savings |
 | T17 rewrites the runner and drops R2/R12 | Med | Listed under "Order"; add R2/R12 behaviour to T17's acceptance criteria |
 | Keeping GPS in shared copies | Low | D4 is your explicit choice |
