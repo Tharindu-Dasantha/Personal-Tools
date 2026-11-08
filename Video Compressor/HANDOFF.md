@@ -13,6 +13,7 @@ and [tasks/todo.md](tasks/todo.md). Checkboxes in `todo.md` are ticked only for 
 | 4. Delete originals | T9, T10 | **Done, all checks verified** (GUI on Xvfb, 2026-11-08). Committed `e0a1656` |
 | 5. Harden | T11 | **Done except Criterion 4 and 12's iPhone half (the user's eyes).** ASan/UBSan clean. Close-mid-encode crash fixed. Uncommitted |
 | 6. Controls + estimates | T12–T15 | **Done, verified on Xvfb with ASan.** Icon buttons, pause, per-item/multi-select actions, size estimate, speed guide. Uncommitted; awaiting review |
+| 6b. v2 UI (Figma) | – | **Built 2026-11-08, screenshotted on Xvfb** (empty, ready, guide, selection, running, paused, finished, dark). Not yet re-run under ASan. Uncommitted; awaiting review |
 
 Pushed to `origin/main` (Phase 2 checks: `026de4e`).
 
@@ -66,9 +67,14 @@ cmake -S "Video Compressor" -B "Video Compressor/build/san" -DCMAKE_BUILD_TYPE=D
     `app.probe_cancel` is cancelled. A cancelled callback returns **before** touching `app.items`.
   - **Per-item state** (`State` enum): NEW → QUEUED → ACTIVE → DONE/TRASHED, plus HELD (paused while queued) and CHECKING
     (verify, then trash). `app.job` is the one encoding item; `app.paused` means it is SIGSTOPped. `encode_next()` starts
-    the first QUEUED item in list order, and does nothing while `app.job` is set (even when paused), so there is only ever one ffmpeg.
-    The action buttons use `targeted()` (selected rows, or all when none) plus `can_start/pause/stop/trash()`.
-    `update_controls()` greys each button by those rules. DONE with `out == NULL` means already efficient: finished, never re-encoded.
+    the QUEUED item with the highest `prio` ("Compress next"), else the first in list order, and does nothing while `app.job` is set
+    (even when paused), so there is only ever one ffmpeg.
+    Actions are `act_start/pause/stop(Item *one, gboolean sel)`: one row, the checked rows (`sel`), or all, filtered by
+    `can_start/pause/stop/trash()`. DONE with `out == NULL` means already efficient: finished, never re-encoded.
+  - **UI (v2 design, 2026-11-08):** `render_row(it)` draws a row purely from its state (+ `note`/`tip`/`extra`); call it after any
+    state change (`set_status()` does). `update_controls()` picks the page (empty/list), the bottom bar (ready/running/finished),
+    the selection bar and the summary. `update_progress()` drives the running bar and ETA. Styling is the `CSS[]` string,
+    using GTK Default theme colours so dark mode works. `in_batch` marks what the running bar and summary count.
   - Encoding: `encode_next()` → `start_job()`. Each job waits for three events (stdout EOF,
     stderr EOF, process exit), counted in `app.pending`. `finish_job()` runs only when all three
     are done, so the `.part` file is deleted only after ffmpeg has closed it.
@@ -81,8 +87,8 @@ cmake -S "Video Compressor" -B "Video Compressor/build/san" -DCMAKE_BUILD_TYPE=D
   - Trash: `check_then_trash(it)` (from `finish_job()` when the checkbox is on, or from the Trash button) →
     `verify_done()` re-stats the output and asks `vc_should_trash_original()` → `g_file_trash_async()` → `trash_done()`.
     The `Item *` is the callback's user_data. This runs alongside the next encode. Stop during the check keeps the original.
-  - `on_start()` shows the confirm dialog only when the checkbox is on and a targeted file has no output yet;
-    `do_start()` does the real start (and SIGCONTs a paused job).
+  - `act_start()` shows the confirm dialog only when the Trash switch is on and a targeted file has no output yet;
+    `do_start()` does the real start (and SIGCONTs a paused job). The bottom Start only resumes when paused.
 - `tests/make-fixtures.sh` writes these fixtures:
   - `240p.avi`, `480p.webm`, `720p.mp4` (60 s, 8 Mbps), `1080p.mkv`, `portrait.mov`
   - a name with quotes, `$` and unicode

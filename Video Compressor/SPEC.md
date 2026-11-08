@@ -55,34 +55,39 @@ Low resolutions get a lower CRF, which means higher quality, because each pixel 
 - Limit: Dolby Vision metadata is not carried over. Those files keep their HLG/HDR10 base layer, which is what plays on most devices anyway.
 - The list row shows a `10-bit HDR` or `10-bit` tag so you can see which files take this path.
 
-**Speed (x265 preset):** a dropdown with `faster`, `fast`, `medium`, `slow` (**default**) and `slower`. The choice applies to the whole batch. Measured on this laptop (2026-11-08, a noisy 16 Mbps 1080p clip and the 720p fixture), against `medium`: `faster` 0.69× the time, `fast` 0.85×, `slow` 2.1×, `slower` 8.2×. At the same CRF the sizes stayed within about 8% of `medium` (slower presets came out slightly *larger*, because they keep more detail), so the speed mostly buys quality, not a smaller file. The earlier claim ("`slow` is 5–10% smaller") did not hold on these clips. Each launch starts at `slow`.
+**Speed (x265 preset):** a segmented control with `faster`, `fast`, `medium`, `slow` (**default**) and `slower`. The choice applies to the whole batch. Measured on this laptop (2026-11-08, a noisy 16 Mbps 1080p clip and the 720p fixture), against `medium`: `faster` 0.69× the time, `fast` 0.85×, `slow` 2.1×, `slower` 8.2×. At the same CRF the sizes stayed within about 8% of `medium` (slower presets came out slightly *larger*, because they keep more detail), so the speed mostly buys quality, not a smaller file. The earlier claim ("`slow` is 5–10% smaller") did not hold on these clips. Each launch starts at `slow`.
 
 **Container / subtitles:**
 - *Keep subtitles off (default):* output is `.mp4` with `-sn -tag:v hvc1 -movflags +faststart`. `hvc1` lets the file play in QuickTime and on iOS.
 - *Keep subtitles on:* output is `.mkv` with `-map 0:s? -c:s copy`. MP4-style `mov_text` subtitles can't be copied into MKV, so if a file has them the app uses `-c:s srt` instead (text is preserved). Bitmap subtitles (PGS, DVD) are copied as they are. A file with no subtitles still produces `.mkv` while the option is on, so the output type doesn't change from file to file within a batch.
 
-**"Not smaller" rule:** if the encoded file is not at least 5% smaller than the original, the app deletes it and marks the row `Skipped – already efficient`. This happens with files that are already HEVC/AV1 or very low bitrate.
+**"Not smaller" rule:** if the encoded file is not at least 5% smaller than the original, the app deletes it and marks the row `Already efficient`. This happens with files that are already HEVC/AV1 or very low bitrate.
 
 **Delete originals (optional):** a checkbox that is off by default. When it is on, **Start** first asks for confirmation ("N originals will be moved to Trash after compressing"). An original is removed only when **all** of these are true:
 1. ffmpeg exited 0 and the `.part` file was renamed into place
 2. `ffprobe` on the output succeeds, and its duration is within 1 s of the source's
 3. the output passed the "not smaller" rule (if it didn't, the original is kept anyway)
 
-Removal uses `g_file_trash()`, which moves the file to the Trash so it can be recovered. If trashing fails (for example, on a filesystem with no Trash), the original is **kept** and the row shows `Compressed – original kept (trash failed)`. The app never permanently deletes a file. Rows say `Done – original trashed` so it is clear what happened.
+Removal uses `g_file_trash()`, which moves the file to the Trash so it can be recovered. If trashing fails (for example, on a filesystem with no Trash), the original is **kept** and the row says `Original kept (trash failed)`. The app never permanently deletes a file. Rows say `Original in Trash` so it is clear what happened.
 
-**Controls (added 2026-11-08):**
-- The header has icon buttons, each with a tooltip saying what it does: **Start** (▶), **Pause** (⏸), **Stop** (⏹) and **Move originals to Trash** (🗑). Icon-only buttons also get an accessible label.
-- The list allows multi-select (Ctrl+click, Shift+click; Esc clears). Each button acts on the **selected** videos, or on **all** videos when none are selected. A button is greyed out when none of those videos can take that action.
-- **Start** queues videos that are new, stopped, failed or held, and resumes a paused encode. Queued videos are encoded **one at a time**, in list order.
-- **Pause** on the running encode freezes ffmpeg (`SIGSTOP`) and nothing else starts until it is resumed (`SIGCONT`) or stopped, so there is still only one ffmpeg alive. Pause on a queued video holds it: it is skipped until Start is pressed for it.
-- **Stop** on the running encode kills ffmpeg and deletes the `.part` file (same as the old Cancel); the queue then continues with videos that weren't stopped. Stop on queued or held videos takes them off the queue. Stop during the output check keeps the original.
-- **Move originals to Trash** works on finished videos that have a kept output, including an output from an earlier run (`Skipped – compressed/… exists`). It asks for confirmation, then applies the same three checks as the checkbox above before calling `g_file_trash()`.
+**Controls (v2 layout, Figma "v2 – New features", 2026-11-08):**
+- **Empty state:** a drop zone ("Drop a folder of videos here") with **Choose Folder…**. Dropping a folder on the window loads it, unless something is running.
+- **Header:** the folder name, its path (`~/…`) under it, and **Choose Folder…** (hidden while running and once finished).
+- **List:** columns Name (codec · duration · size), Quality (class and `10-bit`/`10-bit HDR` chips) and Size → Estimated. Each row has a checkbox; Ctrl+click and Shift+click on a row also select.
+- **Bottom bar, ready:** Speed (segmented, with the ⓘ guide and a `≈ N% smaller · F× Medium time` caption), **Keep subtitles** and **Move originals to Trash** switches, the batch total (`221 MB → ≈ 43 MB`, `N videos ready · estimated for Slow`), and round **Start** / **Pause** / **Stop**. Every icon button has a tooltip (title, shortcut, one line of help) and an accessible label.
+- **Bottom bar, running:** `Compressing n of N · name`, an overall bar weighted by size, `About N min left` (from the current file's speed; `Press play to resume` while paused) and what was saved so far.
+- **Batch buttons act on all videos.** **Start** (Space) queues every new, stopped, failed or held video; while paused it becomes **Resume** and only resumes the paused encode. **Pause** (Space) freezes the running encode (`SIGSTOP`), so there is still only one ffmpeg alive; nothing else starts until it is resumed (`SIGCONT`) or stopped. **Stop** (Esc) kills ffmpeg, deletes the `.part`, and takes everything else off the queue. Esc clears the selection first if there is one.
+- **Per-video buttons** (on hover, always on the running or held row; the same actions on right-click): **Compress next** (moves it to the front of the queue, or compresses only it when idle; resumes it when paused), **Pause/Hold** (a held video is skipped until its play button is pressed), **Stop/Skip** (stop during the output check keeps the original), **Show in Files** and **Move original to Trash** (finished videos with a kept output; no dialog, a toast says it can be restored from the Trash).
+- **Selection bar:** when videos are checked, a floating bar runs Start / Pause / Stop / Move originals to Trash on just those. Its Trash asks for confirmation first. Start queues in list order.
+- **Finished:** a summary card (`You saved X`, videos compressed and how long it took, already efficient and unreadable counts, Before / After / Smaller), and **Choose Another Folder…** and **Show in Files** (opens `compressed/`).
+- Row status: dashed pill = estimate, green `✓ −N%` = real result, `On hold`, `● Waiting`, a progress bar with percent while encoding, `Already efficient`, `Unreadable`, `Failed` / `Stopped` (tooltip has the reason). The meta line adds `Original in Trash`, `Original kept` (tooltip says why) or `Already compressed`.
+- Trash still applies the same three checks above before calling `g_file_trash()`, including for outputs from an earlier run.
 - A video that came out `already efficient` is finished: it isn't encoded again in the same session.
-- Speed, Keep subtitles, the Trash checkbox and Choose Folder are locked while anything is queued, encoding or being checked.
+- Speed, Keep subtitles, the Trash switch and Choose Folder are locked while anything is queued, encoding or being checked.
 
-**Size estimate:** after probing, each row shows a rough expected output, e.g. `→ ≈ 11 MB (−82%)`, for the selected speed (it updates when the speed changes). It is `(class video bitrate × preset size factor + class audio bitrate) × duration`. The video bitrate is capped at 60% of the source's bitrate, and the result is never more than the source. If it predicts less than a 5% saving, the row says `≈ no saving`. The class bitrates are guesses until they are calibrated on real phone clips; the estimate never affects what is encoded.
+**Size estimate:** after probing, each row shows a rough expected output, e.g. `61 MB → ≈ 11 MB` with a dashed `−82%` pill, for the selected speed (it updates when the speed changes). It is `(class video bitrate × preset size factor + class audio bitrate) × duration`. The video bitrate is capped at 60% of the source's bitrate, and the result is never more than the source. If it predicts less than a 5% saving, the pill says `no saving`. The class bitrates are guesses until they are calibrated on real phone clips; the estimate never affects what is encoded.
 
-**Speed guide:** an ⓘ next to the Speed dropdown (and the dropdown itself) has a tooltip table that gives, for each preset, the encode time against `medium` and the estimated total size against the originals in the current folder, both in percent.
+**Speed guide:** the ⓘ next to Speed opens a card that gives, for each preset, the encode time against `medium` (with a bar) and the estimated total size against the originals in the current folder (with a bar). The current speed is highlighted. Each speed button's tooltip gives the same two numbers.
 
 **Size expectation, stated honestly:** how much a file shrinks depends on how wastefully it was encoded in the first place.
 - Typical phone or screen recordings in H.264 at 8–15 Mbps usually shrink by 70–85%, so 200 MB becomes roughly 30–60 MB.
@@ -206,7 +211,7 @@ vc_class_for (int width, int height)
 8. If ffmpeg is missing or lacks libx265, the app shows an error dialog and does not crash.
 9. With **Delete originals** on: each successfully compressed original appears in the Trash and can be restored. An original whose output failed verification, came out not smaller, or was cancelled is still in the folder, untouched. With the option off, nothing is ever removed.
 10. With **Keep subtitles** on, a fixture with an SRT track and a fixture with a `mov_text` track both produce `.mkv` files that show the subtitles in mpv/VLC. With it off, the output is `.mp4` with no subtitle stream.
-11. The Speed dropdown changes the `-preset` passed to ffmpeg. The default is `slow`.
+11. The Speed control changes the `-preset` passed to ffmpeg. The default is `slow`.
 12. A 10-bit HLG fixture is encoded as 10-bit HEVC (`ffprobe` shows `yuv420p10le`, `main10`, `arib-std-b67`/`bt2020`), and a real iPhone HDR clip doesn't look washed out compared with the original (judged by me). 8-bit sources stay 8-bit.
 13. `ctest` passes. A Debug build with ASan/UBSan shows no errors during a full fixture run.
 

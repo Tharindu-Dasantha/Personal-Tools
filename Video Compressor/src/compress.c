@@ -347,3 +347,29 @@ vc_estimate_size (const VcProbe *probe, guint64 src_bytes, const char *preset)
     double bytes = (video_kbps + cls->audio_kbps) * 1000.0 / 8.0 * probe->duration;
     return MIN ((guint64) bytes, src_bytes);
 }
+
+char *
+vc_codec_label (const char *codec)
+{
+    static const char *const names[][2] = {
+        { "h264", "H.264" }, { "hevc", "HEVC" }, { "mpeg4", "MPEG-4" }, { "mpeg2video", "MPEG-2" },
+        { "vp8", "VP8" }, { "vp9", "VP9" }, { "av1", "AV1" }, { "prores", "ProRes" },
+    };
+    for (gsize i = 0; i < G_N_ELEMENTS (names); i++)
+        if (g_strcmp0 (codec, names[i][0]) == 0)
+            return g_strdup (names[i][1]);
+    return codec != NULL ? g_ascii_strup (codec, -1) : g_strdup ("?");
+}
+
+char *
+vc_format_time_left (double seconds)
+{
+    if (seconds < 60)
+        return g_strdup ("Less than a minute left");
+    guint m = (guint) llround (seconds / 60);
+    if (m < 60)
+        return g_strdup_printf ("About %u min left", m);
+    if (m % 60 == 0)
+        return g_strdup_printf ("About %u h left", m / 60);
+    return g_strdup_printf ("About %u h %u min left", m / 60, m % 60);
+}

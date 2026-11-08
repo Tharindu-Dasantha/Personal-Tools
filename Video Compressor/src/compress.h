@@ -47,3 +47,7 @@ char *vc_format_duration (double seconds);
 void vc_preset_factors (const char *preset, double *time_vs_medium, double *size_vs_medium);
 /* Rough compressed size in bytes, never above src_bytes; 0 when the duration is unknown. */
 guint64 vc_estimate_size (const VcProbe *probe, guint64 src_bytes, const char *preset);
+/* "h264" → "H.264", "hevc" → "HEVC"; unknown names are upper-cased. */
+char *vc_codec_label (const char *codec);
+/* "Less than a minute left", "About 9 min left", "About 1 h left", "About 1 h 20 min left". */
+char *vc_format_time_left (double seconds);

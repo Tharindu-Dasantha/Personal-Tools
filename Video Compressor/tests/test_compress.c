@@ -387,6 +387,26 @@ test_estimate_size (void)
     g_assert_cmpuint (vc_estimate_size (&portrait, 60931727, "medium"), ==, 12960000);
 }
 
+static void
+test_labels (void)
+{
+    struct { const char *in, *out; } codecs[] = {
+        { "h264", "H.264" }, { "hevc", "HEVC" }, { "mpeg4", "MPEG-4" }, { "wmv3", "WMV3" }, { NULL, "?" },
+    };
+    for (gsize i = 0; i < G_N_ELEMENTS (codecs); i++) {
+        g_autofree char *t = vc_codec_label (codecs[i].in);
+        g_assert_cmpstr (t, ==, codecs[i].out);
+    }
+    struct { double s; const char *text; } left[] = {
+        { 0, "Less than a minute left" }, { 59, "Less than a minute left" },
+        { 540, "About 9 min left" }, { 3570, "About 1 h left" }, { 4800, "About 1 h 20 min left" },
+    };
+    for (gsize i = 0; i < G_N_ELEMENTS (left); i++) {
+        g_autofree char *t = vc_format_time_left (left[i].s);
+        g_assert_cmpstr (t, ==, left[i].text);
+    }
+}
+
 int
 main (int argc, char **argv)
 {
@@ -407,6 +427,7 @@ main (int argc, char **argv)
     g_test_add_func ("/rules/worth-keeping", test_worth_keeping);
     g_test_add_func ("/rules/should-trash", test_should_trash);
     g_test_add_func ("/format/duration", test_format_duration);
+    g_test_add_func ("/format/labels", test_labels);
     g_test_add_func ("/estimate/preset-factors", test_preset_factors);
     g_test_add_func ("/estimate/size", test_estimate_size);
     return g_test_run ();
