@@ -1,6 +1,6 @@
 # Todo: Video Compressor
 
-Plan: [plan.md](plan.md) · Spec: [../SPEC.md](../SPEC.md)
+Plan: [plan.md](plan.md) · Spec: [../SPEC.md](../SPEC.md) · Performance: [todo-performance.md](todo-performance.md)
 
 Shared commands (run from the repo root):
 - Build: `cmake -S "Video Compressor" -B "Video Compressor/build" -DCMAKE_BUILD_TYPE=Debug && cmake --build "Video Compressor/build" -j`
