@@ -7,6 +7,9 @@
 #include <signal.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/resource.h>
+#include <sys/syscall.h>
+#include <unistd.h>
 
 typedef enum {
     ST_NEW,        /* listed (and probed, unless unreadable); Start queues it */
@@ -43,12 +46,13 @@ typedef struct {
     GtkWidget *summary, *sum_title, *sum_sub, *sum_before, *sum_after, *sum_pct;
     GtkWidget *bottom, *bottom_stack, *controls, *start_btn, *pause_btn, *stop_btn;
     GtkWidget *speed_btns[8], *speed_caption, *guide_rows, *subs, *trash, *total, *total_sub;
+    GtkWidget *fps30, *max_size, *choose_empty;
     GtkWidget *run_title, *run_eta, *run_bar, *run_sub;
     GtkWidget *selbar, *sel_label, *sel_start, *sel_pause, *sel_stop, *sel_trash;
     GtkWidget *toast, *toast_label;
     GtkSizeGroup *col_quality, *col_status, *col_actions, *guide_cols[3];
     guint toast_id, preset, prio_seq;
-    gboolean syncing, tools_ok;
+    gboolean syncing, tools_ok, gpu_ok;
     Item *anchor;        /* last checkbox clicked, for Shift-click ranges */
     Item *ask_one;       /* scope of the action waiting on a confirm dialog */
     gboolean ask_sel;
@@ -57,7 +61,7 @@ typedef struct {
     char *folder;
     GPtrArray *items;
     GCancellable *probe_cancel;
-    guint probe_next;
+    guint probe_next, probes_done;   /* ffprobe started / finished, in list order */
     gboolean closing;    /* window destroyed: late async callbacks must not touch widgets */
 
     /* the one encode allowed at a time (SPEC); a paused one still counts */
@@ -112,9 +116,25 @@ current_preset (void)
     return VC_PRESETS[app.preset];
 }
 
+/* The encode settings chosen in the bottom bar. */
+static VcOptions
+current_options (void)
+{
+    static const int sizes[] = { 0, 1080, 720 };   /* the Max size dropdown, in order */
+    guint size = gtk_drop_down_get_selected (GTK_DROP_DOWN (app.max_size));
+    return (VcOptions) {
+        .preset = current_preset (),
+        .keep_subs = gtk_switch_get_active (GTK_SWITCH (app.subs)),
+        .max_short_side = size < G_N_ELEMENTS (sizes) ? sizes[size] : 0,
+        .max_fps = gtk_switch_get_active (GTK_SWITCH (app.fps30)) ? 30 : 0,
+    };
+}
+
 static char *
 preset_title (guint i)
 {
+    if (strcmp (VC_PRESETS[i], VC_PRESET_GPU) == 0)
+        return g_strdup ("GPU");
     char *s = g_strdup (VC_PRESETS[i]);
     s[0] = g_ascii_toupper (s[0]);
     return s;
@@ -161,6 +181,15 @@ can_start (Item *it)
 {
     return (it->state == ST_NEW && it->probe != NULL) || it->state == ST_HELD
            || (it == app.job && app.paused);
+}
+
+/* Start with nothing selected leaves videos predicted to save nothing (SPEC D2); selecting one,
+ * or its own play button, still compresses it. */
+static gboolean
+skip_in_bulk (Item *it)
+{
+    VcOptions o = current_options ();
+    return it->state == ST_NEW && it->probe != NULL && !vc_worth_encoding (it->probe, it->size, &o);
 }
 
 static gboolean
@@ -298,9 +327,8 @@ render_row (Item *it)
             pill = g_strdup (it->note);
             style = strcmp (it->note, "Failed") == 0 ? "error" : "neutral";
         } else {
-            guint64 est = it->probe != NULL ? vc_estimate_size (it->probe, it->size,
-                                                                current_preset ())
-                                            : 0;
+            VcOptions o = current_options ();
+            guint64 est = it->probe != NULL ? vc_estimate_size (it->probe, it->size, &o) : 0;
             if (est == 0) {
                 size_text = g_strdup (size);
                 break;
@@ -396,13 +424,16 @@ update_speed_guide (void)
     guint np = 0;
     while (VC_PRESETS[np] != NULL && np < G_N_ELEMENTS (est))
         np++;
+    VcOptions o = current_options ();
     for (guint i = 0; app.items != NULL && i < app.items->len; i++) {
         Item *it = app.items->pdata[i];
         if (it->probe == NULL || it->probe->duration <= 0)
             continue;
         src += it->size;
-        for (guint p = 0; p < np; p++)
-            est[p] += vc_estimate_size (it->probe, it->size, VC_PRESETS[p]);
+        for (guint p = 0; p < np; p++) {
+            o.preset = VC_PRESETS[p];
+            est[p] += vc_estimate_size (it->probe, it->size, &o);
+        }
     }
     double tmax = 1;
     for (guint p = 0; p < np; p++) {
@@ -414,6 +445,8 @@ update_speed_guide (void)
         gtk_box_remove (GTK_BOX (app.guide_rows), c);
 
     for (guint p = 0; p < np; p++) {
+        if (strcmp (VC_PRESETS[p], VC_PRESET_GPU) == 0 && !app.gpu_ok)
+            continue;
         double t, s;
         vc_preset_factors (VC_PRESETS[p], &t, &s);
         int smaller = src > 0 ? percent_smaller (src, est[p]) : -1;
@@ -585,15 +618,17 @@ update_controls (void)
     if (app.closing)
         return;
     guint n = app.items != NULL ? app.items->len : 0;
-    gboolean probing = app.items != NULL && app.probe_next < n;
+    gboolean probing = app.items != NULL && app.probes_done < n;
     gboolean busy = FALSE, start = FALSE, stop = FALSE, any_done = FALSE;
     gboolean s_start = FALSE, s_pause = FALSE, s_stop = FALSE, s_trash = FALSE;
-    guint nsel = 0, ready = 0;
+    guint nsel = 0, ready = 0, skipped = 0;
     guint64 src = 0, est = 0;
     for (guint i = 0; i < n; i++) {
         Item *it = app.items->pdata[i];
         busy |= it->state == ST_QUEUED || it->state == ST_ACTIVE || it->state == ST_CHECKING;
-        start |= can_start (it);
+        gboolean skip = skip_in_bulk (it);
+        skipped += skip;
+        start |= can_start (it) && !skip;
         stop |= can_stop (it);
         any_done |= it->state == ST_DONE || it->state == ST_TRASHED;
         if (checked (it)) {
@@ -603,8 +638,9 @@ update_controls (void)
             s_stop |= can_stop (it);
             s_trash |= can_trash (it);
         }
-        if ((it->state == ST_NEW && it->probe != NULL) || it->state == ST_HELD) {
-            guint64 e = vc_estimate_size (it->probe, it->size, current_preset ());
+        if (((it->state == ST_NEW && it->probe != NULL) || it->state == ST_HELD) && !skip) {
+            VcOptions o = current_options ();
+            guint64 e = vc_estimate_size (it->probe, it->size, &o);
             ready++;
             src += it->size;
             est += e > 0 ? e : it->size;
@@ -620,6 +656,7 @@ update_controls (void)
     gtk_widget_set_visible (app.summary, finished);
     gtk_widget_set_visible (app.choose_btn, app.folder != NULL && !busy && !finished);
     gtk_widget_set_sensitive (app.choose_btn, app.tools_ok && !busy);
+    gtk_widget_set_sensitive (app.choose_empty, app.tools_ok);
 
     gtk_widget_set_sensitive (app.start_btn, app.tools_ok && !probing && start
                                              && (!busy || app.paused));
@@ -637,12 +674,18 @@ update_controls (void)
         gtk_widget_set_sensitive (app.speed_btns[p], !busy);
     gtk_widget_set_sensitive (app.subs, !busy);
     gtk_widget_set_sensitive (app.trash, !busy);
+    gtk_widget_set_sensitive (app.fps30, !busy);
+    gtk_widget_set_sensitive (app.max_size, !busy);
 
     g_autofree char *src_text = g_format_size (src), *est_text = g_format_size (est);
     g_autofree char *total = ready == 0 ? g_strdup ("")
                              : g_strdup_printf ("%s → ≈ %s", src_text, est_text);
     g_autofree char *preset = preset_title (app.preset);
     g_autofree char *total_sub = probing ? g_strdup ("Reading videos…")
+                                 : ready == 0 && skipped > 0
+                                     ? g_strdup_printf ("%u video%s likely won't get smaller · "
+                                                        "select to compress anyway", skipped,
+                                                        skipped == 1 ? "" : "s")
                                  : ready == 0 ? g_strdup ("Nothing waiting to compress")
                                  : g_strdup_printf ("%u video%s ready · estimated for %s", ready,
                                                     ready == 1 ? "" : "s", preset);
@@ -709,7 +752,6 @@ static void probe_step (void);
 static void
 probe_done (GObject *source, GAsyncResult *res, gpointer user_data)
 {
-    (void) user_data;
     g_autoptr (GSubprocess) proc = G_SUBPROCESS (source);
     g_autofree char *out = NULL, *err_text = NULL;
     g_autoptr (GError) error = NULL;
@@ -719,35 +761,38 @@ probe_done (GObject *source, GAsyncResult *res, gpointer user_data)
         if (g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED))
             return;
     }
-    Item *it = app.items->pdata[app.probe_next++];
+    Item *it = user_data;
     if (error == NULL && g_subprocess_get_successful (proc))
         it->probe = vc_parse_probe (out, &error);
     else if (error == NULL)
         error = g_error_new (VC_ERROR, 0, "%s", err_text != NULL ? g_strstrip (err_text) : "");
     show_probe (it, error != NULL ? error->message : NULL);
+    app.probes_done++;
     probe_step ();
 }
 
-/* One ffprobe at a time, so a folder of hundreds of files doesn't fork hundreds at once. */
+/* Up to 4 ffprobes at a time: fast for big folders, without forking hundreds at once. */
 static void
 probe_step (void)
 {
-    while (app.probe_next < app.items->len) {
-        Item *it = app.items->pdata[app.probe_next];
+    while (app.probe_next < app.items->len && app.probe_next - app.probes_done < 4) {
+        Item *it = app.items->pdata[app.probe_next++];
         g_auto (GStrv) argv = vc_build_ffprobe_argv (it->path);
         g_autoptr (GError) error = NULL;
         GSubprocess *proc = g_subprocess_newv ((const char *const *) argv,
                                                G_SUBPROCESS_FLAGS_STDOUT_PIPE
                                                | G_SUBPROCESS_FLAGS_STDERR_PIPE, &error);
         if (proc != NULL) {
-            g_subprocess_communicate_utf8_async (proc, NULL, app.probe_cancel, probe_done, NULL);
-            return;
+            g_subprocess_communicate_utf8_async (proc, NULL, app.probe_cancel, probe_done, it);
+        } else {
+            show_probe (it, error->message);
+            app.probes_done++;
         }
-        show_probe (it, error->message);
-        app.probe_next++;
     }
-    update_speed_guide ();
-    update_controls ();
+    if (app.probes_done == app.items->len) {
+        update_speed_guide ();
+        update_controls ();
+    }
 }
 
 static int
@@ -798,6 +843,11 @@ do_start (Item *one, gboolean sel)
         }
         if (!can_start (it))
             continue;
+        if (one == NULL && !sel && skip_in_bulk (it)) {
+            set_status (it, "No saving · skipped",
+                        "Likely no saving. Select it and press Start to compress it anyway.");
+            continue;
+        }
         if (it == app.job) {
             resume_job ();
             continue;
@@ -835,7 +885,8 @@ act_start (Item *one, gboolean sel)
     gboolean keep_subs = gtk_switch_get_active (GTK_SWITCH (app.subs));
     for (guint i = 0; i < app.items->len; i++) {
         Item *it = app.items->pdata[i];
-        if (!in_scope (it, one, sel) || !can_start (it) || it == app.job)
+        if (!in_scope (it, one, sel) || !can_start (it) || it == app.job
+            || (one == NULL && !sel && skip_in_bulk (it)))
             continue;
         g_autofree char *out = vc_output_path (it->path, keep_subs, NULL);
         n += !g_file_test (out, G_FILE_TEST_EXISTS);
@@ -997,6 +1048,20 @@ trash_confirmed (GObject *source, GAsyncResult *res, gpointer user_data)
 
 /* ---- encoding ---- */
 
+/* So galleries sort the copy by when the video was taken, not by today. Best effort: a wrong
+ * date never loses data, and the output check that follows does not depend on it. */
+static void
+copy_mtime (const char *from, const char *to)
+{
+    g_autoptr (GFile) src = g_file_new_for_path (from);
+    g_autoptr (GFile) dst = g_file_new_for_path (to);
+    g_autoptr (GFileInfo) info = g_file_query_info (src, G_FILE_ATTRIBUTE_TIME_MODIFIED ","
+                                                    G_FILE_ATTRIBUTE_TIME_MODIFIED_USEC,
+                                                    G_FILE_QUERY_INFO_NONE, NULL, NULL);
+    if (info != NULL)
+        g_file_set_attributes_from_info (dst, info, G_FILE_QUERY_INFO_NONE, NULL, NULL);
+}
+
 static void
 finish_job (void)
 {
@@ -1031,6 +1096,7 @@ finish_job (void)
             g_unlink (part);
             set_status (it, "Failed", error->message);
         } else {
+            copy_mtime (it->path, out);
             it->state = ST_DONE;
             it->out = g_steal_pointer (&out);
             it->out_size = st.st_size;
@@ -1105,16 +1171,26 @@ on_ffmpeg_exit (GObject *source, GAsyncResult *res, gpointer user_data)
     job_step_done ();
 }
 
+/* Runs in the child before exec: low CPU and idle disk priority, so the desktop wins while you
+ * use the laptop and the encode runs at full speed when you don't. The PID stays ffmpeg's. */
+static void
+lower_priority (gpointer data)
+{
+    (void) data;
+    setpriority (PRIO_PROCESS, 0, 10);
+    syscall (SYS_ioprio_set, 1 /* IOPRIO_WHO_PROCESS */, 0, 3 << 13 /* IOPRIO_CLASS_IDLE */);
+}
+
 static gboolean
 start_job (Item *it, char *out, char *part)
 {
-    gboolean keep_subs = gtk_switch_get_active (GTK_SWITCH (app.subs));
-    g_auto (GStrv) argv = vc_build_ffmpeg_argv (it->path, part, it->probe, current_preset (),
-                                                keep_subs);
+    VcOptions o = current_options ();
+    g_auto (GStrv) argv = vc_build_ffmpeg_argv (it->path, part, it->probe, &o);
     g_autoptr (GError) error = NULL;
-    GSubprocess *proc = g_subprocess_newv ((const char *const *) argv,
-                                           G_SUBPROCESS_FLAGS_STDOUT_PIPE
-                                           | G_SUBPROCESS_FLAGS_STDERR_PIPE, &error);
+    g_autoptr (GSubprocessLauncher) launcher = g_subprocess_launcher_new (
+        G_SUBPROCESS_FLAGS_STDOUT_PIPE | G_SUBPROCESS_FLAGS_STDERR_PIPE);
+    g_subprocess_launcher_set_child_setup (launcher, lower_priority, NULL, NULL);
+    GSubprocess *proc = g_subprocess_launcher_spawnv (launcher, (const char *const *) argv, &error);
     if (proc == NULL) {
         it->state = ST_NEW;
         set_status (it, "Failed", error->message);
@@ -1525,7 +1601,7 @@ load_folder (const char *folder)
     gtk_list_box_remove_all (GTK_LIST_BOX (app.list));
     g_clear_pointer (&app.items, g_ptr_array_unref);
     app.items = g_ptr_array_new_with_free_func ((GDestroyNotify) item_free);
-    app.probe_next = 0;
+    app.probe_next = app.probes_done = 0;
     app.anchor = NULL;
     app.batch_t0 = app.batch_end = 0;
     g_free (app.folder);
@@ -1606,16 +1682,23 @@ on_drop (GtkDropTarget *t, const GValue *value, double x, double y, gpointer use
     return TRUE;
 }
 
+/* Estimates depend on the speed and the size cap. */
+static void
+on_estimate_input (void)
+{
+    for (guint i = 0; app.items != NULL && i < app.items->len; i++)
+        render_row (app.items->pdata[i]);
+    update_speed_guide ();
+    update_controls ();
+}
+
 static void
 on_speed (GtkToggleButton *b, gpointer user_data)
 {
     if (!gtk_toggle_button_get_active (b))
         return;
     app.preset = GPOINTER_TO_UINT (user_data);
-    for (guint i = 0; app.items != NULL && i < app.items->len; i++)
-        render_row (app.items->pdata[i]);
-    update_speed_guide ();
-    update_controls ();
+    on_estimate_input ();
 }
 
 /* ---- keyboard ---- */
@@ -1661,30 +1744,79 @@ on_close (GtkWindow *win, gpointer user_data)
 
 /* ---- startup ---- */
 
-static char *
-check_tools (void)
-{
-    g_autofree char *ffmpeg = g_find_program_in_path ("ffmpeg");
-    g_autofree char *ffprobe = g_find_program_in_path ("ffprobe");
-    if (ffmpeg == NULL || ffprobe == NULL)
-        return g_strdup ("ffmpeg and ffprobe must be installed and on PATH.\n"
-                         "On Fedora: sudo dnf install ffmpeg (from RPM Fusion).");
-    const char *argv[] = { ffmpeg, "-hide_banner", "-encoders", NULL };
-    g_autofree char *out = NULL;
-    if (!g_spawn_sync (NULL, (char **) argv, NULL, G_SPAWN_STDERR_TO_DEV_NULL, NULL, NULL,
-                       &out, NULL, NULL, NULL)
-        || strstr (out, " libx265 ") == NULL)
-        return g_strdup ("This ffmpeg has no libx265 (H.265) encoder.\n"
-                         "Install the full ffmpeg build from RPM Fusion.");
-    return NULL;
-}
-
 static void
 quit_after_alert (GObject *source, GAsyncResult *res, gpointer user_data)
 {
     (void) user_data;
     gtk_alert_dialog_choose_finish (GTK_ALERT_DIALOG (source), res, NULL);
     gtk_window_destroy (app.win);
+}
+
+static void
+tools_failed (const char *problem)
+{
+    if (!app.closing)
+        alert ("Video Compressor can't run", problem, quit_after_alert);
+}
+
+static void
+gpu_test_done (GObject *source, GAsyncResult *res, gpointer user_data)
+{
+    (void) user_data;
+    g_autoptr (GSubprocess) proc = G_SUBPROCESS (source);
+    if (!g_subprocess_wait_check_finish (proc, res, NULL) || app.closing)
+        return;   /* no working GPU encoder: the GPU speed stays hidden */
+    app.gpu_ok = TRUE;
+    gtk_widget_set_visible (app.speed_btns[0], TRUE);
+    update_speed_guide ();
+}
+
+static void
+encoders_listed (GObject *source, GAsyncResult *res, gpointer user_data)
+{
+    (void) user_data;
+    g_autoptr (GSubprocess) proc = G_SUBPROCESS (source);
+    g_autofree char *out = NULL;
+    if (!g_subprocess_communicate_utf8_finish (proc, res, &out, NULL, NULL)
+        || !g_subprocess_get_successful (proc) || strstr (out, " libx265 ") == NULL) {
+        tools_failed ("This ffmpeg has no libx265 (H.265) encoder.\n"
+                      "Install the full ffmpeg build from RPM Fusion.");
+        return;
+    }
+    if (app.closing)
+        return;
+    app.tools_ok = TRUE;
+    update_controls ();
+    /* The list shows hardware encoders even when they can't run, so try one frame. */
+    if (strstr (out, " hevc_vaapi ") == NULL)
+        return;
+    g_auto (GStrv) argv = vc_build_gpu_test_argv ();
+    GSubprocess *test = g_subprocess_newv ((const char *const *) argv,
+                                           G_SUBPROCESS_FLAGS_STDOUT_SILENCE
+                                           | G_SUBPROCESS_FLAGS_STDERR_SILENCE, NULL);
+    if (test != NULL)
+        g_subprocess_wait_check_async (test, NULL, gpu_test_done, NULL);
+}
+
+/* Asynchronous so the window paints at once; Choose Folder stays off until it passes. */
+static void
+check_tools (void)
+{
+    g_autofree char *ffmpeg = g_find_program_in_path ("ffmpeg");
+    g_autofree char *ffprobe = g_find_program_in_path ("ffprobe");
+    if (ffmpeg == NULL || ffprobe == NULL) {
+        tools_failed ("ffmpeg and ffprobe must be installed and on PATH.\n"
+                      "On Fedora: sudo dnf install ffmpeg (from RPM Fusion).");
+        return;
+    }
+    const char *argv[] = { ffmpeg, "-hide_banner", "-encoders", NULL };
+    g_autoptr (GError) error = NULL;
+    GSubprocess *proc = g_subprocess_newv (argv, G_SUBPROCESS_FLAGS_STDOUT_PIPE
+                                                 | G_SUBPROCESS_FLAGS_STDERR_SILENCE, &error);
+    if (proc == NULL)
+        tools_failed (error->message);
+    else
+        g_subprocess_communicate_utf8_async (proc, NULL, NULL, encoders_listed, NULL);
 }
 
 static const char CSS[] =
@@ -1815,6 +1947,7 @@ build_empty_page (void)
     gtk_widget_add_css_class (icon, "drop-icon");
     gtk_widget_set_halign (icon, GTK_ALIGN_CENTER);
     GtkWidget *choose = label_button ("folder-symbolic", "_Choose Folder…", G_CALLBACK (on_choose));
+    app.choose_empty = choose;
     gtk_widget_add_css_class (choose, "suggested-action");
     gtk_widget_set_halign (choose, GTK_ALIGN_CENTER);
     GtkWidget *features = hbox (8);
@@ -2056,6 +2189,7 @@ build_bottom_bar (void)
             gtk_toggle_button_set_active (GTK_TOGGLE_BUTTON (b), TRUE);
         }
         g_signal_connect (b, "toggled", G_CALLBACK (on_speed), GUINT_TO_POINTER (p));
+        gtk_widget_set_visible (b, strcmp (VC_PRESETS[p], VC_PRESET_GPU) != 0);   /* gpu_test_done */
         app.speed_btns[p] = b;
         gtk_box_append (GTK_BOX (seg), b);
     }
@@ -2066,14 +2200,18 @@ build_bottom_bar (void)
     gtk_box_append (GTK_BOX (speed), seg);
     gtk_box_append (GTK_BOX (speed), app.speed_caption);
 
-    GtkWidget *switches = vbox (8);
+    GtkWidget *switches = gtk_grid_new ();
+    gtk_grid_set_row_spacing (GTK_GRID (switches), 8);
+    gtk_grid_set_column_spacing (GTK_GRID (switches), 16);
     gtk_widget_set_valign (switches, GTK_ALIGN_CENTER);
-    GtkWidget **sw[] = { &app.subs, &app.trash };
-    const char *sw_label[] = { "Keep _subtitles", "Move originals to _Trash" };
+    GtkWidget **sw[] = { &app.subs, &app.trash, &app.fps30 };
+    const char *sw_label[] = { "Keep _subtitles", "Move originals to _Trash", "Max _30 fps" };
     const char *sw_tip[] = { "Copy subtitle tracks too. The output becomes .mkv.",
                              "After each copy is checked: same length and at least 5% smaller. "
-                             "Asks before starting." };
-    for (guint i = 0; i < 2; i++) {
+                             "Asks before starting.",
+                             "Save videos above 30 fps (often 60 fps phone clips) at 30 fps: about "
+                             "half the encode time. Off keeps every frame." };
+    for (guint i = 0; i < 3; i++) {
         *sw[i] = gtk_switch_new ();
         gtk_widget_set_valign (*sw[i], GTK_ALIGN_CENTER);
         GtkWidget *l = gtk_label_new_with_mnemonic (sw_label[i]);
@@ -2084,11 +2222,24 @@ build_bottom_bar (void)
         gtk_widget_set_tooltip_text (row, sw_tip[i]);
         gtk_box_append (GTK_BOX (row), *sw[i]);
         gtk_box_append (GTK_BOX (row), l);
-        gtk_box_append (GTK_BOX (switches), row);
+        gtk_grid_attach (GTK_GRID (switches), row, i / 2, i % 2, 1, 1);
     }
+    const char *sizes[] = { "Original size", "Max 1080p", "Max 720p", NULL };
+    app.max_size = gtk_drop_down_new_from_strings (sizes);
+    gtk_accessible_update_property (GTK_ACCESSIBLE (app.max_size), GTK_ACCESSIBLE_PROPERTY_LABEL,
+                                    "Max size", -1);
+    gtk_widget_set_tooltip_text (app.max_size, "Shrink bigger videos so the short side is at most "
+                                               "this (a 4K video at 1080p takes about a quarter of "
+                                               "the time). Smaller videos are never enlarged.");
+    gtk_widget_set_halign (app.max_size, GTK_ALIGN_START);
+    g_signal_connect (app.max_size, "notify::selected", G_CALLBACK (on_estimate_input), NULL);
+    gtk_grid_attach (GTK_GRID (switches), app.max_size, 1, 1, 1, 1);
 
     app.total = styled_label ("", "total", 1);
     app.total_sub = styled_label ("", "caption", 1);
+    /* totals give way first, so the extra options don't force a wider window */
+    gtk_label_set_ellipsize (GTK_LABEL (app.total), PANGO_ELLIPSIZE_START);
+    gtk_label_set_ellipsize (GTK_LABEL (app.total_sub), PANGO_ELLIPSIZE_END);
     GtkWidget *totals = vbox (2);
     gtk_widget_set_hexpand (totals, TRUE);
     gtk_widget_set_valign (totals, GTK_ALIGN_CENTER);
@@ -2192,7 +2343,7 @@ activate (GtkApplication *gapp, gpointer user_data)
 
     app.win = GTK_WINDOW (gtk_application_window_new (gapp));
     gtk_window_set_title (app.win, "Video Compressor");
-    gtk_window_set_default_size (app.win, 1040, 720);
+    gtk_window_set_default_size (app.win, 1160, 720);
     g_signal_connect (app.win, "close-request", G_CALLBACK (on_close), NULL);
 
     app.title = styled_label ("Video Compressor", "heading", 0.5);
@@ -2226,13 +2377,10 @@ activate (GtkApplication *gapp, gpointer user_data)
     add_shortcut (keys, "Escape", on_escape);
     gtk_widget_add_controller (GTK_WIDGET (app.win), keys);
 
-    g_autofree char *problem = check_tools ();
-    app.tools_ok = problem == NULL;
     update_speed_guide ();
     update_controls ();
     gtk_window_present (app.win);
-    if (problem != NULL)
-        alert ("Video Compressor can't run", problem, quit_after_alert);
+    check_tools ();
 }
 
 int

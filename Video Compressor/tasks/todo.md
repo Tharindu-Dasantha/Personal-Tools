@@ -322,6 +322,9 @@ one-step job.
 **Acceptance criteria:**
 - [ ] Compress video behaves exactly as before: progress, pause/resume, stop, skip, "already efficient", trash, close
       mid-encode
+- [ ] Kept from the performance work ([todo-performance.md](todo-performance.md)): each step's ffmpeg still starts at
+      nice 10 / idle I/O through the launcher's child setup (R2), and a kept output still gets the source's mtime
+      before the trash check (R12)
 - [ ] `grep -nE 'unlink|g_file_delete|remove\(' src/` shows deletes only in `vc_remove_part()` and rejected-output cleanup
 
 **Verification:**

@@ -8,12 +8,14 @@ G_DEFINE_QUARK (vc-error-quark, vc_error)
 /* The only place to tune quality against size. Lower CRF on small frames because each
  * pixel covers more of the screen, so artifacts show more. */
 static const VcClass VC_CLASSES[] = {
-    { "240p",  300, 24,  64 }, { "360p",   400, 24,  96 },
-    { "480p",  576, 25,  96 }, { "720p",   800, 26, 128 },
-    { "1080p",1200, 27, 128 }, { "4K", G_MAXINT, 28, 160 },
+    { "240p",  300, 24, 27,  64 }, { "360p",   400, 24, 27,  96 },
+    { "480p",  576, 25, 28,  96 }, { "720p",   800, 26, 29, 128 },
+    { "1080p",1200, 27, 30, 128 }, { "4K", G_MAXINT, 28, 31, 160 },
 };
 
-const char *const VC_PRESETS[] = { "faster", "fast", "medium", "slow", "slower", NULL };
+const char *const VC_PRESETS[] = {
+    VC_PRESET_GPU, "faster", "fast", "medium", "slow", "slower", NULL,
+};
 
 /* Rough output video bitrate per class at medium, in the same order as VC_CLASSES. Only used for
  * the size estimate shown before encoding; it never changes what is encoded.
@@ -26,9 +28,17 @@ G_STATIC_ASSERT (G_N_ELEMENTS (EST_VIDEO_KBPS) == G_N_ELEMENTS (VC_CLASSES));
  * (tasks/plan.md, "Preset factors"). At a fixed CRF a slower preset keeps more detail; it does
  * not reliably make the file smaller. */
 static const struct { const char *name; double time, size; } PRESET_FACTORS[] = {
+    { VC_PRESET_GPU, 0.1, 1.5 },
     { "faster", 0.69, 0.99 }, { "fast", 0.85, 1.06 }, { "medium", 1.0, 1.0 },
     { "slow", 2.1, 1.08 },    { "slower", 8.2, 1.06 },
 };
+
+/* How far below its own bitrate HEVC can go for each source codec, for the estimate. Older codecs
+ * need about twice HEVC's bitrate; a source that is already HEVC/VP9/AV1 gains little. */
+static const struct { const char *codec; double cap; } SOURCE_CAP[] = {
+    { "hevc", 1.0 }, { "vp9", 1.0 }, { "av1", 1.0 },
+};
+#define SOURCE_CAP_DEFAULT 0.6
 
 static const char *const VIDEO_EXTS[] = {
     "mp4", "mkv", "mov", "avi", "wmv", "flv", "webm", "m4v", "mpg", "mpeg", "ts", "m2ts", "3gp",
@@ -68,7 +78,7 @@ vc_build_ffprobe_argv (const char *input)
         "ffprobe", "-v", "error",
         "-show_entries",
         "stream=index,codec_type,codec_name,width,height,pix_fmt,"
-        "color_primaries,color_transfer,color_space:format=duration",
+        "color_primaries,color_transfer,color_space,avg_frame_rate,bit_rate:format=duration",
         "-of", "default=nw=1",
         "-i", input, NULL,
     };
@@ -77,7 +87,7 @@ vc_build_ffprobe_argv (const char *input)
 
 typedef struct {
     char *type, *codec, *pix_fmt, *primaries, *transfer, *space;
-    const char *width, *height;
+    const char *width, *height, *fps, *bit_rate;   /* point into the parsed text */
 } Stream;
 
 static void
@@ -96,6 +106,19 @@ parse_dim (const char *text, int *out)
         return FALSE;
     *out = (int) v;
     return TRUE;
+}
+
+/* "30000/1001" → 29.97; 0 for "0/0" or anything unparsable. */
+static double
+parse_rate (const char *text)
+{
+    gint64 num, den;
+    g_auto (GStrv) parts = text != NULL ? g_strsplit (text, "/", 2) : NULL;
+    if (parts == NULL || parts[0] == NULL || parts[1] == NULL
+        || !g_ascii_string_to_signed (parts[0], 10, 1, G_MAXINT32, &num, NULL)
+        || !g_ascii_string_to_signed (parts[1], 10, 1, G_MAXINT32, &den, NULL))
+        return 0;
+    return (double) num / den;
 }
 
 /* Takes the stream's fields; the first video stream wins. */
@@ -117,6 +140,15 @@ commit_stream (VcProbe *p, Stream *s, gboolean *have_video, GError **error)
         p->color_primaries = g_steal_pointer (&s->primaries);
         p->color_transfer = g_steal_pointer (&s->transfer);
         p->color_space = g_steal_pointer (&s->space);
+        p->fps = parse_rate (s->fps);
+    } else if (g_strcmp0 (s->type, "audio") == 0) {
+        gint64 bps;
+        /* -1 marks a stream that can't be copied; vc_parse_probe turns it into 0 */
+        if (p->aac_kbps >= 0 && g_strcmp0 (s->codec, "aac") == 0 && s->bit_rate != NULL
+            && g_ascii_string_to_signed (s->bit_rate, 10, 1, G_MAXINT32, &bps, NULL))
+            p->aac_kbps = MAX (p->aac_kbps, (int) ((bps + 999) / 1000));
+        else
+            p->aac_kbps = -1;
     } else if (g_strcmp0 (s->type, "subtitle") == 0) {
         p->n_subtitles++;
         if (g_strcmp0 (s->codec, "mov_text") == 0)
@@ -168,6 +200,10 @@ vc_parse_probe (const char *text, GError **error)
                 s.width = val;   /* points into `lines`, parsed at commit */
             } else if (strcmp (key, "height") == 0) {
                 s.height = val;
+            } else if (strcmp (key, "avg_frame_rate") == 0) {
+                s.fps = val;
+            } else if (strcmp (key, "bit_rate") == 0) {
+                s.bit_rate = val;
             }
         }
     }
@@ -180,6 +216,7 @@ vc_parse_probe (const char *text, GError **error)
         g_set_error (error, VC_ERROR, 0, "No video stream");
         return NULL;
     }
+    p->aac_kbps = MAX (p->aac_kbps, 0);
     return g_steal_pointer (&p);
 }
 
@@ -199,8 +236,12 @@ vc_probe_free (VcProbe *probe)
 gboolean
 vc_probe_is_10bit (const VcProbe *probe)
 {
-    return probe->pix_fmt != NULL
-        && (strstr (probe->pix_fmt, "10") != NULL || strstr (probe->pix_fmt, "12") != NULL);
+    /* Real depth markers only: "nv12" and "yuv410p" are 8-bit. p010le/p012le match 10le/12le. */
+    static const char *const marks[] = { "p10", "p12", "10le", "10be", "12le", "12be" };
+    for (gsize i = 0; probe->pix_fmt != NULL && i < G_N_ELEMENTS (marks); i++)
+        if (strstr (probe->pix_fmt, marks[i]) != NULL)
+            return TRUE;
+    return FALSE;
 }
 
 gboolean
@@ -228,30 +269,85 @@ vc_output_path (const char *input, gboolean keep_subs, char **part_path)
     return g_build_filename (dir, "compressed", name, NULL);
 }
 
+static int
+out_short_side (const VcProbe *probe, const VcOptions *opt)
+{
+    int side = MIN (probe->width, probe->height);
+    return opt->max_short_side > 0 ? MIN (side, opt->max_short_side) : side;
+}
+
+const VcClass *
+vc_output_class (const VcProbe *probe, const VcOptions *opt)
+{
+    int side = out_short_side (probe, opt);
+    return vc_class_for (side, side);
+}
+
+/* shortcut: the first render node; pick the device another way only on a multi-GPU machine. */
+#define GPU_DEVICE "/dev/dri/renderD128"
+
 char **
 vc_build_ffmpeg_argv (const char *input, const char *output, const VcProbe *probe,
-                      const char *preset, gboolean keep_subs)
+                      const VcOptions *opt)
 {
-    const VcClass *cls = vc_class_for (probe->width, probe->height);
+    const VcClass *cls = vc_output_class (probe, opt);
+    gboolean gpu = g_strcmp0 (opt->preset, VC_PRESET_GPU) == 0;
+    gboolean ten = vc_probe_is_10bit (probe);
+    int side = out_short_side (probe, opt);
     GStrvBuilder *b = g_strv_builder_new ();
-    char crf[16], abr[16];
-    g_snprintf (crf, sizeof crf, "%d", cls->crf);
-    g_snprintf (abr, sizeof abr, "%dk", cls->audio_kbps);
+    char num[3][16];
 
     /* -y only ever hits our own .part temp file; final names are checked before encoding. */
     const char *head[] = {
         "ffmpeg", "-hide_banner", "-nostdin", "-loglevel", "error", "-nostats",
-        "-progress", "pipe:1", "-y", "-i", input,
-        "-map", "0:v:0", "-map", "0:a?", NULL,
+        "-progress", "pipe:1", "-y", NULL,
     };
     g_strv_builder_addv (b, head);
-    if (keep_subs)
+    if (gpu)
+        /* Decode on the GPU too; a codec it can't decode falls back to the CPU on its own. */
+        g_strv_builder_add_many (b, "-vaapi_device", GPU_DEVICE, "-hwaccel", "vaapi",
+                                 "-hwaccel_output_format", "vaapi", NULL);
+    g_strv_builder_add_many (b, "-i", input, "-map", "0:v:0", "-map", "0:a?", NULL);
+    if (opt->keep_subs)
         g_strv_builder_add_many (b, "-map", "0:s?", NULL);
+    /* ffmpeg 8 drops the source's creation_time unless metadata is mapped explicitly. */
+    g_strv_builder_add_many (b, "-map_metadata", "0", NULL);
 
-    g_strv_builder_add_many (b, "-c:v", "libx265", "-preset", preset, "-crf", crf,
-                             "-x265-params", "log-level=error", NULL);
-    if (vc_probe_is_10bit (probe)) {
-        g_strv_builder_add_many (b, "-pix_fmt", "yuv420p10le", "-profile:v", "main10", NULL);
+    /* Scale by the short side so portrait and rotated video work; -2 keeps the other side even. */
+    GString *vf = g_string_new (NULL);
+    if (gpu)
+        /* format=…|vaapi takes GPU-decoded frames as they are and uploads CPU-decoded ones. */
+        g_string_append (vf, ten ? "format=p010|vaapi,hwupload" : "format=nv12|vaapi,hwupload");
+    if (side < MIN (probe->width, probe->height))
+        g_string_append_printf (vf, "%s%s=w='if(gt(iw,ih),-2,%d)':h='if(gt(iw,ih),%d,-2)'",
+                                vf->len > 0 ? "," : "", gpu ? "scale_vaapi" : "scale", side, side);
+    if (vf->len > 0)
+        g_strv_builder_add_many (b, "-vf", vf->str, NULL);
+    g_string_free (vf, TRUE);
+    if (opt->max_fps > 0 && probe->fps > opt->max_fps + 0.5) {
+        g_snprintf (num[0], sizeof num[0], "%d", opt->max_fps);
+        g_strv_builder_add_many (b, "-fpsmax", num[0], NULL);
+    }
+
+    if (gpu) {
+        g_snprintf (num[1], sizeof num[1], "%d", cls->gpu_qp);
+        /* low_power is the GPU's fixed-function encoder: ~10x x265 medium (plan-performance.md) */
+        g_strv_builder_add_many (b, "-c:v", "hevc_vaapi", "-low_power", "1", "-rc_mode", "CQP",
+                                 "-qp", num[1], NULL);
+        if (ten)
+            g_strv_builder_add_many (b, "-profile:v", "main10", NULL);
+    } else {
+        g_snprintf (num[1], sizeof num[1], "%d", cls->crf);
+        /* PQ (HDR10) needs its SEI headers for players to switch to HDR; HLG does not. */
+        gboolean pq = g_strcmp0 (probe->color_transfer, "smpte2084") == 0;
+        g_strv_builder_add_many (b, "-c:v", "libx265", "-preset", opt->preset, "-crf", num[1],
+                                 "-x265-params",
+                                 pq ? "log-level=error:hdr10=1:repeat-headers=1" : "log-level=error",
+                                 "-pix_fmt", ten ? "yuv420p10le" : "yuv420p", NULL);
+        if (ten)
+            g_strv_builder_add_many (b, "-profile:v", "main10", NULL);
+    }
+    if (ten) {
         /* Copying the colour tags is what keeps HDR from looking washed out. */
         if (probe->color_primaries != NULL)
             g_strv_builder_add_many (b, "-color_primaries", probe->color_primaries, NULL);
@@ -259,22 +355,40 @@ vc_build_ffmpeg_argv (const char *input, const char *output, const VcProbe *prob
             g_strv_builder_add_many (b, "-color_trc", probe->color_transfer, NULL);
         if (probe->color_space != NULL)
             g_strv_builder_add_many (b, "-colorspace", probe->color_space, NULL);
-    } else {
-        g_strv_builder_add_many (b, "-pix_fmt", "yuv420p", NULL);
     }
-    g_strv_builder_add_many (b, "-c:a", "aac", "-b:a", abr, NULL);
 
-    if (keep_subs)
+    /* AAC already at about the target bitrate: copying saves a second lossy pass. */
+    if (probe->aac_kbps > 0 && probe->aac_kbps * 10 <= cls->audio_kbps * 11) {
+        g_strv_builder_add_many (b, "-c:a", "copy", NULL);
+    } else {
+        g_snprintf (num[2], sizeof num[2], "%dk", cls->audio_kbps);
+        g_strv_builder_add_many (b, "-c:a", "aac", "-b:a", num[2], NULL);
+    }
+
+    if (opt->keep_subs)
         /* mov_text can't be stream-copied into MKV; srt keeps the text. */
         g_strv_builder_add_many (b, "-c:s", probe->has_mov_text ? "srt" : "copy", NULL);
     else
-        /* hvc1 is what QuickTime/iOS need to play HEVC in MP4. */
-        g_strv_builder_add_many (b, "-sn", "-tag:v", "hvc1", "-movflags", "+faststart", NULL);
+        /* hvc1 is what QuickTime/iOS need to play HEVC in MP4. use_metadata_tags keeps the
+         * phone's own keys (location, creation date, camera), which MP4 drops otherwise. */
+        g_strv_builder_add_many (b, "-sn", "-tag:v", "hvc1",
+                                 "-movflags", "+faststart+use_metadata_tags", NULL);
 
     g_strv_builder_add (b, output);
     char **argv = g_strv_builder_end (b);
     g_strv_builder_unref (b);
     return argv;
+}
+
+char **
+vc_build_gpu_test_argv (void)
+{
+    const char *argv[] = {
+        "ffmpeg", "-hide_banner", "-nostdin", "-loglevel", "error", "-vaapi_device", GPU_DEVICE,
+        "-f", "lavfi", "-i", "color=s=256x256", "-frames:v", "1", "-vf", "format=nv12,hwupload",
+        "-c:v", "hevc_vaapi", "-low_power", "1", "-f", "null", "-", NULL,
+    };
+    return g_strdupv ((char **) argv);
 }
 
 gboolean
@@ -333,19 +447,29 @@ vc_preset_factors (const char *preset, double *time_vs_medium, double *size_vs_m
 }
 
 guint64
-vc_estimate_size (const VcProbe *probe, guint64 src_bytes, const char *preset)
+vc_estimate_size (const VcProbe *probe, guint64 src_bytes, const VcOptions *opt)
 {
     if (probe->duration <= 0 || src_bytes == 0)
         return 0;
-    const VcClass *cls = vc_class_for (probe->width, probe->height);
-    double time, size;
-    vc_preset_factors (preset, &time, &size);
-    /* HEVC needs roughly half the bitrate of the source's codec, so a source that is already
-     * lean caps the guess; for an HEVC source that makes it pessimistic, which is the safe side. */
+    const VcClass *cls = vc_output_class (probe, opt);
+    double time, size, cap = SOURCE_CAP_DEFAULT;
+    vc_preset_factors (opt->preset, &time, &size);
+    for (gsize i = 0; i < G_N_ELEMENTS (SOURCE_CAP); i++)
+        if (g_strcmp0 (probe->codec, SOURCE_CAP[i].codec) == 0)
+            cap = SOURCE_CAP[i].cap;
+    /* A lean source caps the guess. shortcut: ignores the frame-rate cap (fewer frames, smaller
+     * file), so the estimate is pessimistic there; refine if it hides real savings. */
     double src_kbps = src_bytes * 8.0 / 1000.0 / probe->duration;
-    double video_kbps = MIN (EST_VIDEO_KBPS[cls - VC_CLASSES] * size, src_kbps * 0.6);
+    double video_kbps = size * MIN (EST_VIDEO_KBPS[cls - VC_CLASSES], src_kbps * cap);
     double bytes = (video_kbps + cls->audio_kbps) * 1000.0 / 8.0 * probe->duration;
     return MIN ((guint64) bytes, src_bytes);
+}
+
+gboolean
+vc_worth_encoding (const VcProbe *probe, guint64 src_bytes, const VcOptions *opt)
+{
+    guint64 est = vc_estimate_size (probe, src_bytes, opt);
+    return est == 0 || vc_output_is_worth_keeping (src_bytes, est);
 }
 
 char *

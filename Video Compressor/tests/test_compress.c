@@ -180,16 +180,16 @@ test_ffmpeg_argv_8bit (void)
     const char *name = "/v/it's a \"test\" $HOME ünïcødé 🎬.mov";
     const char *out = "/v/compressed/.it's a \"test\" $HOME ünïcødé 🎬.part.mp4";
     g_autoptr (VcProbe) p = vc_parse_probe (PROBE_8BIT_SUBS, NULL);
-    g_auto (GStrv) argv = vc_build_ffmpeg_argv (name, out, p, "slow", FALSE);
+    g_auto (GStrv) argv = vc_build_ffmpeg_argv (name, out, p, &(VcOptions) { .preset = "slow" });
 
     const char *expected[] = {
         "ffmpeg", "-hide_banner", "-nostdin", "-loglevel", "error", "-nostats",
         "-progress", "pipe:1", "-y", "-i", name,
-        "-map", "0:v:0", "-map", "0:a?",
+        "-map", "0:v:0", "-map", "0:a?", "-map_metadata", "0",
         "-c:v", "libx265", "-preset", "slow", "-crf", "24", "-x265-params", "log-level=error",
         "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-b:a", "96k",
-        "-sn", "-tag:v", "hvc1", "-movflags", "+faststart",
+        "-sn", "-tag:v", "hvc1", "-movflags", "+faststart+use_metadata_tags",
         out, NULL,
     };
     g_assert_cmpstrv (argv, expected);
@@ -199,8 +199,7 @@ static void
 test_ffmpeg_argv_10bit_hlg (void)
 {
     g_autoptr (VcProbe) p = vc_parse_probe (PROBE_HLG, NULL);
-    g_auto (GStrv) argv = vc_build_ffmpeg_argv ("/v/a.mov", "/v/compressed/.a.part.mp4", p,
-                                                "slow", FALSE);
+    g_auto (GStrv) argv = vc_build_ffmpeg_argv ("/v/a.mov", "/v/compressed/.a.part.mp4", p, &(VcOptions) { .preset = "slow" });
     g_assert_cmpstr (argv_value (argv, "-pix_fmt"), ==, "yuv420p10le");
     g_assert_cmpstr (argv_value (argv, "-profile:v"), ==, "main10");
     g_assert_cmpstr (argv_value (argv, "-color_primaries"), ==, "bt2020");
@@ -214,8 +213,7 @@ test_ffmpeg_argv_10bit_hlg (void)
         "index=0\ncodec_name=hevc\ncodec_type=video\nwidth=1920\nheight=1080\n"
         "pix_fmt=yuv420p10le\ncolor_space=unknown\ncolor_transfer=unknown\n"
         "color_primaries=bt709\n", NULL);
-    g_auto (GStrv) argv2 = vc_build_ffmpeg_argv ("/v/b.mkv", "/v/compressed/.b.part.mp4", q,
-                                                 "slow", FALSE);
+    g_auto (GStrv) argv2 = vc_build_ffmpeg_argv ("/v/b.mkv", "/v/compressed/.b.part.mp4", q, &(VcOptions) { .preset = "slow" });
     g_assert_cmpstr (argv_value (argv2, "-profile:v"), ==, "main10");
     g_assert_cmpstr (argv_value (argv2, "-color_primaries"), ==, "bt709");
     g_assert_cmpint (argv_find (argv2, "-color_trc"), ==, -1);
@@ -223,7 +221,7 @@ test_ffmpeg_argv_10bit_hlg (void)
 
     /* 8-bit never gets colour flags or main10 */
     g_autoptr (VcProbe) e = vc_parse_probe (PROBE_8BIT_SUBS, NULL);
-    g_auto (GStrv) argv3 = vc_build_ffmpeg_argv ("/v/c.mp4", "/v/o.mp4", e, "slow", FALSE);
+    g_auto (GStrv) argv3 = vc_build_ffmpeg_argv ("/v/c.mp4", "/v/o.mp4", e, &(VcOptions) { .preset = "slow" });
     g_assert_cmpint (argv_find (argv3, "-profile:v"), ==, -1);
     g_assert_cmpint (argv_find (argv3, "-color_primaries"), ==, -1);
 }
@@ -233,9 +231,12 @@ test_ffmpeg_argv_presets (void)
 {
     g_autoptr (VcProbe) p = vc_parse_probe (PROBE_HLG, NULL);
     g_assert_cmpstr (VC_DEFAULT_PRESET, ==, "slow");
-    for (int i = 0; VC_PRESETS[i] != NULL; i++) {
-        g_auto (GStrv) argv = vc_build_ffmpeg_argv ("/a.mp4", "/b.mp4", p, VC_PRESETS[i], FALSE);
+    g_assert_cmpstr (VC_PRESETS[0], ==, VC_PRESET_GPU);
+    for (int i = 1; VC_PRESETS[i] != NULL; i++) {
+        g_auto (GStrv) argv = vc_build_ffmpeg_argv ("/a.mp4", "/b.mp4", p,
+                                                    &(VcOptions) { .preset = VC_PRESETS[i] });
         g_assert_cmpstr (argv_value (argv, "-preset"), ==, VC_PRESETS[i]);
+        g_assert_cmpstr (argv_value (argv, "-c:v"), ==, "libx265");
     }
 }
 
@@ -244,15 +245,14 @@ test_ffmpeg_argv_subtitles (void)
 {
     /* mov_text source → srt */
     g_autoptr (VcProbe) mt = vc_parse_probe (PROBE_8BIT_SUBS, NULL);
-    g_auto (GStrv) a = vc_build_ffmpeg_argv ("/v/a.mp4", "/v/compressed/.a.part.mkv", mt,
-                                             "slow", TRUE);
+    g_auto (GStrv) a = vc_build_ffmpeg_argv ("/v/a.mp4", "/v/compressed/.a.part.mkv", mt, &(VcOptions) { .preset = "slow", .keep_subs = TRUE });
     int s = argv_find (a, "0:s?");
     g_assert_cmpint (s, >, 0);
     g_assert_cmpstr (a[s - 1], ==, "-map");
     g_assert_cmpstr (argv_value (a, "-c:s"), ==, "srt");
     g_assert_cmpint (argv_find (a, "-sn"), ==, -1);
     g_assert_cmpint (argv_find (a, "hvc1"), ==, -1);
-    g_assert_cmpint (argv_find (a, "+faststart"), ==, -1);
+    g_assert_cmpint (argv_find (a, "-movflags"), ==, -1);
 
     /* other subtitle codecs (or none) → copy */
     g_autoptr (VcProbe) srt = vc_parse_probe (
@@ -260,15 +260,223 @@ test_ffmpeg_argv_subtitles (void)
         "index=1\ncodec_name=subrip\ncodec_type=subtitle\n", NULL);
     g_assert_cmpuint (srt->n_subtitles, ==, 1);
     g_assert_false (srt->has_mov_text);
-    g_auto (GStrv) b = vc_build_ffmpeg_argv ("/v/a.mkv", "/v/o.mkv", srt, "slow", TRUE);
+    g_auto (GStrv) b = vc_build_ffmpeg_argv ("/v/a.mkv", "/v/o.mkv", srt, &(VcOptions) { .preset = "slow", .keep_subs = TRUE });
     g_assert_cmpstr (argv_value (b, "-c:s"), ==, "copy");
 
     /* subtitles off */
-    g_auto (GStrv) c = vc_build_ffmpeg_argv ("/v/a.mp4", "/v/o.mp4", mt, "slow", FALSE);
+    g_auto (GStrv) c = vc_build_ffmpeg_argv ("/v/a.mp4", "/v/o.mp4", mt, &(VcOptions) { .preset = "slow" });
     g_assert_cmpint (argv_find (c, "0:s?"), ==, -1);
     g_assert_cmpint (argv_find (c, "-c:s"), ==, -1);
     g_assert_cmpint (argv_find (c, "-sn"), >, 0);
     g_assert_cmpstr (argv_value (c, "-tag:v"), ==, "hvc1");
+}
+
+static VcProbe *
+probe_of (const char *pix_fmt)
+{
+    VcProbe *p = g_new0 (VcProbe, 1);
+    p->pix_fmt = g_strdup (pix_fmt);
+    return p;
+}
+
+static void
+test_10bit_formats (void)
+{
+    const char *eight[] = { "nv12", "yuv410p", "yuv420p", "yuvj420p", "rgb24", "yuv444p" };
+    const char *ten[] = { "yuv420p10le", "yuv422p10le", "p010le", "yuv420p12le", "yuv420p10be",
+                          "p012le", "gray10le" };
+    for (gsize i = 0; i < G_N_ELEMENTS (eight); i++) {
+        g_autoptr (VcProbe) p = probe_of (eight[i]);
+        g_assert_false (vc_probe_is_10bit (p));
+    }
+    for (gsize i = 0; i < G_N_ELEMENTS (ten); i++) {
+        g_autoptr (VcProbe) p = probe_of (ten[i]);
+        g_assert_true (vc_probe_is_10bit (p));
+    }
+}
+
+static void
+test_ffmpeg_argv_hdr10 (void)
+{
+    g_autoptr (VcProbe) pq = vc_parse_probe (
+        "index=0\ncodec_name=hevc\ncodec_type=video\nwidth=3840\nheight=2160\n"
+        "pix_fmt=yuv420p10le\ncolor_space=bt2020nc\ncolor_transfer=smpte2084\n"
+        "color_primaries=bt2020\n", NULL);
+    g_auto (GStrv) a = vc_build_ffmpeg_argv ("/a.mkv", "/o.mp4", pq, &(VcOptions) { .preset = "slow" });
+    g_assert_cmpstr (argv_value (a, "-x265-params"), ==, "log-level=error:hdr10=1:repeat-headers=1");
+    g_assert_cmpstr (argv_value (a, "-color_trc"), ==, "smpte2084");
+
+    g_autoptr (VcProbe) hlg = vc_parse_probe (PROBE_HLG, NULL);
+    g_autoptr (VcProbe) sdr = vc_parse_probe (PROBE_8BIT_SUBS, NULL);
+    g_auto (GStrv) b = vc_build_ffmpeg_argv ("/a.mov", "/o.mp4", hlg, &(VcOptions) { .preset = "slow" });
+    g_auto (GStrv) c = vc_build_ffmpeg_argv ("/a.mp4", "/o.mp4", sdr, &(VcOptions) { .preset = "slow" });
+    g_assert_cmpstr (argv_value (b, "-x265-params"), ==, "log-level=error");
+    g_assert_cmpstr (argv_value (c, "-x265-params"), ==, "log-level=error");
+}
+
+/* 1080p video plus the given audio streams ("codec:bps", bps may be N/A). */
+static VcProbe *
+probe_with_audio (const char *const *audio)
+{
+    GString *t = g_string_new ("index=0\ncodec_name=h264\ncodec_type=video\nwidth=1920\n"
+                               "height=1080\npix_fmt=yuv420p\navg_frame_rate=30/1\nbit_rate=16000000\n");
+    for (int i = 0; audio[i] != NULL; i++) {
+        g_auto (GStrv) f = g_strsplit (audio[i], ":", 2);
+        g_string_append_printf (t, "index=%d\ncodec_name=%s\ncodec_type=audio\nbit_rate=%s\n",
+                                i + 1, f[0], f[1]);
+    }
+    g_string_append (t, "duration=10.0\n");
+    VcProbe *p = vc_parse_probe (t->str, NULL);
+    g_string_free (t, TRUE);
+    g_assert_nonnull (p);
+    return p;
+}
+
+static void
+test_audio_copy (void)
+{
+    /* 1080p class: 128k, so up to 140.8k copies */
+    struct { const char *audio[3]; const char *codec; } cases[] = {
+        { { "aac:128000", NULL }, "copy" },
+        { { "aac:140000", "aac:96000", NULL }, "copy" },
+        { { "aac:256000", NULL }, "aac" },
+        { { "aac:N/A", NULL }, "aac" },
+        { { "opus:96000", NULL }, "aac" },
+        { { "ac3:128000", NULL }, "aac" },
+        { { "aac:128000", "ac3:128000", NULL }, "aac" },
+        { { "ac3:128000", "aac:128000", NULL }, "aac" },
+        { { NULL }, "aac" },
+    };
+    for (gsize i = 0; i < G_N_ELEMENTS (cases); i++) {
+        g_autoptr (VcProbe) p = probe_with_audio (cases[i].audio);
+        g_auto (GStrv) a = vc_build_ffmpeg_argv ("/a.mp4", "/o.mp4", p,
+                                                 &(VcOptions) { .preset = "medium" });
+        g_assert_cmpstr (argv_value (a, "-c:a"), ==, cases[i].codec);
+        g_assert_cmpint (argv_find (a, "-b:a") > 0, ==, strcmp (cases[i].codec, "aac") == 0);
+    }
+    const char *const aac128[] = { "aac:128000", NULL };
+    g_autoptr (VcProbe) p = probe_with_audio (aac128);
+    g_assert_cmpint (p->aac_kbps, ==, 128);
+    g_assert_cmpfloat (p->fps, ==, 30.0);
+}
+
+static void
+test_frame_rate_cap (void)
+{
+    struct { const char *rate; double fps; gboolean capped; } cases[] = {
+        { "60/1", 60, TRUE }, { "60000/1001", 59.94, TRUE }, { "30000/1001", 29.97, FALSE },
+        { "30/1", 30, FALSE }, { "24/1", 24, FALSE }, { "0/0", 0, FALSE }, { "N/A", 0, FALSE },
+    };
+    for (gsize i = 0; i < G_N_ELEMENTS (cases); i++) {
+        g_autofree char *t = g_strdup_printf ("index=0\ncodec_name=h264\ncodec_type=video\n"
+                                              "width=1920\nheight=1080\navg_frame_rate=%s\n",
+                                              cases[i].rate);
+        g_autoptr (VcProbe) p = vc_parse_probe (t, NULL);
+        g_assert_cmpfloat_with_epsilon (p->fps, cases[i].fps, 0.01);
+        g_auto (GStrv) on = vc_build_ffmpeg_argv ("/a.mp4", "/o.mp4", p,
+                                                  &(VcOptions) { .preset = "medium", .max_fps = 30 });
+        g_auto (GStrv) off = vc_build_ffmpeg_argv ("/a.mp4", "/o.mp4", p,
+                                                   &(VcOptions) { .preset = "medium" });
+        g_assert_cmpstr (argv_value (on, "-fpsmax"), ==, cases[i].capped ? "30" : NULL);
+        g_assert_cmpint (argv_find (off, "-fpsmax"), ==, -1);
+    }
+}
+
+static VcProbe *
+probe_sized (int w, int h, const char *codec)
+{
+    VcProbe *p = g_new0 (VcProbe, 1);
+    p->width = w;
+    p->height = h;
+    p->codec = g_strdup (codec);
+    p->pix_fmt = g_strdup ("yuv420p");
+    p->duration = 60;
+    return p;
+}
+
+static void
+test_max_size (void)
+{
+    struct { int w, h, max; const char *vf, *crf, *abr; } cases[] = {
+        /* 4K → 1080p class (CRF 27, 128k), by the short side for landscape and portrait */
+        { 3840, 2160, 1080, "scale=w='if(gt(iw,ih),-2,1080)':h='if(gt(iw,ih),1080,-2)'", "27", "128k" },
+        { 2160, 3840, 1080, "scale=w='if(gt(iw,ih),-2,1080)':h='if(gt(iw,ih),1080,-2)'", "27", "128k" },
+        { 1920, 1080, 720, "scale=w='if(gt(iw,ih),-2,720)':h='if(gt(iw,ih),720,-2)'", "26", "128k" },
+        /* odd source sizes: -2 rounds the long side to even */
+        { 1917, 1079, 720, "scale=w='if(gt(iw,ih),-2,720)':h='if(gt(iw,ih),720,-2)'", "26", "128k" },
+        /* never upscale; equal is left alone */
+        { 1280, 720, 1080, NULL, "26", "128k" },
+        { 1920, 1080, 1080, NULL, "27", "128k" },
+        { 3840, 2160, 0, NULL, "28", "160k" },
+    };
+    for (gsize i = 0; i < G_N_ELEMENTS (cases); i++) {
+        g_autoptr (VcProbe) p = probe_sized (cases[i].w, cases[i].h, "h264");
+        VcOptions o = { .preset = "medium", .max_short_side = cases[i].max };
+        g_auto (GStrv) a = vc_build_ffmpeg_argv ("/a.mp4", "/o.mp4", p, &o);
+        g_assert_cmpstr (argv_value (a, "-vf"), ==, cases[i].vf);
+        g_assert_cmpstr (argv_value (a, "-crf"), ==, cases[i].crf);
+        g_assert_cmpstr (argv_value (a, "-b:a"), ==, cases[i].abr);
+    }
+    /* the estimate follows the output class: 4K capped to 1080p estimates like 1080p */
+    g_autoptr (VcProbe) k4 = probe_sized (3840, 2160, "h264");
+    g_autoptr (VcProbe) hd = probe_sized (1920, 1080, "h264");
+    guint64 big = G_GUINT64_CONSTANT (1000000000);
+    g_assert_cmpuint (vc_estimate_size (k4, big, &(VcOptions) { .preset = "medium", .max_short_side = 1080 }),
+                      ==, vc_estimate_size (hd, big, &(VcOptions) { .preset = "medium" }));
+    g_assert_cmpuint (vc_estimate_size (k4, big, &(VcOptions) { .preset = "medium" }), >,
+                      vc_estimate_size (hd, big, &(VcOptions) { .preset = "medium" }));
+}
+
+static void
+test_ffmpeg_argv_gpu (void)
+{
+    g_autoptr (VcProbe) sdr = vc_parse_probe (PROBE_8BIT_SUBS, NULL);
+    g_auto (GStrv) a = vc_build_ffmpeg_argv ("/v/a.mp4", "/v/o.mp4", sdr,
+                                             &(VcOptions) { .preset = VC_PRESET_GPU });
+    const char *expected[] = {
+        "ffmpeg", "-hide_banner", "-nostdin", "-loglevel", "error", "-nostats",
+        "-progress", "pipe:1", "-y",
+        "-vaapi_device", "/dev/dri/renderD128", "-hwaccel", "vaapi", "-hwaccel_output_format", "vaapi",
+        "-i", "/v/a.mp4", "-map", "0:v:0", "-map", "0:a?", "-map_metadata", "0",
+        "-vf", "format=nv12|vaapi,hwupload",
+        "-c:v", "hevc_vaapi", "-low_power", "1", "-rc_mode", "CQP", "-qp", "27",
+        "-c:a", "aac", "-b:a", "96k",
+        "-sn", "-tag:v", "hvc1", "-movflags", "+faststart+use_metadata_tags",
+        "/v/o.mp4", NULL,
+    };
+    g_assert_cmpstrv (a, expected);
+
+    /* 10-bit HLG: p010 upload, main10, colour tags; downscale uses scale_vaapi */
+    g_autoptr (VcProbe) hlg = vc_parse_probe (PROBE_HLG, NULL);
+    VcOptions o = { .preset = VC_PRESET_GPU, .max_short_side = 480 };
+    g_auto (GStrv) b = vc_build_ffmpeg_argv ("/v/a.mov", "/v/o.mp4", hlg, &o);
+    g_assert_cmpstr (argv_value (b, "-vf"), ==, "format=p010|vaapi,hwupload,"
+                     "scale_vaapi=w='if(gt(iw,ih),-2,480)':h='if(gt(iw,ih),480,-2)'");
+    g_assert_cmpstr (argv_value (b, "-profile:v"), ==, "main10");
+    g_assert_cmpstr (argv_value (b, "-color_trc"), ==, "arib-std-b67");
+    g_assert_cmpstr (argv_value (b, "-qp"), ==, "28");   /* 480p class */
+    g_assert_cmpint (argv_find (b, "-pix_fmt"), ==, -1);
+    g_assert_cmpint (argv_find (b, "-x265-params"), ==, -1);
+
+    g_auto (GStrv) t = vc_build_gpu_test_argv ();
+    g_assert_cmpstr (argv_value (t, "-c:v"), ==, "hevc_vaapi");
+    g_assert_cmpstr (argv_value (t, "-frames:v"), ==, "1");
+}
+
+static void
+test_estimate_codec_aware (void)
+{
+    VcOptions med = { .preset = "medium" };
+    /* 1080p at 10 Mbps for 60 s: H.264 shrinks, an already lean HEVC (iPhone) does not */
+    g_autoptr (VcProbe) h264 = probe_sized (1920, 1080, "h264");
+    g_autoptr (VcProbe) hevc = probe_sized (1920, 1080, "hevc");
+    guint64 src = 75000000;
+    g_assert_true (vc_worth_encoding (h264, src, &med));
+    /* 2.5 Mbps HEVC: the cap is its own bitrate, plus audio, so no 5% saving */
+    g_assert_false (vc_worth_encoding (hevc, 18750000, &med));
+    /* unknown duration always encodes */
+    hevc->duration = 0;
+    g_assert_true (vc_worth_encoding (hevc, 18750000, &med));
 }
 
 static void
@@ -357,7 +565,7 @@ test_preset_factors (void)
         vc_preset_factors (VC_PRESETS[i], &t, &sz);
         g_assert_cmpfloat (t, >, prev);
         g_assert_cmpfloat (sz, >, 0.5);
-        g_assert_cmpfloat (sz, <, 1.5);
+        g_assert_cmpfloat (sz, <, 2.0);
         prev = t;
     }
 }
@@ -367,24 +575,24 @@ test_estimate_size (void)
 {
     VcProbe p = { .width = 1280, .height = 720, .duration = 60.0 };
     /* 720p at medium: (1600 video + 128 audio) kbps for 60 s */
-    g_assert_cmpuint (vc_estimate_size (&p, 60931727, "medium"), ==, 12960000);
+    g_assert_cmpuint (vc_estimate_size (&p, 60931727, &(VcOptions) { .preset = "medium" }), ==, 12960000);
     /* the preset size factor scales only the video part */
     double t, sz;
     vc_preset_factors ("slow", &t, &sz);
-    g_assert_cmpuint (vc_estimate_size (&p, 60931727, "slow"), ==,
+    g_assert_cmpuint (vc_estimate_size (&p, 60931727, &(VcOptions) { .preset = "slow" }), ==,
                       (guint64) ((1600 * sz + 128) * 1000.0 / 8.0 * 60.0));
     /* a lean source caps the video at 60% of its own bitrate: 6 MB over 60 s = 800 kbps */
-    guint64 lean = vc_estimate_size (&p, 6000000, "medium");
+    guint64 lean = vc_estimate_size (&p, 6000000, &(VcOptions) { .preset = "medium" });
     g_assert_cmpuint (lean, ==, (guint64) ((6000000 * 8.0 / 1000.0 / 60.0 * 0.6 + 128)
                                            * 1000.0 / 8.0 * 60.0));
     /* never above the source (an already tiny HEVC file), and 0 when the duration is unknown */
-    g_assert_cmpuint (vc_estimate_size (&p, 97000, "medium"), <=, 97000);
+    g_assert_cmpuint (vc_estimate_size (&p, 97000, &(VcOptions) { .preset = "medium" }), <=, 97000);
     VcProbe unknown = { .width = 1280, .height = 720, .duration = 0 };
-    g_assert_cmpuint (vc_estimate_size (&unknown, 60931727, "medium"), ==, 0);
-    g_assert_cmpuint (vc_estimate_size (&p, 0, "medium"), ==, 0);
+    g_assert_cmpuint (vc_estimate_size (&unknown, 60931727, &(VcOptions) { .preset = "medium" }), ==, 0);
+    g_assert_cmpuint (vc_estimate_size (&p, 0, &(VcOptions) { .preset = "medium" }), ==, 0);
     /* portrait uses the short side, like the class */
     VcProbe portrait = { .width = 720, .height = 1280, .duration = 60.0 };
-    g_assert_cmpuint (vc_estimate_size (&portrait, 60931727, "medium"), ==, 12960000);
+    g_assert_cmpuint (vc_estimate_size (&portrait, 60931727, &(VcOptions) { .preset = "medium" }), ==, 12960000);
 }
 
 static void
@@ -423,6 +631,13 @@ main (int argc, char **argv)
     g_test_add_func ("/ffmpeg/argv-10bit-hlg", test_ffmpeg_argv_10bit_hlg);
     g_test_add_func ("/ffmpeg/argv-presets", test_ffmpeg_argv_presets);
     g_test_add_func ("/ffmpeg/argv-subtitles", test_ffmpeg_argv_subtitles);
+    g_test_add_func ("/probe/10bit-formats", test_10bit_formats);
+    g_test_add_func ("/ffmpeg/argv-hdr10", test_ffmpeg_argv_hdr10);
+    g_test_add_func ("/ffmpeg/audio-copy", test_audio_copy);
+    g_test_add_func ("/ffmpeg/frame-rate-cap", test_frame_rate_cap);
+    g_test_add_func ("/ffmpeg/max-size", test_max_size);
+    g_test_add_func ("/ffmpeg/argv-gpu", test_ffmpeg_argv_gpu);
+    g_test_add_func ("/estimate/codec-aware", test_estimate_codec_aware);
     g_test_add_func ("/progress/line", test_progress_line);
     g_test_add_func ("/rules/worth-keeping", test_worth_keeping);
     g_test_add_func ("/rules/should-trash", test_should_trash);

@@ -26,9 +26,13 @@ A small Linux desktop app, written in C with GTK4. You pick a folder, it finds e
 1. The app is Linux only (Fedora, GTK 4.22). **No Windows or macOS**, confirmed.
 2. The scan is **not recursive**, confirmed: only files directly in the chosen folder. The `compressed/` subfolder is always skipped.
 3. Encodes run **one at a time**. x265 already uses all 16 cores, so running several at once gains nothing and would exceed the 7 GB of RAM.
-4. Resolution is **never changed**, confirmed. There is no upscaling, no downscaling, and no downscale option.
+4. Resolution is **kept by default**. Opt-in **Max size** (`Original size` / `Max 1080p` / `Max 720p`, D6 2026-11-08) downscales by the short side; it never upscales.
 5. Subtitles are **dropped by default**. The **Keep subtitles** option keeps them (see below). The first video stream and all audio streams are always kept.
 6. The x265 preset **defaults to `slow`** and can be changed in the UI.
+7. The frame rate is **kept by default**. Opt-in **Max 30 fps** (D5, 2026-11-08) caps sources above 30 fps.
+8. A **GPU** speed (Intel VA-API `hevc_vaapi`, D3 2026-11-08) is offered when a 1-frame test encode works at startup. Same codec (HEVC), about 10× faster, files about 1.5× larger at the same quality.
+9. **Start with nothing selected skips videos predicted to save nothing** (D2, 2026-11-08). Selecting one, or its own play button, still compresses it. Unknown durations are always compressed.
+10. Outputs **keep the source's date and phone metadata** (location, creation date, camera; D4 2026-11-08), and the file's modified time.
 
 ## Auto-detection and encode settings
 
@@ -47,18 +51,20 @@ The app runs `ffprobe` on each file and reads its width, height, rotation, codec
 
 Low resolutions get a lower CRF, which means higher quality, because each pixel covers more of the screen and artifacts are easier to see. This table lives in one array in `compress.c` and is the only place to tune quality against size.
 
-**Fixed for every file:** `-c:v libx265 -c:a aac`. The frame rate is kept as it is.
+**Fixed for every file:** `-c:v libx265` (or `hevc_vaapi` for GPU). Audio is re-encoded with `-c:a aac` at the class bitrate, except when every audio stream is already AAC at no more than the class bitrate + 10%: then it is copied (`-c:a copy`), which avoids a second lossy pass. The frame rate is kept unless **Max 30 fps** is on and the source is above 30.5 fps (`-fpsmax 30`). With **Max size**, the class (CRF, QP, audio) is chosen from the output size.
 
 **Bit depth / HDR:** the source's bit depth is kept.
-- *8-bit sources* (`pix_fmt` with no `10`/`12`, e.g. `yuv420p`, `yuvj420p`) are encoded with `-pix_fmt yuv420p`.
+- *8-bit sources* (`pix_fmt` without a real depth marker `p10`/`p12`/`10le`/`10be`/`12le`/`12be`; e.g. `yuv420p`, `yuvj420p`, `nv12`, `yuv410p`) are encoded with `-pix_fmt yuv420p`.
 - *10-bit or higher sources* (e.g. `yuv420p10le`, `p010le`, `yuv422p10le`; iPhone HDR is 10-bit HLG) are encoded with `-pix_fmt yuv420p10le -profile:v main10`, and the source's colour tags are copied: `-color_primaries`, `-color_trc` and `-colorspace`, with values from ffprobe. This keeps the file HDR, so it isn't washed out. Each tag is copied only if ffprobe reports it (not `unknown`).
+- PQ (HDR10, `smpte2084`) sources also get `-x265-params …:hdr10=1:repeat-headers=1` so players switch to HDR. HLG needs nothing extra. Mastering-display/MaxCLL values are not passed through.
 - Limit: Dolby Vision metadata is not carried over. Those files keep their HLG/HDR10 base layer, which is what plays on most devices anyway.
 - The list row shows a `10-bit HDR` or `10-bit` tag so you can see which files take this path.
 
 **Speed (x265 preset):** a segmented control with `faster`, `fast`, `medium`, `slow` (**default**) and `slower`. The choice applies to the whole batch. Measured on this laptop (2026-11-08, a noisy 16 Mbps 1080p clip and the 720p fixture), against `medium`: `faster` 0.69× the time, `fast` 0.85×, `slow` 2.1×, `slower` 8.2×. At the same CRF the sizes stayed within about 8% of `medium` (slower presets came out slightly *larger*, because they keep more detail), so the speed mostly buys quality, not a smaller file. The earlier claim ("`slow` is 5–10% smaller") did not hold on these clips. Each launch starts at `slow`.
 
 **Container / subtitles:**
-- *Keep subtitles off (default):* output is `.mp4` with `-sn -tag:v hvc1 -movflags +faststart`. `hvc1` lets the file play in QuickTime and on iOS.
+- *Keep subtitles off (default):* output is `.mp4` with `-sn -tag:v hvc1 -movflags +faststart+use_metadata_tags`. `hvc1` lets the file play in QuickTime and on iOS; `use_metadata_tags` keeps the phone's `com.apple.quicktime.*` keys (location, camera).
+- Every output uses `-map_metadata 0` (ffmpeg 8 drops `creation_time` without it), and gets the original's modified time after the `.part` is renamed.
 - *Keep subtitles on:* output is `.mkv` with `-map 0:s? -c:s copy`. MP4-style `mov_text` subtitles can't be copied into MKV, so if a file has them the app uses `-c:s srt` instead (text is preserved). Bitmap subtitles (PGS, DVD) are copied as they are. A file with no subtitles still produces `.mkv` while the option is on, so the output type doesn't change from file to file within a batch.
 
 **"Not smaller" rule:** if the encoded file is not at least 5% smaller than the original, the app deletes it and marks the row `Already efficient`. This happens with files that are already HEVC/AV1 or very low bitrate.
@@ -74,7 +80,7 @@ Removal uses `g_file_trash()`, which moves the file to the Trash so it can be re
 - **Empty state:** a drop zone ("Drop a folder of videos here") with **Choose Folder…**. Dropping a folder on the window loads it, unless something is running.
 - **Header:** the folder name, its path (`~/…`) under it, and **Choose Folder…** (hidden while running and once finished).
 - **List:** columns Name (codec · duration · size), Quality (class and `10-bit`/`10-bit HDR` chips) and Size → Estimated. Each row has a checkbox; Ctrl+click and Shift+click on a row also select.
-- **Bottom bar, ready:** Speed (segmented, with the ⓘ guide and a `≈ N% smaller · F× Medium time` caption), **Keep subtitles** and **Move originals to Trash** switches, the batch total (`221 MB → ≈ 43 MB`, `N videos ready · estimated for Slow`), and round **Start** / **Pause** / **Stop**. Every icon button has a tooltip (title, shortcut, one line of help) and an accessible label.
+- **Bottom bar, ready:** Speed (segmented, with the ⓘ guide and a `≈ N% smaller · F× Medium time` caption), **Keep subtitles**, **Move originals to Trash** and **Max 30 fps** switches, the **Max size** dropdown, the batch total (`221 MB → ≈ 43 MB`, `N videos ready · estimated for Slow`), and round **Start** / **Pause** / **Stop**. Every icon button has a tooltip (title, shortcut, one line of help) and an accessible label.
 - **Bottom bar, running:** `Compressing n of N · name`, an overall bar weighted by size, `About N min left` (from the current file's speed; `Press play to resume` while paused) and what was saved so far.
 - **Batch buttons act on all videos.** **Start** (Space) queues every new, stopped, failed or held video; while paused it becomes **Resume** and only resumes the paused encode. **Pause** (Space) freezes the running encode (`SIGSTOP`), so there is still only one ffmpeg alive; nothing else starts until it is resumed (`SIGCONT`) or stopped. **Stop** (Esc) kills ffmpeg, deletes the `.part`, and takes everything else off the queue. Esc clears the selection first if there is one.
 - **Per-video buttons** (on hover, always on the running or held row; the same actions on right-click): **Compress next** (moves it to the front of the queue, or compresses only it when idle; resumes it when paused), **Pause/Hold** (a held video is skipped until its play button is pressed), **Stop/Skip** (stop during the output check keeps the original), **Show in Files** and **Move original to Trash** (finished videos with a kept output; no dialog, a toast says it can be restored from the Trash).
@@ -83,9 +89,12 @@ Removal uses `g_file_trash()`, which moves the file to the Trash so it can be re
 - Row status: dashed pill = estimate, green `✓ −N%` = real result, `On hold`, `● Waiting`, a progress bar with percent while encoding, `Already efficient`, `Unreadable`, `Failed` / `Stopped` (tooltip has the reason). The meta line adds `Original in Trash`, `Original kept` (tooltip says why) or `Already compressed`.
 - Trash still applies the same three checks above before calling `g_file_trash()`, including for outputs from an earlier run.
 - A video that came out `already efficient` is finished: it isn't encoded again in the same session.
-- Speed, Keep subtitles, the Trash switch and Choose Folder are locked while anything is queued, encoding or being checked.
+- Speed, Keep subtitles, the Trash switch, Max 30 fps, Max size and Choose Folder are locked while anything is queued, encoding or being checked.
+- Choose Folder stays off until the startup tool check (run asynchronously, so the window paints at once) passes.
+- A video that bulk Start skipped says `No saving · skipped` (tooltip: select it to compress anyway); if nothing else is left, the total says `N videos likely won't get smaller · select to compress anyway`.
+- ffmpeg runs at nice 10 and idle I/O priority, so the desktop stays responsive. Up to 4 `ffprobe`s run at once while a folder loads.
 
-**Size estimate:** after probing, each row shows a rough expected output, e.g. `61 MB → ≈ 11 MB` with a dashed `−82%` pill, for the selected speed (it updates when the speed changes). It is `(class video bitrate × preset size factor + class audio bitrate) × duration`. The video bitrate is capped at 60% of the source's bitrate, and the result is never more than the source. If it predicts less than a 5% saving, the pill says `no saving`. The class bitrates are guesses until they are calibrated on real phone clips; the estimate never affects what is encoded.
+**Size estimate:** after probing, each row shows a rough expected output, e.g. `61 MB → ≈ 11 MB` with a dashed `−82%` pill, for the selected speed and max size (it updates when either changes). It is `(preset size factor × min(class video bitrate, source bitrate × codec cap) + class audio bitrate) × duration`. The codec cap is 1.0 for HEVC/VP9/AV1 sources and 0.6 for everything else, and the result is never more than the source. If it predicts less than a 5% saving, the pill says `no saving`. The class bitrates are guesses until they are calibrated on real phone clips; the estimate never affects what is encoded.
 
 **Speed guide:** the ⓘ next to Speed opens a card that gives, for each preset, the encode time against `medium` (with a bar) and the estimated total size against the originals in the current folder (with a bar). The current speed is highlighted. Each speed button's tooltip gives the same two numbers.
 

@@ -111,7 +111,7 @@ that each phase ends with a usable mode. Every UI task touches `main.c`, so they
 
 ### Phase 7: App shell ([SPEC-app-shell.md](../SPEC-app-shell.md))
 - [ ] T16: `src/modes.c/.h` core: `VcMode`, `VcStep`, `VcOptions`, filters, out dirs, tool check, `vc_mode_steps(COMPRESS)` (pure logic, tested)
-- [ ] T17: Multi-step job runner in `main.c` (steps in order, move outputs, remove file *and* directory parts), Compress video only
+- [ ] T17: Multi-step job runner in `main.c` (steps in order, move outputs, remove file *and* directory parts), Compress video only; keep R2's low-priority launcher and R12's mtime copy (plan-performance.md)
 - [ ] T18: **Choose Files** (multi-select), list source = folder or files, outputs next to each file, title `Media Tools`
 
 ### Checkpoint 7

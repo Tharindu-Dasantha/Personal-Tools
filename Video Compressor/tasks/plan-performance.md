@@ -49,15 +49,15 @@ the same SSIM, and about 1.5× the size. `hevc_qsv` in its default mode is *slow
 H.265 at full resolution and full frame rate. Nearly all of the time is spent inside ffmpeg. The app's own code
 costs almost nothing.
 
-## Decisions needed from you (SPEC "Ask first")
-| # | Decision | Task | Why it needs you |
-|---|---|---|---|
-| D1 | Default Speed `slow` → `medium` | R3 | SPEC Criterion 11 and plan.md say the default is `slow` |
-| D2 | Start skips files predicted "no saving" unless selected | R6 | Changes what Start does |
-| D3 | Add an Intel GPU (`hevc_qsv`) encoder option | R9 | Same codec (HEVC), different encoder; treat as "changing the codec" |
-| D4 | Keep GPS location and creation date in outputs | R12 | Today location is dropped. Keeping it matters if you share compressed copies |
-| D5 | Optional "Max frame rate: 30" (60 fps clips do half the work) | R14 | New option; SPEC has no frame-rate rule |
-| D6 | Optional "Max size: 1080p" (4K does a quarter of the work) | R15 | SPEC resolved "no downscale option"; this reverses it, as an opt-in |
+## Decisions (SPEC "Ask first"), all answered yes on 2026-11-08
+| # | Decision | Task | Why it needs you | Answer |
+|---|---|---|---|---|
+| D1 | Default Speed `slow` → `medium` | R3 | SPEC Criterion 11 and plan.md say the default is `slow` | Yes (still gated on R3's SSIM/VMAF check) |
+| D2 | Start skips files predicted "no saving" unless selected | R6 | Changes what Start does | Yes |
+| D3 | Add an Intel GPU encoder option (VA-API, see R8) | R9 | Same codec (HEVC), different encoder; treat as "changing the codec" | Yes (still gated on R8 go/no-go) |
+| D4 | Keep GPS location and creation date in outputs | R12 | Today location is dropped. Keeping it matters if you share compressed copies | Yes: date and location |
+| D5 | Optional "Max frame rate: 30" (60 fps clips do half the work) | R14 | New option; SPEC has no frame-rate rule | Yes (opt-in, off by default) |
+| D6 | Optional "Max size: 1080p" (4K does a quarter of the work) | R15 | SPEC resolved "no downscale option"; this reverses it, as an opt-in | Yes (opt-in, default `Original`) |
 
 Not planned, on purpose: parallel encodes (x265 already uses all 16 threads; 7 GB RAM is tight for two 4K encodes),
 AV1 (many iPhones can't play it smoothly), GPU decode (`-hwaccel`; decoding is not the bottleneck while x265 runs),

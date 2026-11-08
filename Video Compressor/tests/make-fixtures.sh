@@ -33,6 +33,11 @@ ff $(src 1280x720 10) \
    -vf setparams=color_primaries=bt2020:color_trc=arib-std-b67:colorspace=bt2020nc,format=yuv422p10le \
    -c:v prores_ks -profile:v 2 -c:a aac hlg-10bit.mov
 
+echo "hdr10-pq.mov"
+ff $(src 1280x720 10) \
+   -vf setparams=color_primaries=bt2020:color_trc=smpte2084:colorspace=bt2020nc,format=yuv422p10le \
+   -c:v prores_ks -profile:v 2 -c:a aac hdr10-pq.mov
+
 # Already HEVC at a low bitrate: re-encoding cannot save 5%.
 echo "lowbitrate.mp4"
 ff $(src 426x240 10) -c:v libx265 -crf 40 -preset fast -x265-params log-level=error \
