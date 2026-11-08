@@ -1,6 +1,6 @@
 # Handoff: Video Compressor
 
-Last updated 2026-11-08. Read [SPEC.md](SPEC.md) (source of truth), then [tasks/plan.md](tasks/plan.md)
+Last updated 2026-11-08 (Phase 6). Read [SPEC.md](SPEC.md) (source of truth), then [tasks/plan.md](tasks/plan.md)
 and [tasks/todo.md](tasks/todo.md). Checkboxes in `todo.md` are ticked only for things actually verified.
 
 ## Where things stand
@@ -10,13 +10,18 @@ and [tasks/todo.md](tasks/todo.md). Checkboxes in `todo.md` are ticked only for 
 | 1. Foundation | T1 | **Done, all checks verified** (incl. error dialogs, screenshotted on Xvfb) |
 | 2. See your videos | T2, T3 | **Done, all checks verified** (GUI on Xvfb, 2026-11-08) |
 | 3. Compress (MVP) | T4–T8 | **Done, all checks verified** (GUI on Xvfb, 2026-11-08) |
-| 4. Delete originals | T9, T10 | **Done, all checks verified** (GUI on Xvfb, 2026-11-08). Uncommitted; awaiting Checkpoint 4 review |
-| 5. Harden | T11 | **Not started** |
+| 4. Delete originals | T9, T10 | **Done, all checks verified** (GUI on Xvfb, 2026-11-08). Committed `e0a1656` |
+| 5. Harden | T11 | **Done except Criterion 4 and 12's iPhone half (the user's eyes).** ASan/UBSan clean. Close-mid-encode crash fixed. Uncommitted |
+| 6. Controls + estimates | T12–T15 | **Done, verified on Xvfb with ASan.** Icon buttons, pause, per-item/multi-select actions, size estimate, speed guide. Uncommitted; awaiting review |
 
 Pushed to `origin/main` (Phase 2 checks: `026de4e`).
 
-**Next step:** **review with the user (Checkpoint 4) before starting Phase 5.** Phase 4 is not
-committed yet; ask for the commit date. Open points are listed under "Open issues".
+**Next step:** review Phase 6 with the user, then commit (ask for the date). Still only the user can do:
+1. Supply a real 200 MB+ phone clip and judge it at `slow` and `faster` (Criterion 4). Fill the empty row in `plan.md`, and use it
+   to recalibrate `EST_VIDEO_KBPS` (the size estimate) in `compress.c`.
+2. Judge a real iPhone HDR clip for washed-out colour (Criterion 12).
+
+T11 results and the measured preset factors are in `tasks/plan.md`.
 
 ## Build, test, run (from the repo root; the folder name has a space)
 
@@ -30,6 +35,15 @@ ctest --test-dir "Video Compressor/build" --output-on-failure
 
 Debug builds use `-Werror`. Run the tests before every commit (SPEC rule).
 
+Sanitizer builds go under `build/` so they stay gitignored:
+```
+# ASan + UBSan (needs libasan libubsan):
+cmake -S "Video Compressor" -B "Video Compressor/build/asan" -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"
+# What ran without them: UBSan in trap mode, fortify, plus glibc heap checks at runtime:
+cmake -S "Video Compressor" -B "Video Compressor/build/san" -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_FLAGS="-O1 -D_FORTIFY_SOURCE=3 -fsanitize=undefined -fsanitize-undefined-trap-on-error -fno-sanitize-recover=all -fno-omit-frame-pointer"
+#   run the app with MALLOC_CHECK_=3 MALLOC_PERTURB_=165 G_DEBUG=fatal-criticals; a trap is exit 132, a heap abort 134
+```
+
 ## Code map
 
 - `src/compress.c/.h`: all decisions, no GTK. Every function has unit tests in
@@ -39,23 +53,30 @@ Debug builds use `-Werror`. Run the tests before every commit (SPEC rule).
     of a new stream. Don't drop `index` from `vc_build_ffprobe_argv()`.
   - `"N/A"` and `"unknown"` are both treated as missing values.
   - `VC_CLASSES[]` (the CRF/audio table) is **ask-first** to change.
+  - `EST_VIDEO_KBPS[]` (parallel to `VC_CLASSES`, static-asserted) and `PRESET_FACTORS[]` only feed the size estimate
+    and the speed guide. They never change what is encoded. The factors were measured (plan.md, "Preset factors"); the kbps values are guesses.
 - `src/main.c`: UI plus async process wiring. There is one global `App app` (the SPEC allows this).
   - Probing runs one ffprobe at a time (`probe_step` → `probe_done`). When a new folder is chosen,
     `app.probe_cancel` is cancelled. A cancelled callback returns **before** touching `app.items`.
+  - **Per-item state** (`State` enum): NEW → QUEUED → ACTIVE → DONE/TRASHED, plus HELD (paused while queued) and CHECKING
+    (verify, then trash). `app.job` is the one encoding item; `app.paused` means it is SIGSTOPped. `encode_next()` starts
+    the first QUEUED item in list order, and does nothing while `app.job` is set (even when paused), so there is only ever one ffmpeg.
+    The action buttons use `targeted()` (selected rows, or all when none) plus `can_start/pause/stop/trash()`.
+    `update_controls()` greys each button by those rules. DONE with `out == NULL` means already efficient: finished, never re-encoded.
   - Encoding: `encode_next()` → `start_job()`. Each job waits for three events (stdout EOF,
     stderr EOF, process exit), counted in `app.pending`. `finish_job()` runs only when all three
     are done, so the `.part` file is deleted only after ffmpeg has closed it.
-  - Cancel calls `g_subprocess_force_exit()`, and `finish_job()` sees `app.cancelled`.
+  - Stop sets `it->stop` and calls `g_subprocess_force_exit()` (SIGKILL ends a paused ffmpeg too). `finish_job()` sees `it->stop`.
     Closing the window mid-encode kills ffmpeg, waits for it and unlinks the `.part`
-    synchronously (`on_close`).
+    synchronously (`on_close`). `on_close` also sets `app.closing`. GTK destroys the widgets, but async
+    callbacks still fire in the last loop iterations, so every callback that touches a row checks
+    `app.closing` first. Without it, closing mid-encode segfaulted. Any new async callback needs the same check.
   - The output is renamed with `g_file_move(..., G_FILE_COPY_NONE)`, which never overwrites.
-  - Trash (Phase 4): `finish_job()` → on a kept output with the option on, `verify_output()`
-    probes the output → `verify_done()` asks `vc_should_trash_original()` → `g_file_trash_async()`
-    → `trash_done()`. Each path ends in `next_job()`, which stops the batch if Cancel was pressed
-    meanwhile. A cancel during the output check keeps the original. The widget is `app.trash`; the
-    batch's snapshot of it is `app.trash_on`.
-  - `on_start()` shows the confirm dialog only when the option is on and at least one file has no
-    output yet; `start_batch()` does the real start.
+  - Trash: `check_then_trash(it)` (from `finish_job()` when the checkbox is on, or from the Trash button) →
+    `verify_done()` re-stats the output and asks `vc_should_trash_original()` → `g_file_trash_async()` → `trash_done()`.
+    The `Item *` is the callback's user_data. This runs alongside the next encode. Stop during the check keeps the original.
+  - `on_start()` shows the confirm dialog only when the checkbox is on and a targeted file has no output yet;
+    `do_start()` does the real start (and SIGCONTs a paused job).
 - `tests/make-fixtures.sh` writes these fixtures:
   - `240p.avi`, `480p.webm`, `720p.mp4` (60 s, 8 Mbps), `1080p.mkv`, `portrait.mov`
   - a name with quotes, `$` and unicode
@@ -65,6 +86,17 @@ Debug builds use `-Werror`. Run the tests before every commit (SPEC rule).
   - decoys: `notes.txt` and `fake.mp4` (a text file)
 
 ## Verified so far (2026-11-08)
+
+Phase 6, on Xvfb, `build/asan` (ASan + UBSan), run copies under `build/asan/run*`: all T14/T15 checks in `todo.md`, plus
+the full run at `faster` with subtitles and auto-trash (9 trashed and restored byte-identical, subtitle outputs `subrip`). Every
+session exited 0 with no sanitizer report. Use `ASAN_OPTIONS=detect_leaks=0` (GTK noise).
+
+Phase 5, on Xvfb, `build/san` (see Build): the full fixture run at `faster` with subtitles and trash on, a cancel,
+a restart, all 9 originals restored byte-identical, a second Start and a close gave exit 0 with nothing on stderr.
+Closing mid-encode **was** a SIGSEGV (exit 139); now it exits 0 with no `.part`. Closing during the output check
+(slow `ffprobe` wrapper) exits 0, the original is untouched and not trashed, and the output stays. The plain Debug
+build also exits 0 on close mid-encode. Always check the app's exit code: wrap it as
+`/bin/sh -c '"$0"; echo $? > rc' "$APP"` inside `dbus-run-session`.
 
 Phase 2 GUI, on Xvfb: the fixture folder lists exactly the 11 videos (`notes.txt` and `compressed/` are absent).
 The classes match ffprobe dimensions, portrait shows `1080p`, `fake.mp4` shows `Unreadable` and HLG shows
@@ -119,7 +151,7 @@ sleep 3; import -window root shot.png                                   # then v
 ```
 
 ```c
-/* xkey <x> <y> click | scroll | scrollup | <keysym> | ctrl+<keysym> | type <string> */
+/* xkey <x> <y> move | click | ctrlclick | scroll | scrollup | <keysym> | ctrl+<keysym> | type <string> */
 #include <X11/Xlib.h>
 #include <X11/XKBlib.h>
 #include <X11/keysym.h>
@@ -141,7 +173,13 @@ int main (int argc, char **argv) {
     Display *d = XOpenDisplay (NULL);
     if (!d || argc < 4) return 1;
     XTestFakeMotionEvent (d, -1, atoi (argv[1]), atoi (argv[2]), 0);
-    if (!strcmp (argv[3], "click")) {
+    if (!strcmp (argv[3], "move")) {
+    } else if (!strcmp (argv[3], "ctrlclick")) {
+        KeyCode ct = XKeysymToKeycode (d, XK_Control_L);
+        XTestFakeKeyEvent (d, ct, True, 0);
+        XTestFakeButtonEvent (d, 1, True, 0); XTestFakeButtonEvent (d, 1, False, 0);
+        XTestFakeKeyEvent (d, ct, False, 0);
+    } else if (!strcmp (argv[3], "click")) {
         XTestFakeButtonEvent (d, 1, True, 0); XTestFakeButtonEvent (d, 1, False, 0);
     } else if (!strcmp (argv[3], "scroll")) {
         for (int i = 0; i < 10; i++) { XTestFakeButtonEvent (d, 5, True, 0); XTestFakeButtonEvent (d, 5, False, 0); }
@@ -166,18 +204,21 @@ Gotchas:
 - The chooser's location entry auto-completes to the common prefix of the folder's files (`w3` became
   `w3/subs-`), and selecting a folder name that doesn't exist **creates it**. Make sure the folder
   has files without a shared prefix.
-- Header coordinates: Start (577,26), Cancel (501,26), Speed dropdown (240,75), whose first item is
-  `faster` at (241,125), Keep subtitles (297,75), Move to Trash (462,75). The trash confirm dialog has
-  Cancel at (163,130) and "Compress and Move to Trash" at (491,130).
+- Header coordinates (800 px window, Phase 6): Start (519,26), Pause (554,26), Stop (589,26), Trash button (631,26),
+  close (774,26). Speed dropdown (257,75), whose first item is `faster` at (258,125); ⓘ (309,75); Keep subtitles (337,75);
+  Move to Trash checkbox (503,75). The start confirm dialog has Cancel at (163,130) and "Compress and Move to Trash" at (491,130);
+  the Trash-button dialog has Cancel at (133,103) and "Move to Trash" at (398,103). Rows: first at y=130, then every 63 px.
+- Tooltips: any key press hides them, so hover with `xkey X Y move` (move away first, then onto the widget).
+- Multi-select: `xkey X Y ctrlclick`. Esc (with the pointer over the window) clears the selection.
 - Trash tests use the real `~/.local/share/Trash`, which needs the test folder on the same filesystem
   as home (`build/` is). Restore everything afterwards with `gio trash --restore`.
-- Don't wait on `pgrep -f <path>` in a loop: it matches the loop's own shell. Use `pgrep -x ffmpeg`.
+- Don't wait on `pgrep -f <path>` in a loop: it matches the loop's own shell. Use `pgrep -x ffmpeg` (or `pgrep -x sleep` for the slow-ffprobe wrapper).
 - VLC on Xvfb: `cvlc --no-audio --avcodec-hw=none --vout=xcb_x11 --start-time=5.5 f.mkv` (VA-API
   renders solid green). Add `--sub-track=0` for a track without the default flag.
 - To see the async probe state, put a wrapper `ffprobe` that does `sleep 3; exec /usr/bin/ffprobe "$@"`
   first on PATH.
 - `pkill -f video-compressor` kills your own shell (its command line matches). Close the window instead.
-- Cancel check (T6): during the 1080p encode, run `pgrep ffmpeg` (should be empty within 1 s),
+- Stop check (T6, was Cancel): during the 1080p encode, press Stop (589,26), run `pgrep ffmpeg` (should be empty within 1 s),
   `ls -A compressed/` (no `.part`) and `sha256sum` the original.
 
 ## Open issues and limits
@@ -195,14 +236,14 @@ Gotchas:
 - If the output check fails, the row shows `<size> · −N% – original kept`, with the reason in the tooltip.
   The SPEC doesn't name this text.
 
-- **ASan/UBSan can't link**: `libasan`/`libubsan` aren't installed. The user needs to run
-  `sudo dnf install libasan libubsan`. Required for T11 and Criterion 13.
+- The size estimate overshoots badly on `testsrc` fixtures (240p: ≈ 3.1 MB vs 770 kB actual), because synthetic video is unusually
+  easy to compress. It is meant for real footage and is uncalibrated until a phone clip is measured.
+- The "N left" counter doesn't include held (paused-while-queued) items.
 - Name collision: `clip.mov` and `clip.mp4` both map to `compressed/clip.mp4`. The second is
   skipped with "compressed/clip.mp4 exists" (honest, but it isn't encoded).
 - If a file's first video stream is cover art (some MP4s), the cover art gets encoded. Not handled.
 - Bitrate and rotation are not read from ffprobe (nothing uses them, and the short-side class makes
   rotation irrelevant).
-- After a cancel, re-pressing Start re-encodes "already efficient" files, because they have no output.
 - `on_exit` collides with libc's `on_exit()`. The callback is named `on_ffmpeg_exit` for that reason.
 
 ## Working with this user

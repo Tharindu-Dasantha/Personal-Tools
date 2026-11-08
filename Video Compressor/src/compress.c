@@ -15,6 +15,21 @@ static const VcClass VC_CLASSES[] = {
 
 const char *const VC_PRESETS[] = { "faster", "fast", "medium", "slow", "slower", NULL };
 
+/* Rough output video bitrate per class at medium, in the same order as VC_CLASSES. Only used for
+ * the size estimate shown before encoding; it never changes what is encoded.
+ * shortcut: guessed from a noisy 16 Mbps 1080p test clip (3.7 Mbps at medium) and scaled by
+ * pixel count; ignores frame rate. Recalibrate once real phone clips have been measured (T11). */
+static const int EST_VIDEO_KBPS[] = { 350, 600, 900, 1600, 3000, 8000 };
+G_STATIC_ASSERT (G_N_ELEMENTS (EST_VIDEO_KBPS) == G_N_ELEMENTS (VC_CLASSES));
+
+/* Encode time and output size against medium, measured with this app's argv on this laptop
+ * (tasks/plan.md, "Preset factors"). At a fixed CRF a slower preset keeps more detail; it does
+ * not reliably make the file smaller. */
+static const struct { const char *name; double time, size; } PRESET_FACTORS[] = {
+    { "faster", 0.69, 0.99 }, { "fast", 0.85, 1.06 }, { "medium", 1.0, 1.0 },
+    { "slow", 2.1, 1.08 },    { "slower", 8.2, 1.06 },
+};
+
 static const char *const VIDEO_EXTS[] = {
     "mp4", "mkv", "mov", "avi", "wmv", "flv", "webm", "m4v", "mpg", "mpeg", "ts", "m2ts", "3gp",
 };
@@ -304,4 +319,31 @@ vc_format_duration (double seconds)
         return g_strdup_printf ("%" G_GUINT64_FORMAT ":%02u:%02u",
                                 s / 3600, (guint) (s / 60 % 60), (guint) (s % 60));
     return g_strdup_printf ("%" G_GUINT64_FORMAT ":%02u", s / 60, (guint) (s % 60));
+}
+
+void
+vc_preset_factors (const char *preset, double *time_vs_medium, double *size_vs_medium)
+{
+    *time_vs_medium = *size_vs_medium = 1.0;
+    for (gsize i = 0; i < G_N_ELEMENTS (PRESET_FACTORS); i++)
+        if (g_strcmp0 (preset, PRESET_FACTORS[i].name) == 0) {
+            *time_vs_medium = PRESET_FACTORS[i].time;
+            *size_vs_medium = PRESET_FACTORS[i].size;
+        }
+}
+
+guint64
+vc_estimate_size (const VcProbe *probe, guint64 src_bytes, const char *preset)
+{
+    if (probe->duration <= 0 || src_bytes == 0)
+        return 0;
+    const VcClass *cls = vc_class_for (probe->width, probe->height);
+    double time, size;
+    vc_preset_factors (preset, &time, &size);
+    /* HEVC needs roughly half the bitrate of the source's codec, so a source that is already
+     * lean caps the guess; for an HEVC source that makes it pessimistic, which is the safe side. */
+    double src_kbps = src_bytes * 8.0 / 1000.0 / probe->duration;
+    double video_kbps = MIN (EST_VIDEO_KBPS[cls - VC_CLASSES] * size, src_kbps * 0.6);
+    double bytes = (video_kbps + cls->audio_kbps) * 1000.0 / 8.0 * probe->duration;
+    return MIN ((guint64) bytes, src_bytes);
 }

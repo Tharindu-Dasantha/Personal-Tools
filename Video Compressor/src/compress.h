@@ -44,3 +44,6 @@ gboolean vc_output_is_worth_keeping (guint64 src_bytes, guint64 out_bytes);
 gboolean vc_should_trash_original (gboolean opt_on, gboolean exit_ok, double src_dur,
                                    double out_dur, gboolean kept);
 char *vc_format_duration (double seconds);
+void vc_preset_factors (const char *preset, double *time_vs_medium, double *size_vs_medium);
+/* Rough compressed size in bytes, never above src_bytes; 0 when the duration is unknown. */
+guint64 vc_estimate_size (const VcProbe *probe, guint64 src_bytes, const char *preset);

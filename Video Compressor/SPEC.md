@@ -50,7 +50,7 @@ Low resolutions get a lower CRF, which means higher quality, because each pixel 
 - Limit: Dolby Vision metadata is not carried over. Those files keep their HLG/HDR10 base layer, which is what plays on most devices anyway.
 - The list row shows a `10-bit HDR` or `10-bit` tag so you can see which files take this path.
 
-**Speed (x265 preset):** a dropdown with `faster`, `fast`, `medium`, `slow` (**default**) and `slower`. The choice applies to the whole batch. `slow` gives files about 5–10% smaller than `medium` and takes about 2× the time. `faster` is roughly 3× quicker than `slow`, with files about 15% larger. Each launch starts at `slow`.
+**Speed (x265 preset):** a dropdown with `faster`, `fast`, `medium`, `slow` (**default**) and `slower`. The choice applies to the whole batch. Measured on this laptop (2026-11-08, a noisy 16 Mbps 1080p clip and the 720p fixture), against `medium`: `faster` 0.69× the time, `fast` 0.85×, `slow` 2.1×, `slower` 8.2×. At the same CRF the sizes stayed within about 8% of `medium` (slower presets came out slightly *larger*, because they keep more detail), so the speed mostly buys quality, not a smaller file. The earlier claim ("`slow` is 5–10% smaller") did not hold on these clips. Each launch starts at `slow`.
 
 **Container / subtitles:**
 - *Keep subtitles off (default):* output is `.mp4` with `-sn -tag:v hvc1 -movflags +faststart`. `hvc1` lets the file play in QuickTime and on iOS.
@@ -64,6 +64,20 @@ Low resolutions get a lower CRF, which means higher quality, because each pixel 
 3. the output passed the "not smaller" rule (if it didn't, the original is kept anyway)
 
 Removal uses `g_file_trash()`, which moves the file to the Trash so it can be recovered. If trashing fails (for example, on a filesystem with no Trash), the original is **kept** and the row shows `Compressed – original kept (trash failed)`. The app never permanently deletes a file. Rows say `Done – original trashed` so it is clear what happened.
+
+**Controls (added 2026-11-08):**
+- The header has icon buttons, each with a tooltip saying what it does: **Start** (▶), **Pause** (⏸), **Stop** (⏹) and **Move originals to Trash** (🗑). Icon-only buttons also get an accessible label.
+- The list allows multi-select (Ctrl+click, Shift+click; Esc clears). Each button acts on the **selected** videos, or on **all** videos when none are selected. A button is greyed out when none of those videos can take that action.
+- **Start** queues videos that are new, stopped, failed or held, and resumes a paused encode. Queued videos are encoded **one at a time**, in list order.
+- **Pause** on the running encode freezes ffmpeg (`SIGSTOP`) and nothing else starts until it is resumed (`SIGCONT`) or stopped, so there is still only one ffmpeg alive. Pause on a queued video holds it: it is skipped until Start is pressed for it.
+- **Stop** on the running encode kills ffmpeg and deletes the `.part` file (same as the old Cancel); the queue then continues with videos that weren't stopped. Stop on queued or held videos takes them off the queue. Stop during the output check keeps the original.
+- **Move originals to Trash** works on finished videos that have a kept output, including an output from an earlier run (`Skipped – compressed/… exists`). It asks for confirmation, then applies the same three checks as the checkbox above before calling `g_file_trash()`.
+- A video that came out `already efficient` is finished: it isn't encoded again in the same session.
+- Speed, Keep subtitles, the Trash checkbox and Choose Folder are locked while anything is queued, encoding or being checked.
+
+**Size estimate:** after probing, each row shows a rough expected output, e.g. `→ ≈ 11 MB (−82%)`, for the selected speed (it updates when the speed changes). It is `(class video bitrate × preset size factor + class audio bitrate) × duration`. The video bitrate is capped at 60% of the source's bitrate, and the result is never more than the source. If it predicts less than a 5% saving, the row says `≈ no saving`. The class bitrates are guesses until they are calibrated on real phone clips; the estimate never affects what is encoded.
+
+**Speed guide:** an ⓘ next to the Speed dropdown (and the dropdown itself) has a tooltip table that gives, for each preset, the encode time against `medium` and the estimated total size against the originals in the current folder, both in percent.
 
 **Size expectation, stated honestly:** how much a file shrinks depends on how wastefully it was encoded in the first place.
 - Typical phone or screen recordings in H.264 at 8–15 Mbps usually shrink by 70–85%, so 200 MB becomes roughly 30–60 MB.

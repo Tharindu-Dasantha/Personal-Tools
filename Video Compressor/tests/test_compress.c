@@ -341,6 +341,52 @@ test_format_duration (void)
     }
 }
 
+static void
+test_preset_factors (void)
+{
+    double t, sz;
+    vc_preset_factors ("medium", &t, &sz);
+    g_assert_cmpfloat (t, ==, 1.0);
+    g_assert_cmpfloat (sz, ==, 1.0);
+    vc_preset_factors ("nonsense", &t, &sz);
+    g_assert_cmpfloat (t, ==, 1.0);
+    g_assert_cmpfloat (sz, ==, 1.0);
+    /* every dropdown preset has factors, and time grows with each slower preset */
+    double prev = 0;
+    for (guint i = 0; VC_PRESETS[i] != NULL; i++) {
+        vc_preset_factors (VC_PRESETS[i], &t, &sz);
+        g_assert_cmpfloat (t, >, prev);
+        g_assert_cmpfloat (sz, >, 0.5);
+        g_assert_cmpfloat (sz, <, 1.5);
+        prev = t;
+    }
+}
+
+static void
+test_estimate_size (void)
+{
+    VcProbe p = { .width = 1280, .height = 720, .duration = 60.0 };
+    /* 720p at medium: (1600 video + 128 audio) kbps for 60 s */
+    g_assert_cmpuint (vc_estimate_size (&p, 60931727, "medium"), ==, 12960000);
+    /* the preset size factor scales only the video part */
+    double t, sz;
+    vc_preset_factors ("slow", &t, &sz);
+    g_assert_cmpuint (vc_estimate_size (&p, 60931727, "slow"), ==,
+                      (guint64) ((1600 * sz + 128) * 1000.0 / 8.0 * 60.0));
+    /* a lean source caps the video at 60% of its own bitrate: 6 MB over 60 s = 800 kbps */
+    guint64 lean = vc_estimate_size (&p, 6000000, "medium");
+    g_assert_cmpuint (lean, ==, (guint64) ((6000000 * 8.0 / 1000.0 / 60.0 * 0.6 + 128)
+                                           * 1000.0 / 8.0 * 60.0));
+    /* never above the source (an already tiny HEVC file), and 0 when the duration is unknown */
+    g_assert_cmpuint (vc_estimate_size (&p, 97000, "medium"), <=, 97000);
+    VcProbe unknown = { .width = 1280, .height = 720, .duration = 0 };
+    g_assert_cmpuint (vc_estimate_size (&unknown, 60931727, "medium"), ==, 0);
+    g_assert_cmpuint (vc_estimate_size (&p, 0, "medium"), ==, 0);
+    /* portrait uses the short side, like the class */
+    VcProbe portrait = { .width = 720, .height = 1280, .duration = 60.0 };
+    g_assert_cmpuint (vc_estimate_size (&portrait, 60931727, "medium"), ==, 12960000);
+}
+
 int
 main (int argc, char **argv)
 {
@@ -361,5 +407,7 @@ main (int argc, char **argv)
     g_test_add_func ("/rules/worth-keeping", test_worth_keeping);
     g_test_add_func ("/rules/should-trash", test_should_trash);
     g_test_add_func ("/format/duration", test_format_duration);
+    g_test_add_func ("/estimate/preset-factors", test_preset_factors);
+    g_test_add_func ("/estimate/size", test_estimate_size);
     return g_test_run ();
 }

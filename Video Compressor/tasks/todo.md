@@ -215,7 +215,7 @@ Shared commands (run from the repo root):
 
 ### Checkpoint 4
 - [x] Success Criterion 9 passes (GUI on Xvfb, 2026-11-08)
-- [ ] Review with you
+- [x] Review with you (Phase 4 committed as `e0a1656`; user said to go ahead with Phase 5)
 
 ---
 
@@ -229,18 +229,50 @@ Shared commands (run from the repo root):
 - If the sizes or quality miss the targets, propose CRF table changes to you (this is an ask-first item) rather than changing them silently.
 
 **Acceptance criteria:**
-- [ ] ASan/UBSan reports nothing across a full run that includes cancel
-- [ ] The 720p fixture output is ≤ 25% of its source with SSIM ≥ 0.95 (Criterion 3)
-- [ ] The real 200 MB+ video comes out ≤ 50 MB and looks indistinguishable to you (Criterion 4)
+- [x] ASan/UBSan reports nothing across a full run that includes cancel (2026-11-08, after the Phase 6 changes: the full fixture run with subs and auto-trash, stop, pause, the Trash button, a stop during the output check, and closing while paused. All sessions exited 0 with no reports. An earlier UBSan-trap run found and fixed a SIGSEGV on close mid-encode)
+- [x] The 720p fixture output is ≤ 25% of its source with SSIM ≥ 0.95 (Criterion 3): 2.7%, SSIM 0.9992
+- [ ] The real 200 MB+ video comes out ≤ 50 MB and looks indistinguishable to you (Criterion 4) (needs a phone clip from you; none on this machine)
 
 **Verification:**
-- [ ] `ffmpeg -i out.mp4 -i src.mp4 -lavfi ssim -f null -`
-- [ ] Results table (file, class, before, after, %, SSIM, fps) appended to `plan.md`
+- [x] `ffmpeg -i out.mp4 -i src.mp4 -lavfi ssim -f null -` (fixtures)
+- [x] Results table (file, class, before, after, %, SSIM, fps) appended to `plan.md` (the real-clip row is still empty)
 
 **Dependencies:** T10
 **Files:** `tasks/plan.md`, possibly `src/compress.c` (table, only with your approval)
 **Scope:** S
 
 ### Checkpoint 5 (Complete)
-- [ ] All 13 success criteria in SPEC.md met
+- [ ] All 13 success criteria in SPEC.md met. **Open:** 4 (real phone clip) and 12's iPhone HDR half (your eyes). 13 now passes
 - [ ] Ready for your review
+
+---
+
+## Phase 6: Controls and estimates (added 2026-11-08 at your request)
+
+### - [x] T12: Size estimate per row
+**Description:** `vc_estimate_size()` gives `(class video kbps × preset size factor + audio) × duration`, with the video capped at 60% of the source bitrate and the total never above the source. The row shows `→ ≈ 11 MB (−82%)` or `≈ no saving`, and it updates when the speed changes.
+- [x] Unit: medium/slow values, the lean-source cap, never above the source, unknown duration gives 0, portrait
+- [x] Manual: the estimates appear after probing and change when the speed is switched to `faster`. `lowbitrate.mp4` predicted `≈ no saving` and came out already efficient
+
+### - [x] T13: Speed guide
+**Description:** an ⓘ (`help-about-symbolic`) next to Speed, and the dropdown, have a tooltip table: time against medium and size against the folder's originals, in percent, per preset. The factors (`vc_preset_factors()`) were measured; see plan.md, "Preset factors".
+- [x] Unit: medium is 1/1, an unknown preset gives 1/1, time rises with each slower preset
+- [x] Manual: the tooltip shows the 5-row table on hover
+
+### - [x] T14: Icon buttons: Start / Pause / Stop / Move originals to Trash
+**Description:** symbolic icons with tooltips and accessible labels. Pause = `SIGSTOP` on the running ffmpeg (nothing else starts while it is paused), or holds queued videos. Stop = kill + delete the `.part`, or take videos off the queue. The Trash button verifies and trashes finished originals after confirmation.
+- [x] Pause: ffmpeg in state `T`, `.part` size frozen; Start resumes it (`S`)
+- [x] Stop on one item: shows Stopped, its `.part` is removed, the next queued item starts
+- [x] A held item is not started when the running one finishes
+- [x] Trash button: confirm says "Move 2 originals to Trash?", exactly those 2 go to the Trash, a selected unfinished row is untouched, and both restore byte-identical
+- [x] Trash on a `Skipped – … exists` row, then Stop during the output check: `– original kept`, the original is not trashed
+- [x] Close while paused: exit 0, no ffmpeg, no `.part`
+
+### - [x] T15: Multi-select
+**Description:** `GTK_SELECTION_MULTIPLE` with single-click activation off (with it on, a plain click *adds* to the selection). The buttons act on the selection, or on all videos when none is selected. Esc clears the selection.
+- [x] Click, Ctrl+click: only the selected two are queued. A plain click then selects just one row
+- [x] Esc, then Start / Pause with no selection apply to every eligible row
+
+### Checkpoint 6
+- [x] ctest green (Debug and ASan builds), Debug build clean
+- [ ] Review with you

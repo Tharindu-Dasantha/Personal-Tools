@@ -92,3 +92,59 @@ T5, T6, T7 and T8 depend only on T4 and don't depend on each other. All three to
 
 ## Open Questions
 None. All decisions are recorded in SPEC.md.
+
+## T11 results (2026-11-08)
+
+The app's exact ffprobe → argv path (a throwaway driver linked against `vc_core`), timed on this
+laptop. SSIM uses `ffmpeg -i out -i src -lavfi ssim`. fps is decoded frames divided by wall time.
+
+| File | Class | Preset | Before | After | % of source | SSIM | fps |
+|---|---|---|---|---|---|---|---|
+| `720p.mp4` (fixture) | 720p | slow | 60.9 MB | 1.64 MB | 2.7% | 0.9992 | 48 |
+| `720p.mp4` (fixture) | 720p | faster | 60.9 MB | 1.50 MB | 2.5% | 0.9990 | 122 |
+| `1080p.mkv` (fixture) | 1080p | slow | 20.2 MB | 0.62 MB | 3.1% | 0.9992 | 22 |
+| `1080p.mkv` (fixture) | 1080p | faster | 20.2 MB | 0.58 MB | 2.8% | 0.9990 | 56 |
+| real 200 MB+ phone clip | – | slow / faster | – | – | – | – | – |
+
+- Criterion 3 passes (2.7% ≤ 25%, SSIM 0.9992 ≥ 0.95). `testsrc` is far easier to compress than
+  camera footage, so these numbers say nothing about the CRF table. No table change is proposed.
+- Criterion 4 is still open: there is no phone recording on this machine (`~/Videos/Camera` is empty).
+- `slow` is about 2.5× slower than `faster` at both sizes, for about 10% smaller files on `testsrc`.
+
+**Sanitizers (update, after Phase 6):** with `libasan`/`libubsan` installed, a `-fsanitize=address,undefined -fno-sanitize-recover=all` Debug build passed `ctest`. On Xvfb it covered a full fixture run, stop, pause/resume, the Trash button, a stop during the output check, and closing while paused. Every session exited 0 with no ASan/UBSan report (leak checking was off: GTK's one-time allocations drown it). Criterion 13 passes.
+
+**Sanitizers (first pass).** `libasan`/`libubsan` were not installed at first, so ASan could not run.
+The stand-in was a `-O1 -D_FORTIFY_SOURCE=3 -fsanitize=undefined -fsanitize-undefined-trap-on-error`
+build (UBSan with no runtime library; 86 trap sites in `vc_core`), run under `MALLOC_CHECK_=3
+MALLOC_PERTURB_=165 G_DEBUG=fatal-criticals`. `ctest` passes. On Xvfb, a full fixture run at
+`faster` with Keep subtitles and Move to Trash on covered the following, and the app exited 0
+with nothing on stderr:
+- probing, including `fake.mp4`
+- a cancel during 1080p, then Start again
+- 9 originals trashed and later restored byte-identical; `lowbitrate.mp4` already efficient
+- a second Start (skips, plus the confirm dialog's Cancel)
+- closing the window
+
+**Bug found and fixed:** closing the window mid-encode crashed with SIGSEGV (exit 139) after the `.part`
+was already removed. ffmpeg's late async callbacks ran `finish_job()` on destroyed row widgets.
+`on_close` now sets `app.closing`, so the stream, exit, verify and trash callbacks touch no widgets
+and start no work. A close during the output check keeps the original and does not trash it. Closing
+mid-encode and mid-verify now exits 0 on both the sanitized and the plain Debug build.
+
+### Preset factors (2026-11-08)
+
+Wall time and output size against `medium`, using the app's argv. `noisy1080` is a 20 s 1080p `testsrc2` clip
+with temporal noise at 16 Mbps (45.4 MB), a stand-in for phone grain. These factors drive the speed guide and the size estimate
+(`PRESET_FACTORS` in `compress.c`).
+
+| Preset | noisy1080 time | noisy1080 size | 720p time | 720p size | Used: time | Used: size |
+|---|---|---|---|---|---|---|
+| faster | 19.3 s (0.68×) | 9.15 MB (0.99×) | 15.1 s (0.70×) | 1.50 MB (1.00×) | 0.69 | 0.99 |
+| fast | 21.0 s (0.74×) | 9.36 MB (1.01×) | 20.7 s (0.95×) | 1.66 MB (1.11×) | 0.85 | 1.06 |
+| medium | 28.3 s | 9.28 MB | 21.8 s | 1.50 MB | 1 | 1 |
+| slow | 66.4 s (2.35×) | 9.96 MB (1.07×) | 41.0 s (1.89×) | 1.64 MB (1.09×) | 2.1 | 1.08 |
+| slower | 278.7 s (9.9×) | 9.94 MB (1.07×) | 142.6 s (6.6×) | 1.56 MB (1.04×) | 8.2 | 1.06 |
+
+At a fixed CRF, slower presets didn't make smaller files on either clip. The SPEC's speed paragraph was corrected to match.
+The size estimate's class bitrates (`EST_VIDEO_KBPS`) are scaled from noisy1080 at `medium` (3.7 Mbps → 3.0 Mbps
+for 1080p). Recalibrate them once a real phone clip has been measured.
