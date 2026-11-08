@@ -25,7 +25,8 @@ CMake skeleton + startup check (T1)
                      ├── skip-existing + not-smaller rule (T7)
                      │     └── output verification + trash decision (T9)
                      │           └── delete-originals UI + trash (T10)
-                     │                 └── hardening + calibration (T11)
+                     │                 ├── hardening + calibration (T11)
+                     │                 └── size estimate, speed guide, Start/Pause/Stop/Trash buttons, multi-select (T12–T15)
                      └── speed dropdown + keep-subtitles option (T8)
 ```
 T5, T6, T7 and T8 depend only on T4 and don't depend on each other. All three touch `main.c`, so they run in sequence rather than in parallel.
@@ -39,6 +40,7 @@ T5, T6, T7 and T8 depend only on T4 and don't depend on each other. All three to
 | 3. Compress | Batch-compress with live progress, cancel, safe rules, speed and subtitle options | T4–T8 | **use it for real (MVP)** |
 | 4. Delete originals | Optionally move verified originals to the Trash | T9, T10 | free up disk space automatically |
 | 5. Harden | Edge cases, sanitizers, real-world size/quality calibration | T11 | trust it on your actual library |
+| 6. Controls and estimates | Size estimates, speed guide, Start/Pause/Stop/Trash buttons, multi-select | T12–T15 | control exactly which videos run, and see the expected savings first |
 
 ## Task List
 
@@ -49,34 +51,44 @@ T5, T6, T7 and T8 depend only on T4 and don't depend on each other. All three to
 - [x] Builds clean with `-Wall -Wextra -Werror`, `ctest` runs (even with 0–1 tests), window opens, missing-ffmpeg dialog shown when PATH is broken
 
 ### Phase 2: See your videos
-- [ ] T2: Folder chooser → list video files with size
-- [ ] T3: ffprobe each file → show class, codec and duration in the list
+- [x] T2: Folder chooser → list video files with size
+- [x] T3: ffprobe each file → show class, codec and duration in the list
 
 ### Checkpoint 2
-- [ ] Fixture folder lists exactly the videos with correct classes (Success Criterion 1)
+- [x] Fixture folder lists exactly the videos with correct classes (Success Criterion 1)
 
 ### Phase 3: Compress (MVP)
-- [ ] T4: Encode queue: each file → `compressed/.name.part.mp4` → rename, show new size and % saved
-- [ ] T5: Live per-file progress bar plus "3 / 12" overall count
-- [ ] T6: Cancel: kill ffmpeg, remove `.part`, stop the queue
-- [ ] T7: Skip files whose output already exists, and the "not smaller" rule
-- [ ] T8: Speed dropdown (default `slow`) + Keep subtitles checkbox (→ `.mkv`)
+- [x] T4: Encode queue: each file → `compressed/.name.part.mp4` → rename, show new size and % saved
+- [x] T5: Live per-file progress bar plus "3 / 12" overall count
+- [x] T6: Cancel: kill ffmpeg, remove `.part`, stop the queue
+- [x] T7: Skip files whose output already exists, and the "not smaller" rule
+- [x] T8: Speed dropdown (default `slow`) + Keep subtitles checkbox (→ `.mkv`)
 
 ### Checkpoint 3 (MVP)
-- [ ] Success Criteria 2, 3, 5, 6, 7, 10, 11, 12 pass on fixtures. Review with you before Phase 4.
+- [x] Success Criteria 2, 3, 5, 6, 7, 10, 11, 12 pass on fixtures. Review with you before Phase 4 (you approved Phase 4, 2026-11-08).
 
 ### Phase 4: Delete originals
-- [ ] T9: Output verification + `vc_should_trash_original()` decision (pure logic, tested)
-- [ ] T10: Checkbox, confirmation dialog, `g_file_trash()`, row status
+- [x] T9: Output verification + `vc_should_trash_original()` decision (pure logic, tested)
+- [x] T10: Checkbox, confirmation dialog, `g_file_trash()`, row status
 
 ### Checkpoint 4
-- [ ] Success Criterion 9 passes: originals restorable from Trash, and failures/cancels keep the original
+- [x] Success Criterion 9 passes: originals restorable from Trash, and failures/cancels keep the original
 
 ### Phase 5: Harden
-- [ ] T11: ASan/UBSan full run, real 200 MB video check, SSIM check, CRF table calibration
+- [ ] T11: ASan/UBSan full run, real 200 MB video check, SSIM check, CRF table calibration (all done except the real 200 MB+ phone clip, Criterion 4)
 
 ### Checkpoint 5 (Complete)
-- [ ] All 13 success criteria in SPEC.md met. Ready for your review.
+- [ ] All 13 success criteria in SPEC.md met. Ready for your review. **Open:** 4 (real phone clip) and the iPhone HDR half of 12 (needs your eyes).
+
+### Phase 6: Controls and estimates (added 2026-11-08 at your request)
+- [x] T12: Size estimate per row (`vc_estimate_size()`), updates when Speed changes
+- [x] T13: Speed guide tooltip (ⓘ + dropdown) from measured preset factors
+- [x] T14: Icon buttons: Start / Pause (`SIGSTOP`) / Stop / Move originals to Trash
+- [x] T15: Multi-select; buttons act on the selection, or on all videos when nothing is selected
+
+### Checkpoint 6
+- [x] ctest green (Debug and ASan builds), Debug build clean
+- [ ] Review with you
 
 ## Risks and Mitigations
 | Risk | Impact | Mitigation |
