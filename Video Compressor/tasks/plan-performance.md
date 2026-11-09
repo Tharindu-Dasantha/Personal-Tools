@@ -81,8 +81,12 @@ Corpus in `build/perf/src/`: symlinks to `~/Downloads` plus one cut, replayed wi
   updates off did not help. Kept at 4.
 - **R5 estimate vs actual** (after the fixes below): `slow` h264-1080 −27%, h264-720 −28%, hevc-portrait +81%,
   iphone-hlg +127%, screen +17%; GPU lecture clip +5%. Lean files are now close, but **no per-class constant can be
-  within 25%**: real 1080p output ranges from 1.3 to 4.5 Mbps depending on content. Per this task's own rule, the next
-  step is a sample encode (on the GPU, about 1 s per file). That is a new behaviour, so it waits for your go-ahead.
+  within 25%**: real 1080p output ranges from 1.3 to 4.5 Mbps depending on content.
+- **R5 sample encode (approved 2026-11-09, with limits):** one 6 s window from the middle was off by up to 2× (the middle
+  of a clip isn't typical); three 4 s windows at 20/50/80% in one ffmpeg (1.7 s for the same bytes as three runs) land
+  at GPU −10% to +15% and x265 −18% to +28% against the real sizes, for 0.6–2.0 s per file. Limits as in SPEC "Size
+  estimate". Checked in the app (ASan): 24 samples on a 301-file folder, biggest first, never overlapping; none during
+  a 20 s encode, resumed after Stop; a folder switch kills the one in flight (0.5 s) with no ASan reports.
 
 **Bugs found by these measurements, all fixed:**
 - GPU outputs of phone portrait clips (stored landscape + rotation tag) came out sideways: ffmpeg neither rotates GPU

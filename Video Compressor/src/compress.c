@@ -304,40 +304,36 @@ copies_audio (const VcProbe *probe, const VcClass *cls)
 /* shortcut: the first render node; pick the device another way only on a multi-GPU machine. */
 #define GPU_DEVICE "/dev/dri/renderD128"
 
-char **
-vc_build_ffmpeg_argv (const char *input, const char *output, const VcProbe *probe,
-                      const VcOptions *opt)
+/* ffmpeg's autorotate does nothing for GPU frames and the rotation tag is lost, so a phone's portrait
+ * video would play sideways: rotate on the GPU instead (transpose_vaapi). */
+static const char *
+gpu_transpose (const VcProbe *probe)
+{
+    int rot = ((probe->rotation % 360) + 360) % 360;
+    return rot == 90 ? "cclock" : rot == 270 ? "clock" : rot == 180 ? "reversal" : NULL;
+}
+
+static void
+add_input_options (GStrvBuilder *b, const VcProbe *probe, gboolean gpu)
+{
+    if (!gpu)
+        return;
+    /* Decode on the GPU too; a codec it can't decode falls back to the CPU on its own.
+     * noautorotate keeps a CPU-decoded fallback from being rotated twice. */
+    g_strv_builder_add_many (b, "-hwaccel", "vaapi", "-hwaccel_output_format", "vaapi", NULL);
+    if (gpu_transpose (probe) != NULL)
+        g_strv_builder_add (b, "-noautorotate");
+}
+
+/* Filters, frame rate, encoder and colour tags for one video output. */
+static void
+add_video_output (GStrvBuilder *b, const VcProbe *probe, const VcOptions *opt, gboolean gpu)
 {
     const VcClass *cls = vc_output_class (probe, opt);
-    gboolean gpu = g_strcmp0 (opt->preset, VC_PRESET_GPU) == 0;
     gboolean ten = vc_probe_is_10bit (probe);
     int side = out_short_side (probe, opt);
-    GStrvBuilder *b = g_strv_builder_new ();
-    char num[3][16];
-
-    /* -y only ever hits our own .part temp file; final names are checked before encoding. */
-    const char *head[] = {
-        "ffmpeg", "-hide_banner", "-nostdin", "-loglevel", "error", "-nostats",
-        "-progress", "pipe:1", "-y", NULL,
-    };
-    g_strv_builder_addv (b, head);
-    /* ffmpeg's autorotate does nothing for GPU frames and the rotation tag is lost, so a phone's
-     * portrait video would play sideways: rotate on the GPU instead (transpose_vaapi below).
-     * noautorotate keeps a CPU-decoded fallback from being rotated twice. */
-    int rot = ((probe->rotation % 360) + 360) % 360;
-    const char *transpose = rot == 90 ? "cclock" : rot == 270 ? "clock" : rot == 180 ? "reversal" : NULL;
-    if (gpu) {
-        /* Decode on the GPU too; a codec it can't decode falls back to the CPU on its own. */
-        g_strv_builder_add_many (b, "-vaapi_device", GPU_DEVICE, "-hwaccel", "vaapi",
-                                 "-hwaccel_output_format", "vaapi", NULL);
-        if (transpose != NULL)
-            g_strv_builder_add (b, "-noautorotate");
-    }
-    g_strv_builder_add_many (b, "-i", input, "-map", "0:v:0", "-map", "0:a?", NULL);
-    if (opt->keep_subs)
-        g_strv_builder_add_many (b, "-map", "0:s?", NULL);
-    /* ffmpeg 8 drops the source's creation_time unless metadata is mapped explicitly. */
-    g_strv_builder_add_many (b, "-map_metadata", "0", NULL);
+    const char *transpose = gpu_transpose (probe);
+    char num[16];
 
     /* Scale by the short side so portrait and rotated video work; -2 keeps the other side even. */
     GString *vf = g_string_new (NULL);
@@ -353,22 +349,22 @@ vc_build_ffmpeg_argv (const char *input, const char *output, const VcProbe *prob
         g_strv_builder_add_many (b, "-vf", vf->str, NULL);
     g_string_free (vf, TRUE);
     if (opt->max_fps > 0 && probe->fps > opt->max_fps + 0.5) {
-        g_snprintf (num[0], sizeof num[0], "%d", opt->max_fps);
-        g_strv_builder_add_many (b, "-fpsmax", num[0], NULL);
+        g_snprintf (num, sizeof num, "%d", opt->max_fps);
+        g_strv_builder_add_many (b, "-fpsmax", num, NULL);
     }
 
     if (gpu) {
-        g_snprintf (num[1], sizeof num[1], "%d", cls->gpu_qp);
-        /* low_power is the GPU's fixed-function encoder: ~10x x265 medium (plan-performance.md) */
+        g_snprintf (num, sizeof num, "%d", cls->gpu_qp);
+        /* low_power is the GPU's fixed-function encoder: ~12x x265 medium (plan-performance.md) */
         g_strv_builder_add_many (b, "-c:v", "hevc_vaapi", "-low_power", "1", "-rc_mode", "CQP",
-                                 "-qp", num[1], NULL);
+                                 "-qp", num, NULL);
         if (ten)
             g_strv_builder_add_many (b, "-profile:v", "main10", NULL);
     } else {
-        g_snprintf (num[1], sizeof num[1], "%d", cls->crf);
+        g_snprintf (num, sizeof num, "%d", cls->crf);
         /* PQ (HDR10) needs its SEI headers for players to switch to HDR; HLG does not. */
         gboolean pq = g_strcmp0 (probe->color_transfer, "smpte2084") == 0;
-        g_strv_builder_add_many (b, "-c:v", "libx265", "-preset", opt->preset, "-crf", num[1],
+        g_strv_builder_add_many (b, "-c:v", "libx265", "-preset", opt->preset, "-crf", num,
                                  "-x265-params",
                                  pq ? "log-level=error:hdr10=1:repeat-headers=1" : "log-level=error",
                                  "-pix_fmt", ten ? "yuv420p10le" : "yuv420p", NULL);
@@ -384,14 +380,36 @@ vc_build_ffmpeg_argv (const char *input, const char *output, const VcProbe *prob
         if (probe->color_space != NULL)
             g_strv_builder_add_many (b, "-colorspace", probe->color_space, NULL);
     }
+}
+
+char **
+vc_build_ffmpeg_argv (const char *input, const char *output, const VcProbe *probe,
+                      const VcOptions *opt)
+{
+    const VcClass *cls = vc_output_class (probe, opt);
+    gboolean gpu = g_strcmp0 (opt->preset, VC_PRESET_GPU) == 0;
+    GStrvBuilder *b = g_strv_builder_new ();
+    char abr[16];
+
+    /* -y only ever hits our own .part temp file; final names are checked before encoding. */
+    g_strv_builder_add_many (b, "ffmpeg", "-hide_banner", "-nostdin", "-loglevel", "error",
+                             "-nostats", "-progress", "pipe:1", "-y", NULL);
+    if (gpu)
+        g_strv_builder_add_many (b, "-vaapi_device", GPU_DEVICE, NULL);
+    add_input_options (b, probe, gpu);
+    g_strv_builder_add_many (b, "-i", input, "-map", "0:v:0", "-map", "0:a?", NULL);
+    if (opt->keep_subs)
+        g_strv_builder_add_many (b, "-map", "0:s?", NULL);
+    /* ffmpeg 8 drops the source's creation_time unless metadata is mapped explicitly. */
+    g_strv_builder_add_many (b, "-map_metadata", "0", NULL);
+    add_video_output (b, probe, opt, gpu);
 
     if (copies_audio (probe, cls)) {
         g_strv_builder_add_many (b, "-c:a", "copy", NULL);
     } else {
-        g_snprintf (num[2], sizeof num[2], "%dk", cls->audio_kbps);
-        g_strv_builder_add_many (b, "-c:a", "aac", "-b:a", num[2], NULL);
+        g_snprintf (abr, sizeof abr, "%dk", cls->audio_kbps);
+        g_strv_builder_add_many (b, "-c:a", "aac", "-b:a", abr, NULL);
     }
-
     if (opt->keep_subs)
         /* mov_text can't be stream-copied into MKV; srt keeps the text. */
         g_strv_builder_add_many (b, "-c:s", probe->has_mov_text ? "srt" : "copy", NULL);
@@ -400,8 +418,44 @@ vc_build_ffmpeg_argv (const char *input, const char *output, const VcProbe *prob
          * phone's own keys (location, creation date, camera), which MP4 drops otherwise. */
         g_strv_builder_add_many (b, "-sn", "-tag:v", "hvc1",
                                  "-movflags", "+faststart+use_metadata_tags", NULL);
-
     g_strv_builder_add (b, output);
+    char **argv = g_strv_builder_end (b);
+    g_strv_builder_unref (b);
+    return argv;
+}
+
+char **
+vc_build_sample_argv (const char *input, const VcProbe *probe, const VcOptions *opt,
+                      double *seconds)
+{
+    /* Three 4 s windows at 20/50/80% came within ±17% of the real size on every R8 clip; one
+     * window from the middle was off by up to 2x. A clip of 12 s or less is sampled whole. All
+     * windows run in one ffmpeg and write to the same pipe: only the total byte count matters. */
+    static const double at[] = { 0.2, 0.5, 0.8 };
+    gboolean whole = probe->duration <= 12;
+    guint n = whole ? 1 : G_N_ELEMENTS (at);
+    double len = whole ? probe->duration : 4;
+    VcOptions gpu = *opt;
+    gpu.preset = VC_PRESET_GPU;
+    GStrvBuilder *b = g_strv_builder_new ();
+    char num[3][2][G_ASCII_DTOSTR_BUF_SIZE];
+
+    g_strv_builder_add_many (b, "ffmpeg", "-hide_banner", "-nostdin", "-loglevel", "error",
+                             "-nostats", "-vaapi_device", GPU_DEVICE, NULL);
+    for (guint i = 0; i < n; i++) {
+        add_input_options (b, probe, TRUE);
+        g_ascii_formatd (num[i][0], sizeof num[i][0], "%.3f", whole ? 0 : probe->duration * at[i] - len / 2);
+        g_ascii_formatd (num[i][1], sizeof num[i][1], "%.3f", len);
+        g_strv_builder_add_many (b, "-ss", num[i][0], "-t", num[i][1], "-i", input, NULL);
+    }
+    char map[3][16];
+    for (guint i = 0; i < n; i++) {
+        g_snprintf (map[i], sizeof map[i], "%u:v:0", i);
+        g_strv_builder_add_many (b, "-map", map[i], NULL);
+        add_video_output (b, probe, &gpu, TRUE);
+        g_strv_builder_add_many (b, "-an", "-f", "hevc", "pipe:1", NULL);
+    }
+    *seconds = n * len;
     char **argv = g_strv_builder_end (b);
     g_strv_builder_unref (b);
     return argv;
@@ -495,11 +549,28 @@ vc_estimate_size (const VcProbe *probe, guint64 src_bytes, const VcOptions *opt)
     return MIN ((guint64) bytes, src_bytes);
 }
 
-gboolean
-vc_worth_encoding (const VcProbe *probe, guint64 src_bytes, const VcOptions *opt)
+guint64
+vc_estimate_from_sample (const VcProbe *probe, guint64 src_bytes, const VcOptions *opt,
+                         double gpu_video_kbps)
 {
-    guint64 est = vc_estimate_size (probe, src_bytes, opt);
-    return est == 0 || vc_output_is_worth_keeping (src_bytes, est);
+    if (probe->duration <= 0 || src_bytes == 0 || gpu_video_kbps <= 0)
+        return 0;
+    const VcClass *cls = vc_output_class (probe, opt);
+    double t, size, gpu_size;
+    vc_preset_factors (opt->preset, &t, &size);
+    vc_preset_factors (VC_PRESET_GPU, &t, &gpu_size);
+    /* x265 presets scale from the GPU's measured bitrate by their size factors (R8: x265 medium
+     * came out 1.06-1.41x smaller than the GPU at matching quality). */
+    double video_kbps = gpu_video_kbps * size / gpu_size;
+    double audio_kbps = copies_audio (probe, cls) ? probe->aac_kbps : cls->audio_kbps;
+    double bytes = (video_kbps + audio_kbps) * 1000.0 / 8.0 * probe->duration;
+    return MIN ((guint64) bytes, src_bytes);
+}
+
+gboolean
+vc_worth_encoding (guint64 src_bytes, guint64 estimate)
+{
+    return estimate == 0 || vc_output_is_worth_keeping (src_bytes, estimate);
 }
 
 char *

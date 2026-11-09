@@ -26,7 +26,6 @@ Tasks that edit `main.c` run one after another. `compress.c` tasks can go in any
   - whether the desktop lags while encoding (R0, Checkpoint A)
   - playing GPU outputs on an iPhone (R9)
   - a camera-original iPhone clip that still has its location (R12)
-  - whether to add the sample-encode estimate (R5)
 - **Tools (not committed, `build/` is ignored):** `build/perf/perf.sh` replays the app's argv with SSIM/VMAF. The
   driver used for the argv checks is in the session scratchpad.
 
@@ -93,7 +92,7 @@ Tasks that edit `main.c` run one after another. `compress.c` tasks can go in any
 
 ## Phase B: Skip wasted work
 
-### - [ ] R5: Codec-aware size estimate (done except the ±25% target)
+### - [x] R5: Codec-aware size estimate, then GPU sample encode
 - [x] `SOURCE_CAP` table next to `PRESET_FACTORS` in `compress.c`: HEVC/VP9/AV1 1.0, everything else 0.6
 - [x] Used in `vc_estimate_size()`. The preset size factor now scales the cap too, so the GPU's 1.5× isn't hidden
       on lean sources
@@ -102,7 +101,14 @@ Tasks that edit `main.c` run one after another. `compress.c` tasks can go in any
 - [x] Fixed: the cap now uses the video stream's own bitrate (it counted audio twice), and copied AAC uses its real
       bitrate; test in `/estimate/codec-aware`
 - [x] Tests (`/estimate/codec-aware`): 2.5 Mbps HEVC → "no saving"; 10 Mbps H.264 → saving; unknown duration → encode
-- [ ] Estimate vs actual within 25% for every R0 real clip: **not met** (−28% to +127% on high-bitrate clips; lean clips +5% to +17%). The plan's next step is a sample encode, which **needs your go-ahead**
+- [x] Formula alone: −28% to +127% on high-bitrate clips, so a sample encode was added (approved 2026-11-09, with limits)
+- [x] `vc_build_sample_argv` (3×4 s windows at 20/50/80% in one ffmpeg, same GPU filters, raw HEVC to stdout) and
+      `vc_estimate_from_sample`; tests in `/estimate/sample`
+- [x] Within 25%: GPU −10% to +15%, x265 −18% to +28% (the grainy 1080p H.264 clip is the +28%)
+- [x] Sampler in `main.c` with the limits: GPU only, one at a time at low priority, idle only, biggest first, 24 per
+      folder and settings, 15 s timeout, stop after 3 failures, cancelled on folder change and close
+- [x] App run (ASan): measured estimates and tooltip; 24 samples on 301 files; none during an encode, resumed after
+      Stop; a folder switch kills the in-flight sample in 0.5 s; exit 0, no reports
 
 ### - [x] R6: Start skips "no saving" files (needs D2)
 - [x] `vc_worth_encoding(probe, size, opts)` in `compress.c/.h`, with unit tests

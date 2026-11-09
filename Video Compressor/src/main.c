@@ -36,6 +36,10 @@ typedef struct {
     gboolean hover, in_batch;
     guint prio;          /* > 0: "Compress next" was pressed; the highest goes first */
     double fraction;     /* encode progress while active */
+    /* GPU sample: tried at these Max size / Max fps settings; kbps is 0 when it failed */
+    gboolean sampled;
+    int sample_side, sample_fps;
+    double sample_kbps;
     GtkWidget *row, *box, *check, *meta, *chips, *size_lbl, *pill, *bar, *pct;
     GtkWidget *b_play, *b_pause, *b_stop, *b_show, *b_trash;
 } Item;
@@ -62,6 +66,14 @@ typedef struct {
     GPtrArray *items;
     GCancellable *probe_cancel;
     guint probe_next, probes_done;   /* ffprobe started / finished, in list order */
+
+    /* the one GPU size sample allowed at a time (sample_next has the limits) */
+    GSubprocess *sample_proc;
+    Item *sample_item;
+    GCancellable *sample_cancel;
+    guint sample_timer, samples_taken, sample_fails;
+    int sample_side, sample_fps;   /* the settings samples_taken counts for */
+    double sample_secs;
     gboolean closing;    /* window destroyed: late async callbacks must not touch widgets */
 
     /* the one encode allowed at a time (SPEC); a paused one still counts */
@@ -76,6 +88,7 @@ typedef struct {
 static App app;
 
 static void update_controls (void);
+static void sample_next (void);
 static void render_row (Item *it);
 
 static void
@@ -183,13 +196,34 @@ can_start (Item *it)
            || (it == app.job && app.paused);
 }
 
+static gboolean
+sampled_at (Item *it, const VcOptions *o)
+{
+    return it->sampled && it->sample_side == o->max_short_side && it->sample_fps == o->max_fps;
+}
+
+/* The size estimate: from the GPU sample taken at these settings when there is one, else the
+ * formula. `measured` (may be NULL) says which. */
+static guint64
+item_estimate (Item *it, const VcOptions *o, gboolean *measured)
+{
+    gboolean m = it->probe != NULL && sampled_at (it, o) && it->sample_kbps > 0;
+    if (measured != NULL)
+        *measured = m;
+    if (it->probe == NULL)
+        return 0;
+    return m ? vc_estimate_from_sample (it->probe, it->size, o, it->sample_kbps)
+             : vc_estimate_size (it->probe, it->size, o);
+}
+
 /* Start with nothing selected leaves videos predicted to save nothing (SPEC D2); selecting one,
  * or its own play button, still compresses it. */
 static gboolean
 skip_in_bulk (Item *it)
 {
     VcOptions o = current_options ();
-    return it->state == ST_NEW && it->probe != NULL && !vc_worth_encoding (it->probe, it->size, &o);
+    return it->state == ST_NEW && it->probe != NULL
+           && !vc_worth_encoding (it->size, item_estimate (it, &o, NULL));
 }
 
 static gboolean
@@ -328,7 +362,8 @@ render_row (Item *it)
             style = strcmp (it->note, "Failed") == 0 ? "error" : "neutral";
         } else {
             VcOptions o = current_options ();
-            guint64 est = it->probe != NULL ? vc_estimate_size (it->probe, it->size, &o) : 0;
+            gboolean measured;
+            guint64 est = item_estimate (it, &o, &measured);
             if (est == 0) {
                 size_text = g_strdup (size);
                 break;
@@ -339,7 +374,10 @@ render_row (Item *it)
                        ? g_strdup_printf ("−%d%%", percent_smaller (it->size, est))
                        : g_strdup ("no saving");
             style = "estimate";
-            tip = tip != NULL ? tip : "≈ is a rough estimate at the chosen speed. "
+            tip = tip != NULL ? tip
+                  : measured ? "≈ measured with a short GPU test encode at these settings. "
+                               "The whole video can differ a little."
+                  : "≈ is a rough estimate at the chosen speed. "
                                       "The real size depends on the footage.";
         }
         break;
@@ -432,7 +470,7 @@ update_speed_guide (void)
         src += it->size;
         for (guint p = 0; p < np; p++) {
             o.preset = VC_PRESETS[p];
-            est[p] += vc_estimate_size (it->probe, it->size, &o);
+            est[p] += item_estimate (it, &o, NULL);
         }
     }
     double tmax = 1;
@@ -640,7 +678,7 @@ update_controls (void)
         }
         if (((it->state == ST_NEW && it->probe != NULL) || it->state == ST_HELD) && !skip) {
             VcOptions o = current_options ();
-            guint64 e = vc_estimate_size (it->probe, it->size, &o);
+            guint64 e = item_estimate (it, &o, NULL);
             ready++;
             src += it->size;
             est += e > 0 ? e : it->size;
@@ -713,6 +751,7 @@ update_controls (void)
         update_progress ();
     if (finished)
         update_summary ();
+    sample_next ();
 }
 
 static void
@@ -1219,6 +1258,108 @@ start_job (Item *it, char *out, char *part)
     return TRUE;
 }
 
+/* ---- GPU size samples ---- */
+
+/* Limits, so a big folder never costs much: one sample at a time at low priority, only while
+ * nothing is queued, encoding or being checked, biggest videos first, at most SAMPLE_MAX per
+ * folder and settings (the rest keep the formula), each killed after SAMPLE_TIMEOUT, and none
+ * after 3 failures in a row. Changing folder or closing the window cancels the one in flight. */
+#define SAMPLE_MAX 24
+#define SAMPLE_TIMEOUT 15
+
+static void
+sample_stop (void)
+{
+    g_clear_handle_id (&app.sample_timer, g_source_remove);
+    g_cancellable_cancel (app.sample_cancel);   /* sample_done then leaves the item alone */
+    g_clear_object (&app.sample_cancel);
+    if (app.sample_proc != NULL) {
+        g_subprocess_force_exit (app.sample_proc);
+        g_subprocess_wait (app.sample_proc, NULL, NULL);
+        g_clear_object (&app.sample_proc);
+    }
+    app.sample_item = NULL;
+}
+
+static void
+sample_timed_out (gpointer data)
+{
+    (void) data;
+    app.sample_timer = 0;
+    if (app.sample_proc != NULL)
+        g_subprocess_force_exit (app.sample_proc);   /* sample_done counts it as a failure */
+}
+
+static void
+sample_done (GObject *source, GAsyncResult *res, gpointer user_data)
+{
+    (void) user_data;
+    g_autoptr (GBytes) out = NULL;
+    g_autoptr (GError) error = NULL;
+    gboolean ok = g_subprocess_communicate_finish (G_SUBPROCESS (source), res, &out, NULL, &error);
+    if (g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED))
+        return;   /* sample_stop ran: the folder changed or the window closed */
+    g_clear_handle_id (&app.sample_timer, g_source_remove);
+    Item *it = g_steal_pointer (&app.sample_item);
+    gsize n = out != NULL ? g_bytes_get_size (out) : 0;
+    ok = ok && g_subprocess_get_successful (G_SUBPROCESS (source)) && n > 0;
+    g_clear_object (&app.sample_proc);
+
+    it->sampled = TRUE;
+    it->sample_side = app.sample_side;
+    it->sample_fps = app.sample_fps;
+    it->sample_kbps = ok ? n * 8.0 / 1000.0 / app.sample_secs : 0;
+    app.sample_fails = ok ? 0 : app.sample_fails + 1;
+    render_row (it);
+    update_speed_guide ();
+    update_controls ();   /* which starts the next one */
+}
+
+static void
+sample_next (void)
+{
+    if (!app.gpu_ok || app.closing || app.items == NULL || app.sample_proc != NULL
+        || app.probes_done < app.items->len || app.job != NULL || is_busy ())
+        return;
+    VcOptions o = current_options ();
+    if (o.max_short_side != app.sample_side || o.max_fps != app.sample_fps) {
+        app.sample_side = o.max_short_side;   /* new settings: a fresh allowance */
+        app.sample_fps = o.max_fps;
+        app.samples_taken = app.sample_fails = 0;
+    }
+    if (app.samples_taken >= SAMPLE_MAX || app.sample_fails >= 3)
+        return;
+    Item *best = NULL;
+    for (guint i = 0; i < app.items->len; i++) {
+        Item *it = app.items->pdata[i];
+        if (it->state == ST_NEW && it->probe != NULL && it->probe->duration > 0
+            && !sampled_at (it, &o) && (best == NULL || it->size > best->size))
+            best = it;
+    }
+    if (best == NULL)
+        return;
+
+    g_auto (GStrv) argv = vc_build_sample_argv (best->path, best->probe, &o, &app.sample_secs);
+    g_autoptr (GSubprocessLauncher) launcher = g_subprocess_launcher_new (
+        G_SUBPROCESS_FLAGS_STDOUT_PIPE | G_SUBPROCESS_FLAGS_STDERR_SILENCE);
+    g_subprocess_launcher_set_child_setup (launcher, lower_priority, NULL, NULL);
+    app.samples_taken++;
+    app.sample_proc = g_subprocess_launcher_spawnv (launcher, (const char *const *) argv, NULL);
+    if (app.sample_proc == NULL) {
+        best->sampled = TRUE;   /* kbps 0: it keeps the formula */
+        best->sample_side = o.max_short_side;
+        best->sample_fps = o.max_fps;
+        app.sample_fails++;
+        sample_next ();   /* ends after 3 failures */
+        return;
+    }
+    app.sample_item = best;
+    if (app.sample_cancel == NULL)
+        app.sample_cancel = g_cancellable_new ();
+    app.sample_timer = g_timeout_add_seconds_once (SAMPLE_TIMEOUT, sample_timed_out, NULL);
+    g_subprocess_communicate_async (app.sample_proc, NULL, app.sample_cancel, sample_done, NULL);
+}
+
 /* Starts the next queued item unless an encode (even a paused one) is running: the one with
  * the highest "Compress next" priority, otherwise the first in list order. */
 static void
@@ -1598,6 +1739,8 @@ load_folder (const char *folder)
     g_cancellable_cancel (app.probe_cancel);
     g_clear_object (&app.probe_cancel);
     app.probe_cancel = g_cancellable_new ();
+    sample_stop ();   /* before the items it points at are freed */
+    app.samples_taken = app.sample_fails = 0;
     gtk_list_box_remove_all (GTK_LIST_BOX (app.list));
     g_clear_pointer (&app.items, g_ptr_array_unref);
     app.items = g_ptr_array_new_with_free_func ((GDestroyNotify) item_free);
@@ -1682,7 +1825,7 @@ on_drop (GtkDropTarget *t, const GValue *value, double x, double y, gpointer use
     return TRUE;
 }
 
-/* Estimates depend on the speed and the size cap. */
+/* Estimates depend on the speed, the size cap and (through samples) the frame-rate cap. */
 static void
 on_estimate_input (void)
 {
@@ -1737,6 +1880,7 @@ on_close (GtkWindow *win, gpointer user_data)
         g_unlink (app.part_path);
     }
     g_cancellable_cancel (app.probe_cancel);
+    sample_stop ();
     if (app.toast_id != 0)
         g_source_remove (app.toast_id);
     return FALSE;
@@ -1769,6 +1913,7 @@ gpu_test_done (GObject *source, GAsyncResult *res, gpointer user_data)
     app.gpu_ok = TRUE;
     gtk_widget_set_visible (app.speed_btns[0], TRUE);
     update_speed_guide ();
+    update_controls ();   /* starts size samples if a folder is already loaded */
 }
 
 static void
@@ -2233,6 +2378,8 @@ build_bottom_bar (void)
                                                "the time). Smaller videos are never enlarged.");
     gtk_widget_set_halign (app.max_size, GTK_ALIGN_START);
     g_signal_connect (app.max_size, "notify::selected", G_CALLBACK (on_estimate_input), NULL);
+    /* a size sample is taken at the frame rate it will be encoded at */
+    g_signal_connect (app.fps30, "notify::active", G_CALLBACK (on_estimate_input), NULL);
     gtk_grid_attach (GTK_GRID (switches), app.max_size, 1, 1, 1, 1);
 
     app.total = styled_label ("", "total", 1);

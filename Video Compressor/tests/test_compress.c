@@ -493,16 +493,16 @@ test_estimate_codec_aware (void)
     g_autoptr (VcProbe) h264 = probe_sized (1920, 1080, "h264");
     g_autoptr (VcProbe) hevc = probe_sized (1920, 1080, "hevc");
     guint64 src = 75000000;
-    g_assert_true (vc_worth_encoding (h264, src, &med));
+    g_assert_true (vc_worth_encoding (src, vc_estimate_size (h264, src, &med)));
     /* 2.5 Mbps HEVC: the cap is its own bitrate, plus audio, so no 5% saving */
-    g_assert_false (vc_worth_encoding (hevc, 18750000, &med));
+    g_assert_false (vc_worth_encoding (18750000, vc_estimate_size (hevc, 18750000, &med)));
     /* a lean lecture recording: 128k video + 192k AAC in 60 s (2.5 MB). Capping by the whole file's
      * bitrate counted the audio twice and predicted no saving; the real GPU result was −38%. */
     g_autoptr (VcProbe) lec = probe_sized (1280, 720, "h264");
     lec->video_kbps = 128;
     lec->aac_kbps = 192;
     VcOptions gpu = { .preset = VC_PRESET_GPU };
-    g_assert_true (vc_worth_encoding (lec, 2499199, &gpu));
+    g_assert_true (vc_worth_encoding (2499199, vc_estimate_size (lec, 2499199, &gpu)));
     g_assert_cmpuint (vc_estimate_size (lec, 2499199, &gpu), ==,
                       (guint64) ((1.15 * 128 * 0.6 + 128) * 1000.0 / 8.0 * 60));
     /* the video stream's bit_rate is parsed */
@@ -511,7 +511,78 @@ test_estimate_codec_aware (void)
     g_assert_cmpint (vb->video_kbps, ==, 128);
     /* unknown duration always encodes */
     hevc->duration = 0;
-    g_assert_true (vc_worth_encoding (hevc, 18750000, &med));
+    g_assert_true (vc_worth_encoding (18750000, vc_estimate_size (hevc, 18750000, &med)));
+}
+
+static void
+test_sample (void)
+{
+    /* 26 s rotated 10-bit HLG phone clip, Max 720p, Max 30 fps on, preset x265 slow: the sample is
+     * still the GPU path with the same size/rotation/fps, 6 s from the middle, video only, to a pipe */
+    g_autoptr (VcProbe) p = vc_parse_probe (
+        "index=0\ncodec_name=hevc\ncodec_type=video\nwidth=1920\nheight=1080\npix_fmt=yuv420p10le\n"
+        "color_transfer=arib-std-b67\navg_frame_rate=60/1\nrotation=-90\n"
+        "index=1\ncodec_name=aac\ncodec_type=audio\nbit_rate=192000\nduration=26.0\n", NULL);
+    VcOptions o = { .preset = "slow", .max_short_side = 720, .max_fps = 30, .keep_subs = TRUE };
+    double secs = 0;
+    g_auto (GStrv) a = vc_build_sample_argv ("/v/a.mov", p, &o, &secs);
+    g_assert_cmpfloat (secs, ==, 12.0);
+    /* three 4 s windows centred at 20/50/80%, each its own input and output, all to stdout */
+    const char *starts[] = { "3.200", "11.000", "18.800" };
+    guint n_in = 0, n_pipe = 0, n_dev = 0;
+    for (guint i = 0; a[i] != NULL; i++) {
+        if (strcmp (a[i], "-ss") == 0) {
+            g_assert_cmpuint (n_in, <, 3);
+            g_assert_cmpstr (a[i + 1], ==, starts[n_in]);
+            g_assert_cmpstr (a[i + 2], ==, "-t");
+            g_assert_cmpstr (a[i + 3], ==, "4.000");
+            g_assert_cmpstr (a[i + 4], ==, "-i");
+            n_in++;
+        }
+        n_pipe += strcmp (a[i], "pipe:1") == 0;
+        n_dev += strcmp (a[i], "-vaapi_device") == 0;
+    }
+    g_assert_cmpuint (n_in, ==, 3);
+    g_assert_cmpuint (n_pipe, ==, 3);
+    g_assert_cmpuint (n_dev, ==, 1);
+    g_assert_cmpint (argv_find (a, "2:v:0"), >, argv_find (a, "1:v:0"));
+    g_assert_cmpint (argv_find (a, "1:v:0"), >, argv_find (a, "0:v:0"));
+    g_assert_cmpint (argv_find (a, "-ss"), <, argv_find (a, "-i"));
+    g_assert_cmpint (argv_find (a, "-noautorotate"), <, argv_find (a, "-i"));
+    g_assert_cmpstr (argv_value (a, "-vf"), ==, "format=p010|vaapi,hwupload,transpose_vaapi=dir=clock,"
+                     "scale_vaapi=w='if(gt(iw,ih),-2,720)':h='if(gt(iw,ih),720,-2)'");
+    g_assert_cmpstr (argv_value (a, "-fpsmax"), ==, "30");
+    g_assert_cmpstr (argv_value (a, "-c:v"), ==, "hevc_vaapi");
+    g_assert_cmpstr (argv_value (a, "-qp"), ==, "28");
+    g_assert_cmpstr (argv_value (a, "-f"), ==, "hevc");
+    g_assert_cmpstr (a[g_strv_length (a) - 1], ==, "pipe:1");
+    const char *absent[] = { "-progress", "-y", "-c:a", "0:a?", "0:s?", "-map_metadata", "-movflags",
+                             "-x265-params", "-preset" };
+    for (gsize i = 0; i < G_N_ELEMENTS (absent); i++)
+        g_assert_cmpint (argv_find (a, absent[i]), ==, -1);
+    g_assert_cmpint (argv_find (a, "-an"), >, 0);
+
+    /* a clip of 12 s or less is sampled whole, in one window */
+    p->duration = 5.5;
+    g_auto (GStrv) b = vc_build_sample_argv ("/v/a.mov", p, &o, &secs);
+    g_assert_cmpfloat (secs, ==, 5.5);
+    g_assert_cmpstr (argv_value (b, "-ss"), ==, "0.000");
+    g_assert_cmpstr (argv_value (b, "-t"), ==, "5.500");
+    g_assert_cmpint (argv_find (b, "1:v:0"), ==, -1);
+
+    /* estimate: GPU uses the measured bitrate; x265 presets scale by their size factor */
+    p->duration = 60;
+    VcOptions gpu = { .preset = VC_PRESET_GPU }, med = { .preset = "medium" };
+    guint64 src = G_GUINT64_CONSTANT (100000000);
+    /* 192k AAC > 1080p's 128k + 10%, so audio is re-encoded at 128k */
+    g_assert_cmpuint (vc_estimate_from_sample (p, src, &gpu, 2300), ==,
+                      (guint64) ((2300 + 128) * 1000.0 / 8.0 * 60));
+    g_assert_cmpuint (vc_estimate_from_sample (p, src, &med, 2300), ==,
+                      (guint64) ((2300 / 1.15 + 128) * 1000.0 / 8.0 * 60));
+    g_assert_cmpuint (vc_estimate_from_sample (p, 1000, &gpu, 2300), ==, 1000);   /* never above */
+    g_assert_cmpuint (vc_estimate_from_sample (p, src, &gpu, 0), ==, 0);
+    g_assert_true (vc_worth_encoding (src, 0));
+    g_assert_false (vc_worth_encoding (1000, 960));
 }
 
 static void
@@ -673,6 +744,7 @@ main (int argc, char **argv)
     g_test_add_func ("/ffmpeg/max-size", test_max_size);
     g_test_add_func ("/ffmpeg/argv-gpu", test_ffmpeg_argv_gpu);
     g_test_add_func ("/estimate/codec-aware", test_estimate_codec_aware);
+    g_test_add_func ("/estimate/sample", test_sample);
     g_test_add_func ("/progress/line", test_progress_line);
     g_test_add_func ("/rules/worth-keeping", test_worth_keeping);
     g_test_add_func ("/rules/should-trash", test_should_trash);

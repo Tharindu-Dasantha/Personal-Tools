@@ -55,6 +55,10 @@ char *vc_output_path (const char *input, gboolean keep_subs, char **part_path);
 const VcClass *vc_output_class (const VcProbe *probe, const VcOptions *opt);
 char **vc_build_ffmpeg_argv (const char *input, const char *output, const VcProbe *probe,
                              const VcOptions *opt);
+/* Argv for a short GPU test encode of `probe`'s video at `opt`'s size and frame rate; raw HEVC goes
+ * to stdout, so its byte count over `*seconds` gives the real bitrate for vc_estimate_from_sample. */
+char **vc_build_sample_argv (const char *input, const VcProbe *probe, const VcOptions *opt,
+                             double *seconds);
 /* Argv for a 1-frame test encode; exit 0 means the GPU encoder works on this machine. */
 char **vc_build_gpu_test_argv (void);
 gboolean vc_parse_progress_line (const char *line, double duration, double *fraction);
@@ -65,8 +69,11 @@ char *vc_format_duration (double seconds);
 void vc_preset_factors (const char *preset, double *time_vs_medium, double *size_vs_medium);
 /* Rough compressed size in bytes, never above src_bytes; 0 when the duration is unknown. */
 guint64 vc_estimate_size (const VcProbe *probe, guint64 src_bytes, const VcOptions *opt);
-/* FALSE only when the estimate is known and says the output would not be kept. */
-gboolean vc_worth_encoding (const VcProbe *probe, guint64 src_bytes, const VcOptions *opt);
+/* Like vc_estimate_size, from a sample's measured GPU video bitrate instead of the class guess. */
+guint64 vc_estimate_from_sample (const VcProbe *probe, guint64 src_bytes, const VcOptions *opt,
+                                 double gpu_video_kbps);
+/* FALSE only when the estimate is known (not 0) and says the output would not be kept. */
+gboolean vc_worth_encoding (guint64 src_bytes, guint64 estimate);
 /* "h264" → "H.264", "hevc" → "HEVC"; unknown names are upper-cased. */
 char *vc_codec_label (const char *codec);
 /* "Less than a minute left", "About 9 min left", "About 1 h left", "About 1 h 20 min left". */
