@@ -57,7 +57,7 @@ two of the requested features: image compression, and turning images into web-re
 ## Tech Stack
 Same as [SPEC.md](SPEC.md), plus two runtime tools called through argv like ffmpeg:
 - ImageMagick 7 `magick`, already installed (JPEG, PNG, WebP; no HEIC/AVIF).
-- `pngquant` 2.18 from the Fedora repo, approved by the user 2026-11-08. Install with `sudo dnf install pngquant`.
+- `pngquant` from the Fedora repo (4.0.3 installed), approved by the user 2026-11-08. Install with `sudo dnf install pngquant`.
 
 ## Commands
 Same as [SPEC.md](SPEC.md). Fixtures are extended (below).
@@ -67,7 +67,7 @@ Same as [SPEC.md](SPEC.md). Fixtures are extended (below).
 src/images.c           → accepted types, output plan, magick/pngquant argv, trash decision
 tests/test_images.c    → unit tests
 tests/make-fixtures.sh → + images/: photo.jpg (noisy, photo-like), rotated.jpg (EXIF orientation 6),
-                         screenshot.png, alpha.png, already-tiny.png, scan.tiff, logo.bmp, photo.webp,
+                         screenshot.png, alpha.png, already-tiny.png, scan.tiff, logo.bmp, banner.webp,
                          odd 1001x667.jpg, a name with quotes/$/unicode, decoys anim.gif and fake.png (text)
 ```
 
@@ -105,7 +105,7 @@ gboolean   vc_image_should_trash (gboolean opt_on, gboolean steps_ok, gboolean s
 ## Success Criteria
 1. The fixture folder lists exactly the accepted images. `anim.gif` doesn't appear, and `fake.png` shows `Unreadable`.
 2. Every JPEG/PNG/BMP/TIFF fixture gives its same-type (or converted) output plus `.webp`, all of which open in an image
-   viewer. `photo.webp` gives one output.
+   viewer. `banner.webp` gives one output.
 3. `rotated.jpg` comes out upright, and ffprobe/`magick identify` shows no EXIF orientation or GPS on any output.
 4. `alpha.png` → `.png` and `.webp` both keep transparency.
 5. `already-tiny.png` gives `Skipped – already optimized` (or `png already optimized` with a kept webp), and nothing larger
@@ -116,6 +116,15 @@ gboolean   vc_image_should_trash (gboolean opt_on, gboolean steps_ok, gboolean s
 8. With trash on: originals with a verified same-type copy are in the Trash and can be restored. An original with only a
    webp kept, or a failed step, stays put.
 9. Stopping mid-batch leaves no `.part` or intermediate file, and a re-run skips finished images.
+
+## Notes from the build (2026-11-10)
+- pngquant reads only PNG, so BMP/TIFF → `.png` always runs the intermediate magick step (`MID.png`), resize or not.
+- A TIFF is read by its first page only (`IN[0]`); magick would otherwise write one file per page.
+- `pal8` counts as alpha: a palette PNG/BMP can carry a transparent colour, and palette images suit PNG anyway.
+- ffprobe reports a JPEG's **stored** size and no EXIF orientation, so the trash check (D6.3) also accepts the transposed
+  expected size (`min(src_h, W)` wide): an orientation 5–8 photo comes out upright, with width and height swapped.
+- Fixture `photo.webp` became `banner.webp`: `photo.jpg` also writes `compressed/photo.webp`, so the two would collide.
+- Parts are `compressed/.<stem>.part.<ext>`; the intermediate is `compressed/.<stem>.mid.part.png`.
 
 ## Open Questions
 None.

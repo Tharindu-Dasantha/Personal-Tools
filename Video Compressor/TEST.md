@@ -14,10 +14,13 @@ cmake --build "Video Compressor/build" -j
 ctest --test-dir "Video Compressor/build" --output-on-failure
 "Video Compressor/tests/make-fixtures.sh" "Video Compressor/build/fixtures"     # ~45 s
 rm -rf ~/vc-test && cp -a "Video Compressor/build/fixtures" ~/vc-test && rm -rf ~/vc-test/compressed
-cd ~/vc-test && sha256sum -- *.* > ~/vc-test.sha256                             # to prove originals are untouched
+cd ~/vc-test && sha256sum -- *.* images/*.* > ~/vc-test.sha256                 # to prove originals are untouched
 ```
-- [ ] `ctest` prints `100% tests passed, 0 tests failed out of 4` (test_compress, test_modes, test_web_video, test_frames).
+- [ ] `ctest` prints `100% tests passed, 0 tests failed out of 5` (test_compress, test_modes, test_web_video, test_frames,
+      test_images).
 - [ ] `~/vc-test` holds 13 video-named files (12 real ones plus the decoy `fake.mp4`) and the decoy `notes.txt`.
+- [ ] `~/vc-test/images` holds 12 files: 10 images, the decoys `anim.gif` and `fake.png` (the fixtures need `magick` and
+      `exiftool`).
 
 Use `~/vc-test` (not `build/`) for the Trash tests: the Trash only works on the same filesystem as your home.
 Start the app with `"Video Compressor/build/video-compressor"`.
@@ -87,6 +90,20 @@ Expected:
 - [ ] Optional: the same on a Mac in Safari.
 
 Afterwards: stop the server (Ctrl+C), then `sudo firewall-cmd --remove-port=8000/tcp`.
+
+### 2.3 Image quality against TinyJPG / TinyPNG (SPEC-image-compress.md criterion 6, task T27)
+
+1. Put 5 of your real phone photos (JPEG) in `~/vc-photos/` and 5 real PNG screenshots or graphics in `~/vc-pngs/`.
+2. Mode `Compress images`, Max width `Original width`, Move to Trash **off**. Run each folder.
+3. Upload the same files to tinyjpg.com / tinypng.com and download the results.
+4. Fill a row per file: `file | source size | ours (.jpg/.png) | Tiny* | difference %`.
+5. Open ours and Tiny's side by side at 100% zoom.
+
+- [ ] Each `.jpg` is within about 15% of TinyJPG's size, and you accept the look.
+- [ ] Each `.png` is within about 15% of TinyPNG's size, and you accept the look.
+- [ ] If not, say which way it is off; new values for 82 (JPEG) / 65-90 (pngquant) / 80 (WebP) are proposed and asked first.
+
+Send the table: it goes into `tasks/plan.md`.
 
 ---
 
@@ -205,7 +222,11 @@ EOF
 chmod +x ~/vc-nox264/ffmpeg
 env PATH="$HOME/vc-nox264:$PATH" "<repo>/Video Compressor/build/video-compressor"
 ```
-App-shell criterion 6 (multi-step stop) waits for the images module (Phase 10).
+App-shell criterion 6 (multi-step stop) is 5c.8. Criterion 5 with pngquant missing: start the app with
+`env PATH="$HOME/vc-nopq" …` where `~/vc-nopq` holds only links to `ffmpeg`, `ffprobe` and `magick`
+(`mkdir ~/vc-nopq && for t in ffmpeg ffprobe magick; do ln -s /usr/bin/$t ~/vc-nopq/; done`).
+- [ ] Compress images shows "Compress images needs pngquant: sudo dnf install pngquant" with Start greyed; Compress video has
+      no banner.
 
 ---
 
@@ -227,6 +248,28 @@ switch Mode away and back so the rows start fresh.
 
 ---
 
+## 5c. Compress images (SPEC-image-compress.md)
+
+Switch Mode to `Compress images` and choose `~/vc-test/images`. Delete `~/vc-test/images/compressed` between runs, then switch
+Mode away and back so the rows start fresh.
+
+| # | Steps | Expected |
+|---|---|---|
+| 5c.1 (crit. 1) | Just list the folder | [ ] 11 rows (no `anim.gif`); `fake.png` shows `Unreadable`. Rows read e.g. `JPEG · 2400×1600`, size on the right. |
+| 5c.2 (crit. 2) | Max width `Original width`, Trash off, Start | [ ] Every JPEG/PNG/BMP/TIFF gives its same-type (BMP → `.png`, TIFF → `.jpg`) plus `.webp`; `banner.webp` gives one `.webp`. [ ] Rows read like `jpg 936 kB −78% · webp 1.0 MB −76%`. [ ] Every output opens in Image Viewer. |
+| 5c.3 (crit. 3) | `magick identify -format '%f %wx%h %[orientation]\n' compressed/rotated.*` and `exiftool -GPS:all -Orientation compressed/*` | [ ] `rotated` outputs are 1200×1600 (upright), orientation `Undefined`, and exiftool prints no GPS or orientation for any output. |
+| 5c.4 (crit. 4) | Open `compressed/alpha.png` and `alpha.webp` on a dark background | [ ] Both keep the transparent background and the half-transparent circle. |
+| 5c.5 (crit. 5) | Look at `already-tiny.png` | [ ] `Skipped – already optimized`; no `compressed/already-tiny.*`. No output anywhere is bigger than its source. |
+| 5c.6 (crit. 7) | Delete `compressed/`, Max width `Max 1280 px`, Start | [ ] `photo.jpg`/`.webp` are 1280×853, `odd-1001x667.*` stay 1001×667, `screenshot.png` → 1280×800. |
+| 5c.7 (crit. 8) | Delete `compressed/`, Max 1280, Move to Trash **on**, Start → "Compress and Move to Trash" | [ ] 9 rows say `Original in Trash`; `already-tiny.png` and `fake.png` stay. [ ] Restore only the test files (command under 3.11), then `cd ~/vc-test && sha256sum -c ~/vc-test.sha256`: all `OK`. |
+| 5c.8 (crit. 9, app-shell 6) | Delete `compressed/`, Start, press Stop while `screenshot.png` runs (slow it down with the wrapper below) | [ ] `ls -A compressed` shows no `.screenshot.part.png` and no `.screenshot.mid.part.png`. [ ] Start again finishes it; a second Start shows `Already compressed` on every finished row. |
+| 5c.9 | Close the window while an image is running → Stop and Quit | [ ] No `magick`/`pngquant` left, no hidden `.part` file in `compressed/`. |
+
+Wrapper for 5c.8 and 5c.9 (each magick call waits 2 s): `mkdir -p ~/vc-slowimg && printf '#!/bin/sh\nsleep 2\nexec /usr/bin/magick "$@"\n' > ~/vc-slowimg/magick && chmod +x ~/vc-slowimg/magick`,
+then start the app with `env PATH="$HOME/vc-slowimg:$PATH" …`.
+
+---
+
 ## 6. Sanitizer run (SPEC.md criterion 13, app-shell criterion 7)
 
 ```sh
@@ -236,11 +279,11 @@ cmake --build "Video Compressor/build/asan" -j
 ASAN_OPTIONS=detect_leaks=0 ctest --test-dir "Video Compressor/build/asan"
 ASAN_OPTIONS=detect_leaks=0 "Video Compressor/build/asan/video-compressor" 2> ~/vc-asan.log; echo "exit $?"
 ```
-Run 3.2–3.6, 4.1–4.5 and 5b.1–5b.8 in that window (including a mode switch with a folder loaded), then close it.
+Run 3.2–3.6, 4.1–4.5, 5b.1–5b.8 and 5c.1–5c.9 in that window (including a mode switch with a folder loaded), then close it.
 - [ ] ctest `100% tests passed`. [ ] `exit 0`. [ ] `grep -c 'AddressSanitizer\|runtime error' ~/vc-asan.log` prints `0`.
 
 ## Clean up
 ```sh
-rm -rf ~/vc-test ~/vc-test.sha256 ~/vc-wrap ~/vc-nox264 ~/vc-asan.log
+rm -rf ~/vc-test ~/vc-test.sha256 ~/vc-wrap ~/vc-nox264 ~/vc-nopq ~/vc-slowimg ~/vc-asan.log
 ```
 Check no test files are left in the Trash: `gio trash --list | grep -c vc-` prints `0`.

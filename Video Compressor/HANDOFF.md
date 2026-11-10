@@ -1,6 +1,6 @@
 # Handoff: Video Compressor
 
-Last updated 2026-11-10 (Phase 9). Read [SPEC.md](SPEC.md) (source of truth), then [tasks/plan.md](tasks/plan.md)
+Last updated 2026-11-10 (Phase 10). Read [SPEC.md](SPEC.md) (source of truth), then [tasks/plan.md](tasks/plan.md)
 and [tasks/todo.md](tasks/todo.md). Checkboxes in `todo.md` are ticked only for things actually verified.
 [TEST.md](TEST.md) lists every test the user still runs by hand, with the expected result of each.
 
@@ -18,16 +18,17 @@ and [tasks/todo.md](tasks/todo.md). Checkboxes in `todo.md` are ticked only for 
 | Performance | R1–R12 | GPU encoder, size samples, x265 tuning, nice/idle I/O, mtime copy. See [tasks/plan-performance.md](tasks/plan-performance.md) and [tasks/todo-performance.md](tasks/todo-performance.md). Committed |
 | 7. App shell | T16–T18 | **Done, verified on Xvfb with ASan (2026-11-10)**: `modes.c`, multi-step runner, Choose Files, title `Media Tools`. Committed `7541405`. Checkpoint 7 still open (see below) |
 | 8. Web video | T19, T20 | **Done, verified on Xvfb with ASan (2026-11-10)**: `web_video.c`, Mode dropdown, per-mode options, split tool check, banner. Committed `7de014b`. Checkpoint 8 needs the user (web-video 5, 6, review) |
-| 9. Video → frames | T21, T22 | **Done, verified on Xvfb with ASan (2026-11-10)**: `frames.c`, frames options bar, directory parts in the runner. **Not committed yet.** Checkpoint 9 needs the review |
+| 9. Video → frames | T21, T22 | **Done, verified on Xvfb with ASan (2026-11-10)**: `frames.c`, frames options bar, directory parts in the runner. Committed `d785d0a`. Checkpoint 9 needs the review |
+| 10. Compress images | T23–T27 | **T23–T26 done, verified on Xvfb with ASan (2026-11-10)**: `images.c`, image fixtures, Compress images mode, trash for images. **Not committed yet.** T27 (calibration against TinyJPG/TinyPNG) needs the user's photos and eyes |
 
-Everything up to `7de014b` is pushed to `origin/main`.
+Everything up to `caed08a` is pushed to `origin/main`.
 
 **Media Tools (Phases 7–10):** the app grows into four modules mapped in [CAPABILITIES.md](CAPABILITIES.md):
 `app-shell` → `web-video` → `video-frames` → `image-compress`, each with a `SPEC-<id>.md` and tasks T16–T27 in `todo.md`.
-`app-shell` (Phase 7), `web-video` (Phase 8) and `video-frames` (Phase 9) are built. `image-compress` needs `sudo dnf install pngquant` (approved).
+All four are built. pngquant 4.0.3 and ImageMagick 7.1.2 are installed; the image fixtures also need `exiftool`.
 
-**Next step:** the user reviews Phase 9 (and runs [TEST.md](TEST.md) 5b) and says which commit date to use, then Phase 10
-(T23, `images.c`). Phases 7–8 also still wait on the review and the items below.
+**Next step:** the user reviews Phase 10 (and runs [TEST.md](TEST.md) 5c and 2.3 = T27) and says which commit date to use for
+it. Phases 7–9 also still wait on the review and the items below.
 1. Checkpoint 7 still needs: a one-by-one re-run of SPEC.md criteria 1–3 and 5–13 (the read-only-folder and failed-output-check
    cases weren't repeated), Choose Folder → Choose Files clicked through (only Files → Folder was), and a review with the user.
 2. Checkpoint 8 needs the user: web-video criterion 5 (no GPS tag on a real phone clip's output) and 6 (plays in Safari on iOS
@@ -39,6 +40,8 @@ Still only the user can do (steps and expected results in [TEST.md](TEST.md), se
 2. Judge a real iPhone HDR clip for washed-out colour (Criterion 12).
 3. Web video: no GPS tag in a real phone clip's output (web-video 5), and the output plays in Safari on iOS before it has
    downloaded (web-video 6). Serve it with `npx http-server`: Python's `http.server` has no byte ranges, which Safari needs.
+4. Images: compare 5 real photos and 5 real PNGs against TinyJPG/TinyPNG and judge the look (image criterion 6, T27,
+   TEST.md 2.3). Changing 82 / 65-90 / 80 is ask-first.
 
 **Ask the user:** Compress video fails on odd-sized video (see "Open issues"). Fixing it changes what Compress video encodes.
 
@@ -82,6 +85,18 @@ cmake -S "Video Compressor" -B "Video Compressor/build/san" -DCMAKE_BUILD_TYPE=D
   (`frames/<stem>`, part `frames/.<stem>.part`) and `vc_frames_steps()`. The step sets `part_is_dir` (the runner empties and
   creates that folder before ffmpeg, which won't) and `duration` (the range length, so progress counts the range).
   `vc_tonemap_chain()` in `web_video.c` is shared by both modes. `VcProbe.fps` (from `avg_frame_rate`) already existed.
+- Images in `main.c`: `finish_job()` applies the 5% rule to each image output on its own, then `image_result()` builds the
+  row text (`it->detail`, e.g. `jpg 412 kB −58% · webp 288 kB −71%`, `png already optimized`, `jpg exists`) from what is on
+  disk, and sets `it->out` to the same-type copy, else the webp (`it->webp_only`, which blocks `can_trash()`). Images have
+  their own Trash switch (`app.img_trash`); `trash_on()` picks the mode's. `verify_done()` checks the same-type copy's
+  width/height against `vc_image_expected_size()` at `it->max_width` (the Max width the item ran at), upright or transposed
+  (ffprobe ignores EXIF orientation). `spawn_step()` now removes a leftover part before **every** step (pngquant refuses to
+  overwrite). `noun()` gives "video"/"image" for the counts and dialogs.
+- `src/images.c` (Phase 10): `vc_probe_has_alpha()`, `vc_image_outputs()` (same-type path + `.webp` path; BMP/TIFF → png
+  with alpha, else jpg), `vc_image_steps()`, `vc_image_expected_size()`, `vc_image_should_trash()`. Source type comes from the
+  extension. Parts are `compressed/.<stem>.part.<ext>`, the intermediate `compressed/.<stem>.mid.part.png` (output NULL).
+  BMP/TIFF → png always goes through magick first (pngquant reads PNG only). TIFF input is `IN[0]` (first page only).
+  The extension list itself is `IMAGE_EXTS` in `modes.c`.
 - `src/modes.c/.h` (Phase 7): `VcMode`, `VcStep`, per-mode filter/out dir/trash/tool check, and `vc_mode_steps()`, which
   builds an item's steps (only Compress video has a builder so far; it also does the existing-output skip).
   `vc_remove_part()` is the only delete in `src/`. Options stay in `compress.h`'s `VcOptions`.
@@ -122,6 +137,28 @@ cmake -S "Video Compressor" -B "Video Compressor/build/san" -DCMAKE_BUILD_TYPE=D
   - decoys: `notes.txt` and `fake.mp4` (a text file)
 
 ## Verified so far
+
+Phase 10, on Xvfb, `build/asan` (ASan + UBSan, `G_DEBUG=fatal-criticals`), run copies under `build/asan/p10/{a,b,c,d,e}`.
+Five sessions, every one exit 0 with no sanitizer report:
+- Listing: 11 rows (no `anim.gif`), `fake.png` `Unreadable`, rows `JPEG · 2400×1600`; Start pulses the row bar.
+- Original width: every JPEG/PNG/BMP/TIFF gave its same-type (BMP → png with alpha, TIFF → jpg) plus `.webp`, `banner.webp`
+  one `.webp`. Every output decodes (`magick identify`) and Files rendered thumbnails. `rotated.jpg` (stored 1600×1200,
+  EXIF orientation 6 + GPS) → 1200×1600, no orientation, no EXIF at all (exiftool). `alpha.png` and `logo.bmp` outputs keep
+  alpha. `already-tiny.png` → `Skipped – already optimized`, nothing kept. No kept output is bigger than its source.
+- A re-run: every finished row `Already compressed`; `already-tiny.png` is retried and skipped again (see Open issues).
+- Max 1280 + Trash on: `photo.*` 1280×853, `odd-1001x667.*` stay 1001×667, `scan.*` 1280×1656, `screenshot.*` 1280×800. 9
+  originals trashed (`rotated.jpg` passed through the transposed check); `already-tiny.png` and `fake.png` stayed. All 12
+  restored byte-identical (`sha256sum -c`).
+- Wrappers on PATH (slow magick/pngquant, pngquant exit 99 for `alpha`, magick failing on `logo.bmp`, ffprobe sleeping 30 s on
+  `compressed/` paths): `alpha.png` → `png already optimized · webp 8.7 kB −39%`, `Original kept (no png copy)`, not
+  trashed; `logo.bmp` → `Failed`, original kept. One batch Stop during `screenshot.png`'s pngquant step (intermediate present)
+  and `odd-1001x667.jpg`'s output check: no `.part` or `.mid.part` left, row `Stopped`; the checked one `Original kept`.
+  Close mid-job → Stop and Quit: exit 0, no magick/pngquant, no part. 7 trashed originals restored byte-identical.
+- pngquant hidden from PATH: Compress images shows "Compress images needs pngquant: sudo dnf install pngquant" with Start
+  greyed (10 images ready); Compress video has no banner. Two chosen videos then Compress images: `0 files · 2 hidden (not
+  images)`.
+- Compress video, Web video and Video → frames each still finished a 2-file run in the same build.
+- Headless (throwaway driver linked against `vc_core`): the same per-output results on every fixture.
 
 Phase 9, on Xvfb, `build/asan` (ASan + UBSan, `G_DEBUG=fatal-criticals`), run copies under `build/asan/p9/{f,g,h,i,j}`. Every
 session exited 0 with no sanitizer report:
@@ -303,7 +340,15 @@ Gotchas:
 - Tooltips: any key press hides them, so hover with `xkey X Y move` (move away first, then onto the widget).
 - Multi-select: `xkey X Y ctrlclick`. Esc (with the pointer over the window) clears the selection.
 - Trash tests use the real `~/.local/share/Trash`, which needs the test folder on the same filesystem
-  as home (`build/` is). Restore everything afterwards with `gio trash --restore`.
+  as home (`build/` is). Afterwards restore **only the test files**, never the whole Trash (the user keeps things there):
+  `gio trash --list | awk -F'\t' -v d="$PWD/build/asan/p10/" 'index($2, d) == 1 {print $1}' | xargs -r -d '\n' -n1 gio trash --restore`.
+- Phase 10: Mode dropdown item `Compress images` (80,187). Images bottom bar: Max width (85,677), whose items run from Original
+  (86,424) in 35 px steps (1280 is (82,564)); Move to Trash (208,677); Start (1109,677), Stop (1215,677); start confirm
+  "Compress and Move to Trash" (400,175). A finished row's buttons are Show in Files then Trash; a click meant for a row's
+  Stop that lands after the state changed opens Nautilus (close it at (861,27)).
+- A shell wrapper that `sleep`s keeps the step's pipes open after SIGKILL (its `sleep` child holds them), so Stop shows
+  `Stopping…` until the sleep ends. Real magick/pngquant/ffmpeg have no such child.
+- Screenshot round trips take several seconds: a wait in a wrapper must be long (30 s) to act on a state in a later command.
 - Don't wait on `pgrep -f <path>` in a loop: it matches the loop's own shell. Use `pgrep -x ffmpeg` (or `pgrep -x sleep` for the slow-ffprobe wrapper).
 - VLC on Xvfb: `cvlc --no-audio --avcodec-hw=none --vout=xcb_x11 --start-time=5.5 f.mkv` (VA-API
   renders solid green). Add `--sub-track=0` for a track without the default flag.
@@ -338,8 +383,13 @@ Gotchas:
 - The size estimate overshoots badly on `testsrc` fixtures (240p: ≈ 3.1 MB vs 770 kB actual), because synthetic video is unusually
   easy to compress. It is meant for real footage and is uncalibrated until a phone clip is measured.
 - Since Phase 7 the tooltip on an `Already compressed` row is `compressed/<name> exists`, not the full output path.
-- `finish_job()` applies the compress keep rule (at least 5% smaller) only in Compress video. Images (T23) need their own rules there
-  (marked `shortcut:` in the code).
+- Images: an output dropped by the 5% rule is retried on every new run (only outputs on disk are skipped), so
+  `already-tiny.png` is re-encoded and skipped again each time. Same as `lowbitrate.mp4` in Compress video.
+- Images name collision: `photo.jpg` and `photo.webp` both write `compressed/photo.webp`; whichever runs second skips that output
+  (`webp exists`). Same as `clip.mov`/`clip.mp4` in Compress video.
+- Images: the row meta shows a JPEG's stored size (ffprobe ignores EXIF orientation), e.g. `1600×1200` for a portrait photo.
+  The QUALITY column is empty in images mode (the video classes don't apply).
+- A copy of 320 kB in 1.4 kB showed `−100%`; `percent_smaller()` now caps at 99% for any non-empty output (all modes).
 - Drag and drop still takes folders only; Choose Files is the only way to list single files. The finished bar still offers
   only "Choose Another Folder…".
 - The "N left" counter doesn't include held (paused-while-queued) items.
@@ -356,7 +406,8 @@ Gotchas:
 - Web mode still uses compress wording in a few places: the close dialog ("Keep compressing in the background?"), the row menu
   ("Compress Now"), row tooltips, and the summary's `Smaller` caption under a `+N%` total.
 - `N files hidden` can't differ between the two video modes (same filter); it was not re-checked on a mode switch.
-- The missing-tool banner says "needs ffmpeg with <tool>", which fits libx264/zscale/libwebp but not magick/pngquant (T24).
+- Compress images still says "videos" in a few places: the close dialog, the start button and row tooltips ("Compress this
+  video"), the empty page's feature chips.
 
 ## Working with this user
 

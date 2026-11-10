@@ -57,6 +57,21 @@ char *vc_frames_output (const char *input, char **part_path);
 GPtrArray *vc_frames_steps (const char *input, const VcProbe *probe, const VcOptions *opt,
                             char **skip_reason);
 
+/* Compress images (SPEC-image-compress.md). TRUE when the probe's pix_fmt can hold transparency. */
+gboolean vc_probe_has_alpha (const VcProbe *probe);
+/* The same-type output (compressed/<stem>.jpg|png|webp; BMP/TIFF give png with alpha, else jpg),
+ * and in *webp_path the .webp one (NULL for a WebP source, whose same-type output is the webp). */
+char *vc_image_outputs (const char *input, const VcProbe *probe, char **webp_path);
+/* The plan: same-type copy (PNG via pngquant, with a magick step first for BMP/TIFF or a resize)
+ * plus .webp. Outputs that exist are left out; NULL + "compressed/x.jpg and x.webp exist" when
+ * all do. */
+GPtrArray *vc_image_steps (const char *input, const VcProbe *probe, const VcOptions *opt,
+                           char **skip_reason);
+/* The size an output should have: Max width (0 = original) scales wider images down, never up. */
+void vc_image_expected_size (int src_w, int src_h, int max_width, int *w, int *h);
+gboolean vc_image_should_trash (gboolean opt_on, gboolean steps_ok, gboolean same_type_kept,
+                                int exp_w, int exp_h, int out_w, int out_h);
+
 /* Deletes a step's part: a file, or a directory of regular files (emptied, then removed). Refuses,
  * touching nothing, a path whose name doesn't end in ".part" (before any extension) and a
  * directory that holds a subdirectory. TRUE when the path is gone (also when it never existed). */

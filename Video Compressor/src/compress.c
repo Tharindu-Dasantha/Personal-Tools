@@ -590,6 +590,7 @@ vc_codec_label (const char *codec)
     static const char *const names[][2] = {
         { "h264", "H.264" }, { "hevc", "HEVC" }, { "mpeg4", "MPEG-4" }, { "mpeg2video", "MPEG-2" },
         { "vp8", "VP8" }, { "vp9", "VP9" }, { "av1", "AV1" }, { "prores", "ProRes" },
+        { "mjpeg", "JPEG" }, { "webp", "WebP" },
     };
     for (gsize i = 0; i < G_N_ELEMENTS (names); i++)
         if (g_strcmp0 (codec, names[i][0]) == 0)

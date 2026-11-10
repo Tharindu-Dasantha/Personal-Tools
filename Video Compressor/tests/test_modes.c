@@ -129,9 +129,6 @@ test_compress_steps (void)
     g_autoptr (GPtrArray) mkv = vc_mode_steps (VC_MODE_COMPRESS, input, p, &o, &reason);
     g_assert_nonnull (mkv);
 
-    /* Images has no builder yet. */
-    g_assert_null (vc_mode_steps (VC_MODE_IMAGES, input, p, &o, &reason));
-    g_assert_null (reason);
     g_unlink (out);
     g_rmdir (cdir);
     g_rmdir (dir);

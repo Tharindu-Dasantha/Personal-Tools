@@ -82,7 +82,7 @@ vc_mode_steps (VcMode mode, const char *input, const VcProbe *probe, const VcOpt
         return vc_web_video_steps (input, probe, opt, skip_reason);
     if (mode == VC_MODE_FRAMES)
         return vc_frames_steps (input, probe, opt, skip_reason);
-    return NULL;   /* images.c adds its own */
+    return vc_image_steps (input, probe, opt, skip_reason);
 }
 
 void

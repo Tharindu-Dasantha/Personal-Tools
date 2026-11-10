@@ -480,7 +480,7 @@ or close removes it.
 
 ## Phase 10: Compress images ([SPEC-image-compress.md](../SPEC-image-compress.md))
 
-### - [ ] T23: `images.c` core
+### - [x] T23: `images.c` core
 **Description:** Accepted extensions (`.jpg .jpeg .png .webp .bmp .tif .tiff`), `vc_probe_has_alpha()`,
 `vc_image_steps()` and `vc_image_should_trash()` as in the spec. Step plan: JPEG → magick jpg + webp. PNG → pngquant
 (`soft_exit = 99`) + webp, with an extra intermediate magick resize step when Max width is set. WebP → webp only.
@@ -489,36 +489,36 @@ skipped only when all of them exist. Add captured ffprobe output for a JPEG, a P
 probe tests, so still images parse (no duration).
 
 **Acceptance criteria:**
-- [ ] Every test in the spec's unit list passes
-- [ ] `vc_parse_probe()` accepts the captured image probes
+- [x] Every test in the spec's unit list passes
+- [x] `vc_parse_probe()` accepts the captured image probes
 
 **Verification:**
-- [ ] Unit (`tests/test_images.c`): extensions (GIF/SVG/HEIC rejected), plan per source type including the 3-step PNG
+- [x] Unit (`tests/test_images.c`): extensions (GIF/SVG/HEIC rejected), plan per source type including the 3-step PNG
       resize, argv element by element (`-resize '1280>'` only with a Max width, `--` before the pngquant input), output
       naming `IMG.JPEG` → `IMG.jpg` + `IMG.webp`, per-output and all-exist skip, special-character name
-- [ ] Unit: `vc_probe_has_alpha()` for `rgba`, `ya8`, `yuva420p`, `rgb24`, `yuvj420p`, `pal8`
-- [ ] Unit: `vc_image_should_trash()` truth table, height ±1 accepted, ±2 rejected
+- [x] Unit: `vc_probe_has_alpha()` for `rgba`, `ya8`, `yuva420p`, `rgb24`, `yuvj420p`, `pal8`
+- [x] Unit: `vc_image_should_trash()` truth table, height ±1 accepted, ±2 rejected
 
 **Dependencies:** T16
 **Files:** `src/images.c`, `src/modes.c/.h`, `tests/test_images.c`, `tests/test_compress.c`, `CMakeLists.txt`
 **Scope:** M
 
-### - [ ] T24: Image fixtures
+### - [x] T24: Image fixtures
 **Description:** `make-fixtures.sh` writes `images/` with magick: a noisy photo-like `photo.jpg` (wider than 1280),
 `rotated.jpg` with EXIF orientation 6, `screenshot.png`, `alpha.png`, `already-tiny.png`, `scan.tiff`, `logo.bmp`,
-`photo.webp`, a 1001×667 `.jpg`, a name with quotes/`$`/unicode, and the decoys `anim.gif` and `fake.png` (text).
+`banner.webp`, a 1001×667 `.jpg`, a name with quotes/`$`/unicode, and the decoys `anim.gif` and `fake.png` (text).
 
 **Acceptance criteria:**
-- [ ] All files exist, `magick identify` shows orientation 6 on `rotated.jpg` and alpha on `alpha.png`
+- [x] All files exist, `magick identify` shows orientation 6 on `rotated.jpg` and alpha on `alpha.png`
 
 **Verification:**
-- [ ] Run the script into a fresh directory and list the files with `magick identify`
+- [x] Run the script into a fresh directory and list the files with `magick identify`
 
 **Dependencies:** None
 **Files:** `tests/make-fixtures.sh`
 **Scope:** S
 
-### - [ ] T25: Images mode UI
+### - [x] T25: Images mode UI
 **Description:** Add `Compress images` to the Mode dropdown, with the banner when `magick` or `pngquant` is missing.
 Rows show dimensions, format and size. Options bar: **Max width** (default `Original`). Jobs run the multi-step plan with
 a pulsing bar. After the last step, each output that isn't at least 5% smaller than the source is deleted on its own, and
@@ -526,32 +526,32 @@ the row shows e.g. `jpg 412 kB −58% · webp 288 kB −71%`, `jpg already optim
 nothing was kept. pngquant exit 99 counts as "no output".
 
 **Acceptance criteria:**
-- [ ] Image criteria 1–5, 7 and 9 pass
-- [ ] Switching from a video mode to Compress images on a mixed folder shows the right hidden count (app-shell criterion 3)
-- [ ] Without pngquant on PATH, only Compress images shows the banner and greys Start (app-shell criterion 5)
+- [x] Image criteria 1–5, 7 and 9 pass
+- [x] Switching from a video mode to Compress images on a mixed folder shows the right hidden count (app-shell criterion 3)
+- [x] Without pngquant on PATH, only Compress images shows the banner and greys Start (app-shell criterion 5)
 
 **Verification:**
-- [ ] Manual (Xvfb): run the mode on `images/`, open every output, check `rotated.jpg` is upright with no orientation/GPS
+- [x] Manual (Xvfb): run the mode on `images/`, open every output, check `rotated.jpg` is upright with no orientation/GPS
       tag, `alpha.png` outputs keep transparency, and nothing larger than its source is kept
-- [ ] Manual: Max width 1280 → the 1001×667 file keeps its size, `photo.jpg` comes out 1280 wide
-- [ ] Manual: stop mid-batch (no `.part` or intermediate file), a re-run skips finished images (app-shell criterion 6)
+- [x] Manual: Max width 1280 → the 1001×667 file keeps its size, `photo.jpg` comes out 1280 wide
+- [x] Manual: stop mid-batch (no `.part` or intermediate file), a re-run skips finished images (app-shell criterion 6)
 
 **Dependencies:** T20, T23, T24
 **Files:** `src/main.c`
 **Scope:** M
 
-### - [ ] T26: Trash for images
+### - [x] T26: Trash for images
 **Description:** In Compress images, the Move to Trash checkbox and button come back. The check probes the same-type
 output (`.png`/`.jpg` for BMP/TIFF) and calls `vc_image_should_trash()` with the expected width `min(src, W)` and height.
 If only the `.webp` survived, the row says `original kept (no jpg copy)`. Removal is `g_file_trash()` only.
 
 **Acceptance criteria:**
-- [ ] Image criterion 8 passes: verified originals are in the Trash and restore byte-identical, and an original with only
+- [x] Image criterion 8 passes: verified originals are in the Trash and restore byte-identical, and an original with only
       a webp kept or a failed step stays put
 
 **Verification:**
-- [ ] Manual (Xvfb): run with trash on over a copy of `images/`, `gio list trash://`, restore all, compare checksums
-- [ ] Manual: stop during the output check keeps the original
+- [x] Manual (Xvfb): run with trash on over a copy of `images/`, `gio list trash://`, restore all, compare checksums
+- [x] Manual: stop during the output check keeps the original
 
 **Dependencies:** T25
 **Files:** `src/main.c`
@@ -573,7 +573,7 @@ TinyPNG and have you judge the look. If the sizes are more than about 15% off, p
 **Scope:** S
 
 ### Checkpoint 10 (Media Tools complete)
-- [ ] Image criteria 1–9 pass, and app-shell criteria 3, 5, 6 and 7 pass
-- [ ] ASan run of every mode clean, ctest green, Debug build clean
-- [ ] `CAPABILITIES.md` State column says Built for every module, HANDOFF.md updated
+- [ ] Image criteria 1–9 pass, and app-shell criteria 3, 5, 6 and 7 pass (all but criterion 6, T27, which needs you)
+- [x] ASan run of every mode clean, ctest green, Debug build clean
+- [x] `CAPABILITIES.md` State column says Built for every module, HANDOFF.md updated
 - [ ] Review with you

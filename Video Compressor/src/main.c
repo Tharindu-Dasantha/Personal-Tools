@@ -30,6 +30,9 @@ typedef struct {
     char *out;           /* the kept output, or NULL */
     guint64 out_size;    /* frames: the folder's total */
     guint n_frames;      /* frames: files in `out` */
+    char *detail;        /* images: "jpg 412 kB −58% · webp 288 kB −71%", or NULL */
+    gboolean webp_only;  /* images: `out` is the webp; no same-type copy, so the original stays */
+    int max_width;       /* images: the Max width the outputs were made at, for the trash check */
     gboolean stop;       /* Stop pressed while encoding or checking */
     char *note;          /* pill text while ST_NEW after a run ("Failed", "Stopped"), or NULL */
     char *tip;           /* tooltip for the size column */
@@ -56,7 +59,7 @@ typedef struct {
     GtkWidget *fps30, *max_size, *choose_empty, *files_empty, *empty_sub;
     GtkWidget *mode_dd, *banner, *size_head, *compress_opts, *web_opts, *web_width, *no_audio;
     GtkWidget *frames_opts, *frames_fps, *frames_start, *frames_end, *frames_width, *frames_format;
-    GtkWidget *frames_quality;
+    GtkWidget *frames_quality, *images_opts, *images_width, *img_trash, *hero;
     GtkWidget *run_title, *run_eta, *run_bar, *run_sub;
     GtkWidget *selbar, *sel_label, *sel_start, *sel_pause, *sel_stop, *sel_trash;
     GtkWidget *toast, *toast_label;
@@ -111,6 +114,7 @@ item_free (Item *it)
     g_free (it->out);
     g_free (it->note);
     g_free (it->tip);
+    g_free (it->detail);
     vc_probe_free (it->probe);
     g_clear_pointer (&it->steps, g_ptr_array_unref);
     g_free (it);
@@ -144,8 +148,9 @@ current_preset (void)
 }
 
 /* The Mode dropdown, in order; only modes that exist are listed. */
-static const VcMode MODES[] = { VC_MODE_COMPRESS, VC_MODE_WEB_VIDEO, VC_MODE_FRAMES };
-static const char *const MODE_NAMES[] = { "Compress video", "Web video (Safari)", "Video → frames", NULL };
+static const VcMode MODES[] = { VC_MODE_COMPRESS, VC_MODE_WEB_VIDEO, VC_MODE_FRAMES, VC_MODE_IMAGES };
+static const char *const MODE_NAMES[] = { "Compress video", "Web video (Safari)", "Video → frames",
+                                          "Compress images", NULL };
 /* The frames FPS dropdown, in order; 0 is Every frame */
 static const int FRAME_RATES[] = { 5, 10, 12, 15, 24, 30, 0 };
 #define FRAMES_DEFAULT_RATE 3   /* 15 */
@@ -158,21 +163,31 @@ static const char *const EMPTY_SUB[] = {
     "Every video inside is compressed to H.265, keeping its quality and resolution.",
     "Every video inside becomes an MP4 that plays in every browser, Safari and iOS included.",
     "Every video inside becomes a folder of numbered WebP or JPG frames, for scroll animations.",
+    "Every image inside gets a smaller copy in its own format, plus a WebP for the web.",
 };
 G_STATIC_ASSERT (G_N_ELEMENTS (EMPTY_SUB) == G_N_ELEMENTS (MODES));
 
 
-/* Only Compress video moves originals to Trash among the modes listed. */
+/* Compress video and Compress images each have their own Move to Trash switch. */
 static gboolean
 trash_on (void)
 {
-    return vc_mode_can_trash (app.mode) && gtk_switch_get_active (GTK_SWITCH (app.trash));
+    return vc_mode_can_trash (app.mode)
+           && gtk_switch_get_active (GTK_SWITCH (app.mode == VC_MODE_IMAGES ? app.img_trash : app.trash));
+}
+
+/* "video" or "image", for counts and labels */
+static const char *
+noun (void)
+{
+    return app.mode == VC_MODE_IMAGES ? "image" : "video";
 }
 
 static int
 percent_smaller (guint64 before, guint64 after)
 {
-    return (int) (100 - after * 100.0 / before + 0.5);
+    int p = (int) (100 - after * 100.0 / before + 0.5);
+    return after > 0 ? MIN (p, 99) : p;   /* a 1.4 kB copy of 320 kB is not "−100%" */
 }
 
 /* "−63%" or, for a web copy that came out bigger, "+12%" */
@@ -189,7 +204,8 @@ current_options (void)
 {
     static const int sizes[] = { 0, 1080, 720 };   /* the Max size dropdown, in order */
     guint size = gtk_drop_down_get_selected (GTK_DROP_DOWN (app.max_size));
-    GtkWidget *width_dd = app.mode == VC_MODE_FRAMES ? app.frames_width : app.web_width;
+    GtkWidget *width_dd = app.mode == VC_MODE_FRAMES ? app.frames_width
+                          : app.mode == VC_MODE_IMAGES ? app.images_width : app.web_width;
     guint width = gtk_drop_down_get_selected (GTK_DROP_DOWN (width_dd));
     guint rate = gtk_drop_down_get_selected (GTK_DROP_DOWN (app.frames_fps));
     double start, end;   /* 0 when invalid; check_range() greys Start then */
@@ -322,7 +338,7 @@ can_stop (Item *it)
 static gboolean
 can_trash (Item *it)
 {
-    return it->state == ST_DONE && it->out != NULL && vc_mode_can_trash (app.mode);
+    return it->state == ST_DONE && it->out != NULL && !it->webp_only && vc_mode_can_trash (app.mode);
 }
 
 static gboolean
@@ -432,6 +448,10 @@ render_row (Item *it)
             pill = g_strdup_printf ("✓ %s", change);
             style = "done";
         }
+        if (it->out != NULL && it->detail != NULL) {   /* images: each output on its own */
+            g_free (size_text);
+            size_text = g_markup_escape_text (it->detail, -1);
+        }
         if (it->out != NULL && app.mode == VC_MODE_FRAMES) {
             g_autofree char *total = g_format_size (it->out_size);
             g_free (size_text);
@@ -492,7 +512,7 @@ render_row (Item *it)
     gtk_widget_set_visible (it->pct, active);
     if (active) {
         g_autofree char *pct = it->stop ? g_strdup ("Stopping…")
-                               : it->probe->duration <= 0 ? g_strdup ("")
+                               : it->probe->duration <= 0 || app.mode == VC_MODE_IMAGES ? g_strdup ("")
                                : g_strdup_printf ("%d%%", (int) (it->fraction * 100));
         gtk_label_set_text (GTK_LABEL (it->pct), pct);
         if (app.paused)
@@ -502,7 +522,10 @@ render_row (Item *it)
     }
 
     GString *m = g_string_new (NULL);
-    if (it->probe != NULL) {
+    if (it->probe != NULL && app.mode == VC_MODE_IMAGES) {
+        g_autofree char *codec = vc_codec_label (it->probe->codec);
+        g_string_printf (m, "%s · %d×%d", codec, it->probe->width, it->probe->height);
+    } else if (it->probe != NULL) {
         g_autofree char *codec = vc_codec_label (it->probe->codec);
         g_autofree char *dur = vc_format_duration (it->probe->duration);
         g_string_printf (m, "%s · %s · %d×%d", codec, dur, it->probe->width, it->probe->height);
@@ -543,7 +566,7 @@ refresh_chips (Item *it)
     for (GtkWidget *c; (c = gtk_widget_get_first_child (it->chips)) != NULL;)
         gtk_box_remove (GTK_BOX (it->chips), c);
     VcProbe *p = it->probe;
-    if (p == NULL)
+    if (p == NULL || app.mode == VC_MODE_IMAGES)   /* video quality classes */
         return;
     gtk_box_append (GTK_BOX (it->chips), chip (vc_class_for (p->width, p->height)->label, NULL));
     if (vc_probe_is_10bit (p))
@@ -678,7 +701,8 @@ update_progress (void)
         g_autofree char *name = basename_display (job->path);
         title = g_markup_printf_escaped ("<b>%s %u of %u</b> · %s",
                                          app.paused ? "Paused ·"
-                                         : app.mode == VC_MODE_COMPRESS ? "Compressing"
+                                         : app.mode == VC_MODE_COMPRESS || app.mode == VC_MODE_IMAGES
+                                             ? "Compressing"
                                          : app.mode == VC_MODE_FRAMES ? "Extracting" : "Converting",
                                          MIN (done + 1, total), total, name);
         double active = (g_get_monotonic_time () - app.job_t0 - app.paused_total) / 1e6;
@@ -729,7 +753,7 @@ update_summary (void)
     gtk_label_set_text (GTK_LABEL (app.sum_title), title);
 
     GString *s = g_string_new (NULL);
-    g_string_printf (s, "%u video%s %s", compressed, compressed == 1 ? "" : "s",
+    g_string_printf (s, "%u %s%s %s", compressed, noun (), compressed == 1 ? "" : "s",
                      web ? "converted" : frames ? "extracted" : "compressed");
     if (app.batch_t0 > 0 && app.batch_end > app.batch_t0) {
         guint min = (guint) ((app.batch_end - app.batch_t0) / G_USEC_PER_SEC / 60);
@@ -741,7 +765,8 @@ update_summary (void)
             g_string_append_printf (s, " in %u h %u min", min / 60, min % 60);
     }
     if (efficient > 0)
-        g_string_append_printf (s, " · %u %s", efficient, frames ? "skipped" : "already efficient");
+        g_string_append_printf (s, " · %u %s", efficient, frames ? "skipped"
+                                : app.mode == VC_MODE_IMAGES ? "already optimized" : "already efficient");
     if (unreadable > 0)
         g_string_append_printf (s, " · %u unreadable", unreadable);
     gtk_label_set_text (GTK_LABEL (app.sum_sub), s->str);
@@ -848,10 +873,12 @@ update_controls (void)
     const char *missing = app.tools_ok ? vc_mode_missing_tool (app.mode, app.have) : NULL;
     gtk_widget_set_visible (app.banner, missing != NULL);
     if (missing != NULL) {
-        g_autofree char *b = g_strdup_printf ("%s needs ffmpeg with %s, which this ffmpeg doesn't "
-                                              "have. Install the full ffmpeg build from RPM Fusion.",
-                                              MODE_NAMES[gtk_drop_down_get_selected (GTK_DROP_DOWN (app.mode_dd))],
-                                              missing);
+        const char *mode_name = MODE_NAMES[gtk_drop_down_get_selected (GTK_DROP_DOWN (app.mode_dd))];
+        g_autofree char *b = app.mode == VC_MODE_IMAGES
+            ? g_strdup_printf ("%s needs %s: sudo dnf install %s", mode_name, missing,
+                               strcmp (missing, "magick") == 0 ? "ImageMagick" : missing)
+            : g_strdup_printf ("%s needs ffmpeg with %s, which this ffmpeg doesn't "
+                               "have. Install the full ffmpeg build from RPM Fusion.", mode_name, missing);
         gtk_label_set_text (GTK_LABEL (app.banner), b);
     }
     gboolean range_ok = check_range ();
@@ -879,19 +906,20 @@ update_controls (void)
     gtk_widget_set_sensitive (app.web_width, !busy);
     gtk_widget_set_sensitive (app.no_audio, !busy);
     gtk_widget_set_sensitive (app.frames_opts, !busy);
+    gtk_widget_set_sensitive (app.images_opts, !busy);
 
     g_autofree char *src_text = g_format_size (src), *est_text = g_format_size (est);
     gboolean est_shown = app.mode == VC_MODE_COMPRESS;
     g_autofree char *total = ready == 0 || !est_shown ? g_strdup ("")
                              : g_strdup_printf ("%s → ≈ %s", src_text, est_text);
     g_autofree char *preset = preset_title (app.preset);
-    g_autofree char *total_sub = probing ? g_strdup ("Reading videos…")
+    g_autofree char *total_sub = probing ? g_strdup_printf ("Reading %ss…", noun ())
                                  : ready == 0 && skipped > 0
                                      ? g_strdup_printf ("%u video%s likely won't get smaller · "
                                                         "select to compress anyway", skipped,
                                                         skipped == 1 ? "" : "s")
                                  : ready == 0 ? g_strdup ("Nothing waiting to compress")
-                                 : !est_shown ? g_strdup_printf ("%u video%s ready", ready,
+                                 : !est_shown ? g_strdup_printf ("%u %s%s ready", ready, noun (),
                                                                  ready == 1 ? "" : "s")
                                  : g_strdup_printf ("%u video%s ready · estimated for %s", ready,
                                                     ready == 1 ? "" : "s", preset);
@@ -1081,21 +1109,37 @@ start_confirmed (GObject *source, GAsyncResult *res, gpointer user_data)
         do_start (app.ask_one, app.ask_sel);
 }
 
-#define TRASH_CHECKS "\n\n✓ The compressed copy plays and has the same length\n" \
-                     "✓ It is at least 5% smaller than the original\n" \
-                     "✓ Nothing is ever deleted permanently"
+static const char *
+trash_checks (void)
+{
+    return app.mode == VC_MODE_IMAGES
+               ? "\n\n✓ The same-type copy opens and has the expected size\n"
+                 "✓ It is at least 5% smaller than the original\n"
+                 "✓ Nothing is ever deleted permanently"
+               : "\n\n✓ The compressed copy plays and has the same length\n"
+                 "✓ It is at least 5% smaller than the original\n"
+                 "✓ Nothing is ever deleted permanently";
+}
+
+/* The output that replaces the original: the compressed video, or an image's same-type copy. */
+static char *
+main_output (Item *it, const VcOptions *o)
+{
+    return app.mode == VC_MODE_IMAGES ? vc_image_outputs (it->path, it->probe, NULL)
+                                      : vc_output_path (it->path, o->keep_subs, NULL);
+}
 
 static void
 act_start (Item *one, gboolean sel)
 {
     guint n = 0;
-    gboolean keep_subs = gtk_switch_get_active (GTK_SWITCH (app.subs));
+    VcOptions o = current_options ();
     for (guint i = 0; trash_on () && i < app.items->len; i++) {
         Item *it = app.items->pdata[i];
         if (!in_scope (it, one, sel) || !can_start (it) || it == app.job
             || (one == NULL && !sel && skip_in_bulk (it)))
             continue;
-        g_autofree char *out = vc_output_path (it->path, keep_subs, NULL);
+        g_autofree char *out = main_output (it, &o);
         n += !g_file_test (out, G_FILE_TEST_EXISTS);
     }
     if (n == 0) {
@@ -1106,9 +1150,10 @@ act_start (Item *one, gboolean sel)
     app.ask_sel = sel;
     g_autofree char *message = g_strdup_printf ("Move up to %u original%s to Trash?", n,
                                                 n == 1 ? "" : "s");
-    confirm (message, "Each original is moved only after its compressed copy is ready and "
-                      "checked. You can restore them from the Trash." TRASH_CHECKS,
-             "Compress and Move to Trash", start_confirmed);
+    g_autofree char *detail = g_strconcat ("Each original is moved only after its compressed copy is "
+                                           "ready and checked. You can restore them from the Trash.",
+                                           trash_checks (), NULL);
+    confirm (message, detail, "Compress and Move to Trash", start_confirmed);
 }
 
 static void
@@ -1209,12 +1254,23 @@ verify_done (GObject *source, GAsyncResult *res, gpointer user_data)
     /* `out` only ever exists after ffmpeg exited 0 and the .part was renamed. */
     GStatBuf st;
     gboolean kept = g_stat (it->out, &st) == 0 && vc_output_is_worth_keeping (it->size, st.st_size);
-    if (!vc_should_trash_original (TRUE, TRUE, it->probe->duration,
-                                   probe != NULL ? probe->duration : 0, kept)) {
+    gboolean pass;
+    if (app.mode == VC_MODE_IMAGES) {
+        int w, h, tw, th, ow = probe != NULL ? probe->width : 0, oh = probe != NULL ? probe->height : 0;
+        vc_image_expected_size (it->probe->width, it->probe->height, it->max_width, &w, &h);
+        /* ffprobe gives a JPEG's stored size; with EXIF orientation 5-8 the upright copy is transposed */
+        vc_image_expected_size (it->probe->height, it->probe->width, it->max_width, &tw, &th);
+        pass = vc_image_should_trash (TRUE, TRUE, kept, w, h, ow, oh)
+               || vc_image_should_trash (TRUE, TRUE, kept, tw, th, ow, oh);
+    } else {
+        pass = vc_should_trash_original (TRUE, TRUE, it->probe->duration,
+                                         probe != NULL ? probe->duration : 0, kept);
+    }
+    if (!pass) {
         g_autofree char *why = g_strdup_printf (
             "Output check failed: %s", error != NULL ? error->message
                                        : !kept ? "output missing or not smaller"
-                                               : "duration differs");
+                                       : app.mode == VC_MODE_IMAGES ? "size differs" : "duration differs");
         keep_original (it, why);
         return;
     }
@@ -1287,6 +1343,49 @@ dir_usage (const char *path, guint *count)
     return total;
 }
 
+/* Images: the row's "jpg 412 kB −58% · webp 288 kB −71%", from what is on disk now. `out` becomes the
+ * same-type copy, else the webp, else NULL. */
+static void
+image_result (Item *it, GPtrArray *steps)
+{
+    g_autofree char *webp = NULL;
+    g_autofree char *same = vc_image_outputs (it->path, it->probe, &webp);
+    const char *outs[] = { same, webp };
+    GString *d = g_string_new (NULL);
+    g_clear_pointer (&it->out, g_free);
+    it->out_size = 0;
+    for (guint i = 0; i < G_N_ELEMENTS (outs) && outs[i] != NULL; i++) {
+        gboolean planned = FALSE;   /* else it existed before this run */
+        for (guint s = 0; s < steps->len; s++)
+            planned |= g_strcmp0 (((VcStep *) steps->pdata[s])->output, outs[i]) == 0;
+        GStatBuf st;
+        gboolean exists = g_stat (outs[i], &st) == 0;
+        const char *ext = strrchr (outs[i], '.') + 1;
+        if (d->len > 0)
+            g_string_append (d, " · ");
+        if (!exists) {
+            g_string_append_printf (d, "%s already optimized", ext);
+        } else if (!planned) {
+            g_string_append_printf (d, "%s exists", ext);
+        } else {
+            g_autofree char *size = g_format_size (st.st_size);
+            g_autofree char *change = change_text (it->size, st.st_size);
+            g_string_append_printf (d, "%s %s %s", ext, size, change);
+        }
+        if (exists && it->out == NULL) {
+            it->out = g_strdup (outs[i]);
+            it->out_size = st.st_size;
+        }
+    }
+    g_free (it->detail);
+    it->detail = g_string_free (d, FALSE);
+    /* only the same-type copy may replace the original (SPEC-image-compress.md D6) */
+    it->webp_only = it->out != NULL && strcmp (it->out, same) != 0;
+    if (it->webp_only && trash_on ())
+        it->extra = g_str_has_suffix (same, ".png") ? "Original kept (no png copy)"
+                                                    : "Original kept (no jpg copy)";
+}
+
 /* Runs when the job's last step has ended (or one failed, or it was stopped): moves the outputs
  * into place, removes every other part, and sets the row. The caller starts the next item. */
 static void
@@ -1306,11 +1405,12 @@ finish_job (gboolean ok)
     for (guint i = 0; ok && !it->stop && error == NULL && i < steps->len; i++) {
         VcStep *s = steps->pdata[i];
         GStatBuf st;
-        /* A compressed output that isn't at least 5% smaller is dropped with the other parts below;
-         * web video keeps every output (its point is compatibility, SPEC-web-video.md D2).
-         * shortcut: images (T23) bring their own rules. */
+        /* A compressed output (each image output on its own) that isn't at least 5% smaller is
+         * dropped with the other parts below; web video keeps every output (its point is
+         * compatibility, SPEC-web-video.md D2). */
+        gboolean shrinks = app.mode == VC_MODE_COMPRESS || app.mode == VC_MODE_IMAGES;
         if (s->output == NULL || g_stat (s->part, &st) != 0
-            || (app.mode == VC_MODE_COMPRESS && !vc_output_is_worth_keeping (it->size, st.st_size)))
+            || (shrinks && !vc_output_is_worth_keeping (it->size, st.st_size)))
             continue;
         g_autoptr (GFile) src = g_file_new_for_path (s->part);
         g_autoptr (GFile) dst = g_file_new_for_path (s->output);
@@ -1331,6 +1431,19 @@ finish_job (gboolean ok)
     } else if (!ok || error != NULL) {
         set_status (it, "Failed", error != NULL ? error->message
                                   : last_err != NULL ? last_err : "ffmpeg failed");
+    } else if (app.mode == VC_MODE_IMAGES) {
+        it->state = ST_DONE;
+        image_result (it, steps);
+        if (it->out == NULL) {
+            set_status (it, "Skipped – already optimized",
+                        "No copy was at least 5% smaller than the original, so none was kept.");
+        } else if (it->webp_only) {
+            set_status (it, NULL, it->out);   /* image_result said why the original stays */
+        } else {
+            set_status (it, NULL, it->out);
+            if (trash_on ())
+                check_then_trash (it);
+        }
     } else if (kept == NULL) {
         it->state = ST_DONE;   /* no output: nothing to trash, and no point encoding again */
         set_status (it, NULL, NULL);
@@ -1360,6 +1473,8 @@ step_ended (void)
                   || (s->soft_exit != 0 && code == s->soft_exit);
     if (ok && !it->stop && it->step + 1 < it->steps->len) {
         it->step++;
+        it->fraction = (double) it->step / it->steps->len;   /* steps without progress output */
+        update_progress ();
         if (spawn_step ())
             return;
         ok = FALSE;
@@ -1463,8 +1578,9 @@ spawn_step (void)
         G_SUBPROCESS_FLAGS_STDOUT_PIPE | G_SUBPROCESS_FLAGS_STDERR_PIPE);
     g_subprocess_launcher_set_child_setup (launcher, lower_priority, NULL, NULL);
     g_clear_pointer (&app.last_err, g_free);
-    /* ffmpeg writes frames into the folder but doesn't create it; a killed run may have left one */
-    if (s->part_is_dir && (!vc_remove_part (s->part) || g_mkdir (s->part, 0755) != 0)) {
+    /* A killed run may have left the part (pngquant won't overwrite one). ffmpeg writes frames
+     * into the folder but doesn't create it. */
+    if (!vc_remove_part (s->part) || (s->part_is_dir && g_mkdir (s->part, 0755) != 0)) {
         g_autofree char *display = g_filename_display_name (s->part);
         app.last_err = g_strdup_printf ("Cannot create %s", display);
         return FALSE;
@@ -1502,6 +1618,8 @@ start_job (Item *it, GPtrArray *steps)
     it->state = ST_ACTIVE;
     it->stop = FALSE;
     it->fraction = 0;
+    g_clear_pointer (&it->detail, g_free);
+    it->webp_only = FALSE;
     gtk_progress_bar_set_fraction (GTK_PROGRESS_BAR (it->bar), 0);
     set_status (it, NULL, NULL);
     if (!spawn_step ())
@@ -1627,6 +1745,7 @@ encode_next (void)
         if (it == NULL)
             break;
         it->prio = 0;
+        it->max_width = o.max_width;
         g_autofree char *reason = NULL;
         GPtrArray *steps = vc_mode_steps (app.mode, it->path, it->probe, &o, &reason);
         if (steps == NULL && app.mode == VC_MODE_FRAMES) {
@@ -1647,7 +1766,7 @@ encode_next (void)
             g_free (it->out);
             /* an earlier finished output, so its original can be trashed */
             it->out = app.mode == VC_MODE_WEB_VIDEO ? vc_web_video_output (it->path, NULL)
-                                                    : vc_output_path (it->path, o.keep_subs, NULL);
+                                                    : main_output (it, &o);
             GStatBuf st;
             it->out_size = g_stat (it->out, &st) == 0 ? st.st_size : 0;
             it->extra = app.mode == VC_MODE_WEB_VIDEO ? "Already converted" : "Already compressed";
@@ -1704,8 +1823,9 @@ on_sel_trash (void)
         n += checked (app.items->pdata[i]) && can_trash (app.items->pdata[i]);
     g_autofree char *message = g_strdup_printf ("Move %u original%s to Trash?", n,
                                                 n == 1 ? "" : "s");
-    confirm (message, "Each compressed copy is checked first. You can restore the originals "
-                      "from the Trash." TRASH_CHECKS, "Move to Trash", trash_confirmed);
+    g_autofree char *detail = g_strconcat ("Each compressed copy is checked first. You can restore the "
+                                           "originals from the Trash.", trash_checks (), NULL);
+    confirm (message, detail, "Move to Trash", trash_confirmed);
 }
 
 static void
@@ -1915,7 +2035,8 @@ make_row (Item *it)
 
     g_autofree char *display = basename_display (it->path);
     g_autofree char *tile_class = g_strdup_printf ("tile-%u", g_str_hash (it->path) % 8);
-    GtkWidget *tile = gtk_image_new_from_icon_name ("media-playback-start-symbolic");
+    GtkWidget *tile = gtk_image_new_from_icon_name (app.mode == VC_MODE_IMAGES ? "image-x-generic-symbolic"
+                                                    : "media-playback-start-symbolic");
     gtk_widget_add_css_class (tile, "tile");
     gtk_widget_add_css_class (tile, tile_class);
     gtk_widget_set_valign (tile, GTK_ALIGN_CENTER);
@@ -2008,9 +2129,12 @@ remove_stale_parts (const char *folder)
     g_autofree char *cdir_path = g_build_filename (folder, vc_mode_out_dir (app.mode), NULL);
     g_autoptr (GDir) cdir = g_dir_open (cdir_path, 0, NULL);
     for (const char *name; cdir != NULL && (name = g_dir_read_name (cdir)) != NULL;) {
-        if (name[0] == '.' && (g_str_has_suffix (name, ".part.mp4")
-                               || g_str_has_suffix (name, ".part.mkv")
-                               || g_str_has_suffix (name, ".part"))) {   /* a frames folder */
+        static const char *const ends[] = { ".part.mp4", ".part.mkv", ".part" /* a frames folder */,
+                                            ".part.jpg", ".part.png", ".part.webp" };
+        gboolean part = FALSE;
+        for (gsize i = 0; i < G_N_ELEMENTS (ends); i++)
+            part |= g_str_has_suffix (name, ends[i]);
+        if (name[0] == '.' && part) {
             g_autofree char *stale = g_build_filename (cdir_path, name, NULL);
             vc_remove_part (stale);
         }
@@ -2070,7 +2194,7 @@ load_source (const char *folder, char *const *files)
         guint n = app.items->len;
         g_autofree char *sub = hidden == 0
             ? g_strdup_printf ("%u file%s", n, n == 1 ? "" : "s")
-            : g_strdup_printf ("%u file%s · %u hidden (not videos)", n, n == 1 ? "" : "s", hidden);
+            : g_strdup_printf ("%u file%s · %u hidden (not %ss)", n, n == 1 ? "" : "s", hidden, noun ());
         gtk_label_set_text (GTK_LABEL (app.title), "Chosen files");
         gtk_label_set_text (GTK_LABEL (app.subtitle), sub);
     } else {
@@ -2128,7 +2252,8 @@ static void
 on_choose (void)
 {
     g_autoptr (GtkFileDialog) d = gtk_file_dialog_new ();
-    gtk_file_dialog_set_title (d, "Choose a folder of videos");
+    g_autofree char *title = g_strdup_printf ("Choose a folder of %ss", noun ());
+    gtk_file_dialog_set_title (d, title);
     gtk_file_dialog_select_folder (d, app.win, NULL, folder_chosen, NULL);
 }
 
@@ -2156,11 +2281,19 @@ static void
 on_choose_files (void)
 {
     g_autoptr (GtkFileDialog) d = gtk_file_dialog_new ();
-    gtk_file_dialog_set_title (d, "Choose videos");
     g_autoptr (GtkFileFilter) f = gtk_file_filter_new ();
-    gtk_file_filter_set_name (f, "Videos");
-    gtk_file_filter_add_mime_type (f, "video/*");
-    gtk_file_filter_add_suffix (f, "ts");   /* often typed as a Qt translation file */
+    if (app.mode == VC_MODE_IMAGES) {
+        gtk_file_dialog_set_title (d, "Choose images");
+        gtk_file_filter_set_name (f, "Images");
+        const char *exts[] = { "jpg", "jpeg", "png", "webp", "bmp", "tif", "tiff" };
+        for (gsize i = 0; i < G_N_ELEMENTS (exts); i++)
+            gtk_file_filter_add_suffix (f, exts[i]);
+    } else {
+        gtk_file_dialog_set_title (d, "Choose videos");
+        gtk_file_filter_set_name (f, "Videos");
+        gtk_file_filter_add_mime_type (f, "video/*");
+        gtk_file_filter_add_suffix (f, "ts");   /* often typed as a Qt translation file */
+    }
     gtk_file_dialog_set_default_filter (d, f);
     gtk_file_dialog_open_multiple (d, app.win, NULL, files_chosen, NULL);
 }
@@ -2209,7 +2342,10 @@ on_mode (void)
     gtk_widget_set_visible (app.compress_opts, app.mode == VC_MODE_COMPRESS);
     gtk_widget_set_visible (app.web_opts, app.mode == VC_MODE_WEB_VIDEO);
     gtk_widget_set_visible (app.frames_opts, app.mode == VC_MODE_FRAMES);
+    gtk_widget_set_visible (app.images_opts, app.mode == VC_MODE_IMAGES);
     gtk_label_set_text (GTK_LABEL (app.empty_sub), EMPTY_SUB[i]);
+    g_autofree char *hero = g_strdup_printf ("Drop a folder of %ss here", noun ());
+    gtk_label_set_text (GTK_LABEL (app.hero), hero);
     gtk_label_set_text (GTK_LABEL (app.size_head),
                         app.mode == VC_MODE_COMPRESS ? "SIZE → ESTIMATED" : "SIZE");
     if (app.items != NULL)
@@ -2404,6 +2540,9 @@ check_tools (void)
                       "On Fedora: sudo dnf install ffmpeg (from RPM Fusion).");
         return;
     }
+    g_autofree char *magick = g_find_program_in_path ("magick");
+    g_autofree char *pngquant = g_find_program_in_path ("pngquant");
+    app.have |= (magick != NULL ? VC_HAVE_MAGICK : 0) | (pngquant != NULL ? VC_HAVE_PNGQUANT : 0);
     const char *argv[] = { ffmpeg, "-hide_banner", "-encoders", NULL };
     g_autoptr (GError) error = NULL;
     GSubprocess *proc = g_subprocess_newv (argv, G_SUBPROCESS_FLAGS_STDOUT_PIPE
@@ -2583,7 +2722,8 @@ build_empty_page (void)
     gtk_widget_set_valign (inner, GTK_ALIGN_CENTER);
     gtk_widget_set_vexpand (inner, TRUE);
     gtk_box_append (GTK_BOX (inner), icon);
-    gtk_box_append (GTK_BOX (inner), styled_label ("Drop a folder of videos here", "hero", 0.5));
+    app.hero = styled_label ("Drop a folder of videos here", "hero", 0.5);
+    gtk_box_append (GTK_BOX (inner), app.hero);
     GtkWidget *sub = app.empty_sub = styled_label (EMPTY_SUB[0], "dim-label", 0.5);
     gtk_label_set_wrap (GTK_LABEL (sub), TRUE);
     gtk_box_append (GTK_BOX (inner), sub);
@@ -2943,10 +3083,32 @@ build_bottom_bar (void)
     gtk_box_append (GTK_BOX (app.frames_opts), q_row);
     gtk_widget_set_visible (app.frames_opts, FALSE);
 
+    /* Compress images: Max width (default Original) and its own Move to Trash */
+    app.images_width = width_dropdown ();
+    gtk_drop_down_set_selected (GTK_DROP_DOWN (app.images_width), 0);
+    gtk_widget_set_tooltip_text (app.images_width, "Scale wider images down to this width, keeping the "
+                                                   "aspect ratio. Narrower images are never enlarged.");
+    app.img_trash = gtk_switch_new ();
+    gtk_widget_set_valign (app.img_trash, GTK_ALIGN_CENTER);
+    GtkWidget *it_label = gtk_label_new_with_mnemonic ("Move originals to _Trash");
+    gtk_label_set_mnemonic_widget (GTK_LABEL (it_label), app.img_trash);
+    gtk_accessible_update_relation (GTK_ACCESSIBLE (app.img_trash), GTK_ACCESSIBLE_RELATION_LABELLED_BY,
+                                    it_label, NULL, -1);
+    GtkWidget *it_row = hbox (10);
+    gtk_widget_set_tooltip_text (it_row, "After each same-type copy (jpg or png) is checked: it opens, has "
+                                         "the expected size and is at least 5% smaller. Asks before starting.");
+    gtk_box_append (GTK_BOX (it_row), app.img_trash);
+    gtk_box_append (GTK_BOX (it_row), it_label);
+    app.images_opts = hbox (28);
+    gtk_box_append (GTK_BOX (app.images_opts), app.images_width);
+    gtk_box_append (GTK_BOX (app.images_opts), it_row);
+    gtk_widget_set_visible (app.images_opts, FALSE);
+
     GtkWidget *ready = hbox (28);
     gtk_box_append (GTK_BOX (ready), app.compress_opts);
     gtk_box_append (GTK_BOX (ready), app.web_opts);
     gtk_box_append (GTK_BOX (ready), app.frames_opts);
+    gtk_box_append (GTK_BOX (ready), app.images_opts);
     gtk_box_append (GTK_BOX (ready), totals);
 
     /* running: overall progress */

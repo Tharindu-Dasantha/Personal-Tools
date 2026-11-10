@@ -60,4 +60,39 @@ echo "not a video" > notes.txt
 echo "this is text pretending to be a video" > fake.mp4
 mkdir -p compressed
 
+# Compress images (SPEC-image-compress.md). exiftool writes the EXIF tags magick can't set on new images.
+echo "images/"
+mkdir -p images
+(
+cd images
+mg() { magick "$@"; }
+# Photo-like: smooth plasma plus grain, so it compresses like a real photo, not like flat colour.
+mg -seed 1 -size 2400x1600 plasma:tomato-steelblue -attenuate 0.6 +noise Gaussian -quality 95 photo.jpg
+mg -seed 2 -size 1600x1200 plasma:green-yellow -attenuate 0.4 +noise Gaussian -quality 95 rotated.jpg
+exiftool -q -overwrite_original -Orientation#=6 -GPSLatitude=6.9271 -GPSLatitudeRef=N \
+         -GPSLongitude=79.8612 -GPSLongitudeRef=E rotated.jpg
+mg -seed 3 -size 1001x667 plasma: -attenuate 0.4 +noise Gaussian -quality 95 odd-1001x667.jpg
+# Flat UI colours and text, like a real screenshot (pngquant's best case); opaque 8-bit RGB.
+mg -size 1440x900 xc:white -fill '#3584e4' -draw 'rectangle 0,0 1440,60' \
+   -fill '#deddda' -draw 'rectangle 40,100 400,860' -fill '#26a269' -draw 'circle 700,500 700,400' \
+   -fill '#e5a50a' -draw 'roundrectangle 900,300 1300,600 24,24' -fill black -pointsize 28 \
+   -draw "text 460,140 'Settings'" -draw "text 460,200 'Some text in a screenshot'" \
+   -alpha off -depth 8 screenshot.png
+# Shapes on a transparent background, one of them half transparent.
+mg -size 800x600 xc:none -fill 'rgba(230,97,0,0.6)' -draw 'circle 400,300 400,60' \
+   -fill '#3584e4' -draw 'roundrectangle 100,100 300,250 20,20' -fill white -pointsize 48 \
+   -draw "text 320,320 'Alpha'" PNG32:alpha.png
+# 16-colour noise: pngquant saves under 5% and the webp comes out bigger, so nothing is kept.
+mg -seed 8 -size 96x96 xc: +noise Random -colors 16 -strip PNG8:already-tiny.png
+mg -seed 5 -size 1700x2200 plasma:white-gray -colorspace Gray -attenuate 0.3 +noise Gaussian \
+   -compress None scan.tiff
+mg -size 400x200 xc:none -fill '#e01b24' -draw 'roundrectangle 10,10 390,190 30,30' \
+   -fill white -pointsize 60 -draw "text 90,125 'LOGO'" -define bmp:format=bmp4 BMP:logo.bmp
+mg -seed 6 -size 1200x800 plasma:purple-orange -quality 95 banner.webp
+mg -seed 7 -size 900x600 plasma:navy-gold -attenuate 0.4 +noise Gaussian -quality 95 \
+   "it's a \"test\" \$HOME ünïcødé 📷.jpg"
+mg -size 64x64 xc:red xc:blue -set delay 50 anim.gif
+echo "this is text pretending to be an image" > fake.png
+)
+
 echo "fixtures written to $out"
