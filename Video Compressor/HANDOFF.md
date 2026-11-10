@@ -96,6 +96,8 @@ cmake -S "Video Compressor" -B "Video Compressor/build/san" -DCMAKE_BUILD_TYPE=D
   with alpha, else jpg), `vc_image_steps()`, `vc_image_expected_size()`, `vc_image_should_trash()`. Source type comes from the
   extension. Parts are `compressed/.<stem>.part.<ext>`, the intermediate `compressed/.<stem>.mid.part.png` (output NULL).
   BMP/TIFF → png always goes through magick first (pngquant reads PNG only). TIFF input is `IN[0]` (first page only).
+  Twins: when another accepted image in the same folder (read from disk, not the list) has the same stem, every output and
+  part uses the whole source name (`photo.png.png`, `photo.png.webp`, `.photo.png.part.webp`), so twins never share one.
   The extension list itself is `IMAGE_EXTS` in `modes.c`.
 - `src/modes.c/.h` (Phase 7): `VcMode`, `VcStep`, per-mode filter/out dir/trash/tool check, and `vc_mode_steps()`, which
   builds an item's steps (only Compress video has a builder so far; it also does the existing-output skip).
@@ -158,6 +160,10 @@ Five sessions, every one exit 0 with no sanitizer report:
   greyed (10 images ready); Compress video has no banner. Two chosen videos then Compress images: `0 files · 2 hidden (not
   images)`.
 - Compress video, Web video and Video → frames each still finished a 2-file run in the same build.
+- After the twin and wording fixes (a sixth session, exit 0, clean): `twin.jpg` + `twin.png` → `twin.jpg.jpg`, `twin.jpg.webp`,
+  `twin.png.png`, `twin.png.webp`, while `photo.jpg`/`screenshot.png` keep plain names; a re-run shows all four `Already
+  compressed`. Start tooltip "Compress every waiting image", row menu `Compress`, close dialog "Keep working in the
+  background?", web summary `Smaller`, frames summary `vs the videos`.
 - Headless (throwaway driver linked against `vc_core`): the same per-output results on every fixture.
 
 Phase 9, on Xvfb, `build/asan` (ASan + UBSan, `G_DEBUG=fatal-criticals`), run copies under `build/asan/p9/{f,g,h,i,j}`. Every
@@ -385,8 +391,9 @@ Gotchas:
 - Since Phase 7 the tooltip on an `Already compressed` row is `compressed/<name> exists`, not the full output path.
 - Images: an output dropped by the 5% rule is retried on every new run (only outputs on disk are skipped), so
   `already-tiny.png` is re-encoded and skipped again each time. Same as `lowbitrate.mp4` in Compress video.
-- Images name collision: `photo.jpg` and `photo.webp` both write `compressed/photo.webp`; whichever runs second skips that output
-  (`webp exists`). Same as `clip.mov`/`clip.mp4` in Compress video.
+- Images twins (`photo.jpg` + `photo.png`) get `photo.jpg.webp` / `photo.png.webp`. If a twin appears or disappears later, the
+  names change and the next run makes new copies under the new names (the old ones stay). Compress video still has the
+  `clip.mov`/`clip.mp4` collision: fixing it changes what that mode writes, which is ask-first.
 - Images: the row meta shows a JPEG's stored size (ffprobe ignores EXIF orientation), e.g. `1600×1200` for a portrait photo.
   The QUALITY column is empty in images mode (the video classes don't apply).
 - A copy of 320 kB in 1.4 kB showed `−100%`; `percent_smaller()` now caps at 99% for any non-empty output (all modes).
@@ -400,14 +407,13 @@ Gotchas:
   rotation irrelevant).
 - `on_exit` collides with libc's `on_exit()`. The callback is named `on_ffmpeg_exit` for that reason.
 
-- Frames: the summary's Before/After/`Smaller` block compares video bytes with frame bytes (true, but not a saving). The
-  Start button tooltip still says "Compress every waiting video". `N videos ready` also counts a row that will be skipped as
+- Frames: the summary's Before/After block compares video bytes with frame bytes (captioned `vs the videos`). `N videos ready` also counts a row that will be skipped as
   `Starts after the end`. HLG/PQ JPG frames come out `yuvj444p` (ffmpeg's pick after the float tone-map); valid JPEG, a bit bigger.
-- Web mode still uses compress wording in a few places: the close dialog ("Keep compressing in the background?"), the row menu
-  ("Compress Now"), row tooltips, and the summary's `Smaller` caption under a `+N%` total.
 - `N files hidden` can't differ between the two video modes (same filter); it was not re-checked on a mode switch.
-- Compress images still says "videos" in a few places: the close dialog, the start button and row tooltips ("Compress this
-  video"), the empty page's feature chips.
+- Wording is mode-aware since Phase 10 (`noun()`, `verb()`, `doing()`): tooltips, row menu (`Compress`/`Convert`/`Extract`),
+  selection bar, suspend-inhibit reason, background notification. The close dialog is neutral ("Keep working in the
+  background?"). The summary caption is `Smaller`, `Bigger` (a web total that grew) or `vs the videos` (frames). Still fixed
+  text: the list placeholder "No videos in this folder." (never shown, see above) and the compress-only tooltips.
 
 ## Working with this user
 

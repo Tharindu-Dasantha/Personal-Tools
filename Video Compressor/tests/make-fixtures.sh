@@ -91,6 +91,9 @@ mg -size 400x200 xc:none -fill '#e01b24' -draw 'roundrectangle 10,10 390,190 30,
 mg -seed 6 -size 1200x800 plasma:purple-orange -quality 95 banner.webp
 mg -seed 7 -size 900x600 plasma:navy-gold -attenuate 0.4 +noise Gaussian -quality 95 \
    "it's a \"test\" \$HOME ünïcødé 📷.jpg"
+# Twins: same stem, so each one's outputs carry its full name (twin.jpg.webp, twin.png.webp).
+mg -seed 9 -size 800x600 plasma: -attenuate 0.4 +noise Gaussian -quality 95 twin.jpg
+mg -size 800x600 xc:'#f6f5f4' -fill '#3584e4' -draw 'circle 400,300 400,100' -alpha off -depth 8 twin.png
 mg -size 64x64 xc:red xc:blue -set delay 50 anim.gif
 echo "this is text pretending to be an image" > fake.png
 )

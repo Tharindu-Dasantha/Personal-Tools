@@ -124,6 +124,10 @@ gboolean   vc_image_should_trash (gboolean opt_on, gboolean steps_ok, gboolean s
 - ffprobe reports a JPEG's **stored** size and no EXIF orientation, so the trash check (D6.3) also accepts the transposed
   expected size (`min(src_h, W)` wide): an orientation 5–8 photo comes out upright, with width and height swapped.
 - Fixture `photo.webp` became `banner.webp`: `photo.jpg` also writes `compressed/photo.webp`, so the two would collide.
+- Twins (approved 2026-11-10): when another accepted image in the same folder has the same stem (`photo.jpg` + `photo.png`,
+  `photo.webp` or `photo.JPG`), all of that image's outputs use the whole source name: `photo.jpg.jpg` + `photo.jpg.webp`,
+  `photo.png.png` + `photo.png.webp`, `photo.webp.webp`. Images without a twin keep `photo.jpg` + `photo.webp`. This also
+  stops a BMP/TIFF from being "verified" against another image's `.jpg`/`.png`. Fixtures `twin.jpg` + `twin.png` cover it.
 - Parts are `compressed/.<stem>.part.<ext>`; the intermediate is `compressed/.<stem>.mid.part.png`.
 
 ## Open Questions

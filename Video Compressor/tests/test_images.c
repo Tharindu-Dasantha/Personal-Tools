@@ -245,6 +245,64 @@ test_existing (void)
     g_rmdir (dir);
 }
 
+static char *
+touch (const char *dir, const char *name)
+{
+    char *path = g_build_filename (dir, name, NULL);
+    g_assert_true (g_file_set_contents (path, "x", 1, NULL));
+    return path;
+}
+
+/* Images sharing a stem in one folder use their whole name, so no two write the same output. */
+static void
+test_twins (void)
+{
+    g_autofree char *dir = g_dir_make_tmp ("vc-twin-XXXXXX", NULL);
+    g_autoptr (VcProbe) rgb = probe_with ("rgb24");
+    g_autofree char *jpg = touch (dir, "photo.jpg");
+    g_autofree char *other = touch (dir, "photo.gif");      /* not an accepted image: no twin */
+    g_autofree char *dotted = touch (dir, "photo.x.png");   /* stem "photo.x": no twin */
+    g_autofree char *w = NULL;
+    g_autofree char *s = vc_image_outputs (jpg, rgb, &w);
+    g_assert_true (g_str_has_suffix (s, "/compressed/photo.jpg"));
+    g_assert_true (g_str_has_suffix (w, "/compressed/photo.webp"));
+
+    g_autofree char *png = touch (dir, "photo.png");
+    g_autofree char *webp = touch (dir, "photo.webp");
+    g_autofree char *upper = touch (dir, "photo.JPG");
+    g_autofree char *bmp = touch (dir, "photo.bmp");
+    struct { const char *in; const char *same; const char *webp; } cases[] = {
+        { jpg, "photo.jpg.jpg", "photo.jpg.webp" }, { png, "photo.png.png", "photo.png.webp" },
+        { webp, "photo.webp.webp", NULL },          { upper, "photo.JPG.jpg", "photo.JPG.webp" },
+        { bmp, "photo.bmp.jpg", "photo.bmp.webp" },
+    };
+    for (gsize i = 0; i < G_N_ELEMENTS (cases); i++) {
+        g_autofree char *cw = NULL;
+        g_autofree char *cs = vc_image_outputs (cases[i].in, rgb, &cw);
+        g_autofree char *want = g_build_filename (dir, "compressed", cases[i].same, NULL);
+        g_assert_cmpstr (cs, ==, want);
+        if (cases[i].webp == NULL) {
+            g_assert_null (cw);
+        } else {
+            g_autofree char *want_w = g_build_filename (dir, "compressed", cases[i].webp, NULL);
+            g_assert_cmpstr (cw, ==, want_w);
+        }
+    }
+    /* parts follow the same names and still count as parts */
+    VcOptions o = { .max_width = 640 };
+    g_autofree char *reason = NULL;
+    g_autoptr (GPtrArray) steps = vc_image_steps (png, rgb, &o, &reason);
+    g_assert_true (g_str_has_suffix (((VcStep *) steps->pdata[0])->part, "/compressed/.photo.png.mid.part.png"));
+    g_assert_true (g_str_has_suffix (((VcStep *) steps->pdata[1])->part, "/compressed/.photo.png.part.png"));
+    g_assert_true (g_str_has_suffix (((VcStep *) steps->pdata[2])->part, "/compressed/.photo.png.part.webp"));
+    g_assert_true (vc_remove_part (((VcStep *) steps->pdata[1])->part));   /* name accepted (nothing there) */
+
+    const char *all[] = { jpg, other, dotted, png, webp, upper, bmp };
+    for (gsize i = 0; i < G_N_ELEMENTS (all); i++)
+        g_unlink (all[i]);
+    g_rmdir (dir);
+}
+
 static void
 test_expected_size (void)
 {
@@ -286,6 +344,7 @@ main (int argc, char **argv)
     g_test_add_func ("/images/plan", test_plan);
     g_test_add_func ("/images/argv", test_argv);
     g_test_add_func ("/images/existing", test_existing);
+    g_test_add_func ("/images/twins", test_twins);
     g_test_add_func ("/images/expected-size", test_expected_size);
     g_test_add_func ("/images/should-trash", test_should_trash);
     return g_test_run ();

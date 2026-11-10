@@ -19,7 +19,7 @@ cd ~/vc-test && sha256sum -- *.* images/*.* > ~/vc-test.sha256                 #
 - [ ] `ctest` prints `100% tests passed, 0 tests failed out of 5` (test_compress, test_modes, test_web_video, test_frames,
       test_images).
 - [ ] `~/vc-test` holds 13 video-named files (12 real ones plus the decoy `fake.mp4`) and the decoy `notes.txt`.
-- [ ] `~/vc-test/images` holds 12 files: 10 images, the decoys `anim.gif` and `fake.png` (the fixtures need `magick` and
+- [ ] `~/vc-test/images` holds 14 files: 12 images, the decoys `anim.gif` and `fake.png` (the fixtures need `magick` and
       `exiftool`).
 
 Use `~/vc-test` (not `build/`) for the Trash tests: the Trash only works on the same filesystem as your home.
@@ -255,13 +255,13 @@ Mode away and back so the rows start fresh.
 
 | # | Steps | Expected |
 |---|---|---|
-| 5c.1 (crit. 1) | Just list the folder | [ ] 11 rows (no `anim.gif`); `fake.png` shows `Unreadable`. Rows read e.g. `JPEG · 2400×1600`, size on the right. |
-| 5c.2 (crit. 2) | Max width `Original width`, Trash off, Start | [ ] Every JPEG/PNG/BMP/TIFF gives its same-type (BMP → `.png`, TIFF → `.jpg`) plus `.webp`; `banner.webp` gives one `.webp`. [ ] Rows read like `jpg 936 kB −78% · webp 1.0 MB −76%`. [ ] Every output opens in Image Viewer. |
+| 5c.1 (crit. 1) | Just list the folder | [ ] 13 rows (no `anim.gif`); `fake.png` shows `Unreadable`. Rows read e.g. `JPEG · 2400×1600`, size on the right. |
+| 5c.2 (crit. 2) | Max width `Original width`, Trash off, Start | [ ] Every JPEG/PNG/BMP/TIFF gives its same-type (BMP → `.png`, TIFF → `.jpg`) plus `.webp`; `banner.webp` gives one `.webp`. [ ] The twins give `twin.jpg.jpg`, `twin.jpg.webp`, `twin.png.png`, `twin.png.webp`; every other output keeps the plain name. [ ] Rows read like `jpg 936 kB −78% · webp 1.0 MB −76%`. [ ] Every output opens in Image Viewer. |
 | 5c.3 (crit. 3) | `magick identify -format '%f %wx%h %[orientation]\n' compressed/rotated.*` and `exiftool -GPS:all -Orientation compressed/*` | [ ] `rotated` outputs are 1200×1600 (upright), orientation `Undefined`, and exiftool prints no GPS or orientation for any output. |
 | 5c.4 (crit. 4) | Open `compressed/alpha.png` and `alpha.webp` on a dark background | [ ] Both keep the transparent background and the half-transparent circle. |
 | 5c.5 (crit. 5) | Look at `already-tiny.png` | [ ] `Skipped – already optimized`; no `compressed/already-tiny.*`. No output anywhere is bigger than its source. |
 | 5c.6 (crit. 7) | Delete `compressed/`, Max width `Max 1280 px`, Start | [ ] `photo.jpg`/`.webp` are 1280×853, `odd-1001x667.*` stay 1001×667, `screenshot.png` → 1280×800. |
-| 5c.7 (crit. 8) | Delete `compressed/`, Max 1280, Move to Trash **on**, Start → "Compress and Move to Trash" | [ ] 9 rows say `Original in Trash`; `already-tiny.png` and `fake.png` stay. [ ] Restore only the test files (command under 3.11), then `cd ~/vc-test && sha256sum -c ~/vc-test.sha256`: all `OK`. |
+| 5c.7 (crit. 8) | Delete `compressed/`, Max 1280, Move to Trash **on**, Start → "Compress and Move to Trash" | [ ] Every row except `already-tiny.png` and `fake.png` says `Original in Trash`; those two stay. [ ] Restore only the test files (command under 3.11), then `cd ~/vc-test && sha256sum -c ~/vc-test.sha256`: all `OK`. |
 | 5c.8 (crit. 9, app-shell 6) | Delete `compressed/`, Start, press Stop while `screenshot.png` runs (slow it down with the wrapper below) | [ ] `ls -A compressed` shows no `.screenshot.part.png` and no `.screenshot.mid.part.png`. [ ] Start again finishes it; a second Start shows `Already compressed` on every finished row. |
 | 5c.9 | Close the window while an image is running → Stop and Quit | [ ] No `magick`/`pngquant` left, no hidden `.part` file in `compressed/`. |
 

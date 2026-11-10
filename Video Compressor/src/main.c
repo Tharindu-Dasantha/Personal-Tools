@@ -59,7 +59,7 @@ typedef struct {
     GtkWidget *fps30, *max_size, *choose_empty, *files_empty, *empty_sub;
     GtkWidget *mode_dd, *banner, *size_head, *compress_opts, *web_opts, *web_width, *no_audio;
     GtkWidget *frames_opts, *frames_fps, *frames_start, *frames_end, *frames_width, *frames_format;
-    GtkWidget *frames_quality, *images_opts, *images_width, *img_trash, *hero;
+    GtkWidget *frames_quality, *images_opts, *images_width, *img_trash, *hero, *sel_clear, *sum_pct_cap;
     GtkWidget *run_title, *run_eta, *run_bar, *run_sub;
     GtkWidget *selbar, *sel_label, *sel_start, *sel_pause, *sel_stop, *sel_trash;
     GtkWidget *toast, *toast_label;
@@ -181,6 +181,22 @@ static const char *
 noun (void)
 {
     return app.mode == VC_MODE_IMAGES ? "image" : "video";
+}
+
+/* "Compress", "Convert" or "Extract", for button and tooltip titles */
+static const char *
+verb (void)
+{
+    return app.mode == VC_MODE_WEB_VIDEO ? "Convert" : app.mode == VC_MODE_FRAMES ? "Extract" : "Compress";
+}
+
+/* "Compressing images", "Converting videos", "Extracting frames from videos" */
+static char *
+doing (void)
+{
+    return g_strdup_printf ("%s %ss", app.mode == VC_MODE_WEB_VIDEO ? "Converting"
+                                      : app.mode == VC_MODE_FRAMES ? "Extracting frames from"
+                                      : "Compressing", noun ());
 }
 
 static int
@@ -390,12 +406,17 @@ render_actions (Item *it)
         g_autofree char *body = g_strdup_printf ("Continue from %d%%.", (int) (it->fraction * 100));
         set_tip (it->b_play, "Resume", NULL, body);
     } else if (app.job != NULL || is_busy ()) {
-        set_tip (it->b_play, "Compress next", NULL, "Move this video to the front of the queue.");
+        g_autofree char *t = g_strdup_printf ("%s next", verb ());
+        g_autofree char *b = g_strdup_printf ("Move this %s to the front of the queue.", noun ());
+        set_tip (it->b_play, t, NULL, b);
     } else {
-        set_tip (it->b_play, "Compress this video", NULL, "Compress only this one.");
+        g_autofree char *t = g_strdup_printf ("%s this %s", verb (), noun ());
+        g_autofree char *b = g_strdup_printf ("%s only this one.", verb ());
+        set_tip (it->b_play, t, NULL, b);
     }
     if (job) {
-        set_tip (it->b_pause, "Pause this video", NULL,
+        g_autofree char *t = g_strdup_printf ("Pause this %s", noun ());
+        set_tip (it->b_pause, t, NULL,
                  "Resumes from the same point. The rest of the queue waits.");
         set_tip (it->b_stop, "Stop", NULL, "Stop and remove the unfinished file. The original stays.");
     } else {
@@ -777,6 +798,8 @@ update_summary (void)
     gtk_label_set_text (GTK_LABEL (app.sum_before), b);
     gtk_label_set_text (GTK_LABEL (app.sum_after), a);
     gtk_label_set_text (GTK_LABEL (app.sum_pct), pct);
+    /* frames aren't a smaller copy of the video, and a web copy can come out bigger */
+    gtk_label_set_text (GTK_LABEL (app.sum_pct_cap), frames ? "vs the videos" : after > before ? "Bigger" : "Smaller");
 }
 
 static void
@@ -796,8 +819,8 @@ on_busy_changed (gboolean busy)
     GtkApplication *gapp = GTK_APPLICATION (g_application_get_default ());
     app.was_busy = busy;
     if (busy) {
-        app.inhibit = gtk_application_inhibit (gapp, app.win, GTK_APPLICATION_INHIBIT_SUSPEND,
-                                               "Compressing videos");
+        g_autofree char *why = doing ();
+        app.inhibit = gtk_application_inhibit (gapp, app.win, GTK_APPLICATION_INHIBIT_SUSPEND, why);
         return;
     }
     if (app.inhibit != 0)
@@ -895,7 +918,8 @@ update_controls (void)
                                                  (int) (app.job->fraction * 100));
         set_tip (app.start_btn, "Resume", "Space", body);
     } else {
-        set_tip (app.start_btn, "Start", "Space", "Compress every waiting video, one after another.");
+        g_autofree char *body = g_strdup_printf ("%s every waiting %s, one after another.", verb (), noun ());
+        set_tip (app.start_btn, "Start", "Space", body);
     }
     for (guint p = 0; VC_PRESETS[p] != NULL && p < G_N_ELEMENTS (app.speed_btns); p++)
         gtk_widget_set_sensitive (app.speed_btns[p], !busy);
@@ -933,9 +957,18 @@ update_controls (void)
     gtk_widget_set_sensitive (app.sel_pause, s_pause);
     gtk_widget_set_sensitive (app.sel_stop, s_stop);
     gtk_widget_set_sensitive (app.sel_trash, s_trash);
-    g_autofree char *sel_body = g_strdup_printf ("%u video%s, in list order. Others wait.", nsel,
+    g_autofree char *sel_body = g_strdup_printf ("%u %s%s, in list order. Others wait.", nsel, noun (),
                                                  nsel == 1 ? "" : "s");
-    set_tip (app.sel_start, "Compress selected", NULL, sel_body);
+    g_autofree char *sel_title = g_strdup_printf ("%s selected", verb ());
+    set_tip (app.sel_start, sel_title, NULL, sel_body);
+    g_autofree char *trash_body = g_strdup_printf ("For selected finished %ss, after checking each copy. "
+                                                   "Asks first.", noun ());
+    set_tip (app.sel_trash, "Move originals to Trash", NULL, trash_body);
+    g_autofree char *clear_body = g_strdup_printf ("Buttons below act on every %s again.", noun ());
+    set_tip (app.sel_clear, "Clear selection", "Esc", clear_body);
+    g_autofree char *pause_body = g_strdup_printf ("Pause the current %s. Resume continues from the same "
+                                                   "point.", noun ());
+    set_tip (app.pause_btn, "Pause", "Space", pause_body);
 
     app.syncing = TRUE;
     gtk_check_button_set_inconsistent (GTK_CHECK_BUTTON (app.select_all), nsel > 0 && nsel < n);
@@ -1955,7 +1988,7 @@ show_menu (Item *it, double x, double y)
     GtkWidget *box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
     gboolean job = it == app.job;
     menu_item (box, it, "media-playback-start-symbolic",
-               job && app.paused ? "Resume" : "Compress Now", on_row_play,
+               job && app.paused ? "Resume" : verb (), on_row_play,
                can_start (it) || it->state == ST_QUEUED);
     menu_item (box, it, "media-playback-pause-symbolic", job ? "Pause" : "Hold", on_row_pause,
                can_pause (it));
@@ -2086,12 +2119,15 @@ make_row (Item *it)
     it->b_stop = mini_button ("media-playback-stop-symbolic", "Stop or skip",
                               G_CALLBACK (on_row_stop), it);
     it->b_show = mini_button ("folder-open-symbolic", "Show in Files", G_CALLBACK (on_row_show), it);
-    set_tip (it->b_show, "Show in Files", NULL, "Open the compressed folder with this video selected.");
+    g_autofree char *show_body = g_strdup_printf ("Open the %s folder with this %s selected.",
+                                                  vc_mode_out_dir (app.mode), noun ());
+    set_tip (it->b_show, "Show in Files", NULL, show_body);
     it->b_trash = mini_button ("user-trash-symbolic", "Move original to Trash",
                                G_CALLBACK (on_row_trash), it);
     gtk_widget_add_css_class (it->b_trash, "danger");
-    set_tip (it->b_trash, "Move original to Trash", NULL,
-             "Only for finished videos whose copy was checked. Restorable from Trash.");
+    g_autofree char *trash_body = g_strdup_printf ("Only for finished %ss whose copy was checked. "
+                                                   "Restorable from Trash.", noun ());
+    set_tip (it->b_trash, "Move original to Trash", NULL, trash_body);
     GtkWidget *actions = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 6);
     gtk_widget_set_halign (actions, GTK_ALIGN_END);
     GtkWidget *b[] = { it->b_play, it->b_pause, it->b_stop, it->b_show, it->b_trash };
@@ -2394,8 +2430,9 @@ close_chosen (GObject *source, GAsyncResult *res, gpointer user_data)
         /* A hidden window still holds the GtkApplication, so the process and its encodes go on;
          * launching the app again or clicking a notification shows the window. */
         gtk_widget_set_visible (GTK_WIDGET (app.win), FALSE);
-        notify ("background", "Compressing in the background",
-                "You'll get a notification when it's done. Open Video Compressor to see progress.");
+        g_autofree char *title = doing ();
+        notify ("background", title, "You'll get a notification when it's done. Open Media Tools to see "
+                                     "progress.");
     }
 }
 
@@ -2404,9 +2441,9 @@ on_close (GtkWindow *win, gpointer user_data)
 {
     (void) win; (void) user_data;
     if (is_busy ()) {
-        g_autoptr (GtkAlertDialog) d = gtk_alert_dialog_new ("Keep compressing in the background?");
-        gtk_alert_dialog_set_detail (d, "The window closes and the videos keep compressing. "
-                                        "You'll get a notification when they're done.");
+        g_autoptr (GtkAlertDialog) d = gtk_alert_dialog_new ("Keep working in the background?");
+        gtk_alert_dialog_set_detail (d, "The window closes and the work goes on. "
+                                        "You'll get a notification when it's done.");
         const char *buttons[] = { "Cancel", "Stop and Quit", "Run in Background", NULL };
         gtk_alert_dialog_set_buttons (d, buttons);
         gtk_alert_dialog_set_cancel_button (d, 0);
@@ -2450,7 +2487,7 @@ static void
 tools_failed (const char *problem)
 {
     if (!app.closing)
-        alert ("Video Compressor can't run", problem, quit_after_alert);
+        alert ("Media Tools can't run", problem, quit_after_alert);
 }
 
 static void
@@ -2781,6 +2818,7 @@ build_list_page (void)
     gtk_box_append (GTK_BOX (sum_in), stat_box (&app.sum_before, "Before", FALSE));
     gtk_box_append (GTK_BOX (sum_in), stat_box (&app.sum_after, "After", FALSE));
     gtk_box_append (GTK_BOX (sum_in), stat_box (&app.sum_pct, "Smaller", TRUE));
+    app.sum_pct_cap = gtk_widget_get_last_child (gtk_widget_get_last_child (sum_in));
     gtk_box_append (GTK_BOX (app.summary), sum_in);
     gtk_widget_set_visible (app.summary, FALSE);
 
@@ -2852,11 +2890,8 @@ build_list_page (void)
              "Running: stop and remove the unfinished file. Waiting: take it out of this batch.");
     app.sel_trash = icon_button ("user-trash-symbolic", "Move selected originals to Trash", "round",
                                 G_CALLBACK (on_sel_trash));
-    set_tip (app.sel_trash, "Move originals to Trash", NULL,
-             "For selected finished videos, after checking each copy. Asks first.");
-    GtkWidget *clear = icon_button ("window-close-symbolic", "Clear selection", "round",
-                                    G_CALLBACK (on_sel_clear));
-    set_tip (clear, "Clear selection", "Esc", "Buttons below act on every video again.");
+    GtkWidget *clear = app.sel_clear = icon_button ("window-close-symbolic", "Clear selection", "round",
+                                                    G_CALLBACK (on_sel_clear));   /* tips: update_controls */
     app.selbar = hbox (8);
     gtk_widget_add_css_class (app.selbar, "overlaybar");
     gtk_widget_set_halign (app.selbar, GTK_ALIGN_CENTER);
@@ -3154,8 +3189,6 @@ build_bottom_bar (void)
     gtk_widget_add_css_class (app.start_btn, "suggested-action");
     app.pause_btn = icon_button ("media-playback-pause-symbolic", "Pause", "round",
                                  G_CALLBACK (on_pause_all));
-    set_tip (app.pause_btn, "Pause", "Space",
-             "Pause the current video. Resume continues from the same point.");
     app.stop_btn = icon_button ("media-playback-stop-symbolic", "Stop", "round",
                                 G_CALLBACK (on_stop_all));
     set_tip (app.stop_btn, "Stop", "Esc",
@@ -3223,7 +3256,8 @@ activate (GtkApplication *gapp, gpointer user_data)
     app.mode_dd = gtk_drop_down_new_from_strings (MODE_NAMES);
     gtk_accessible_update_property (GTK_ACCESSIBLE (app.mode_dd), GTK_ACCESSIBLE_PROPERTY_LABEL,
                                     "Mode", -1);
-    gtk_widget_set_tooltip_text (app.mode_dd, "What to make from your videos");
+    gtk_widget_set_tooltip_text (app.mode_dd, "What to do: compress videos or images, make web videos, or "
+                                              "extract frames");
     g_signal_connect (app.mode_dd, "notify::selected", G_CALLBACK (on_mode), NULL);
     gtk_header_bar_pack_start (GTK_HEADER_BAR (header), app.mode_dd);
     gtk_window_set_titlebar (app.win, header);

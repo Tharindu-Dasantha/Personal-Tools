@@ -28,18 +28,39 @@ vc_probe_has_alpha (const VcProbe *probe)
            || strstr (f, "argb") != NULL || strstr (f, "abgr") != NULL;
 }
 
-/* compressed/<stem>.<ext> next to the input, or its hidden part .<stem><tag>.part.<ext> */
+/* TRUE when another image in the input's folder has the same stem (photo.jpg + photo.png/.webp/.JPG).
+ * Read from the folder, not the list, so the answer never depends on which files were chosen. */
+static gboolean
+has_twin (const char *dir, const char *name, const char *stem)
+{
+    g_autoptr (GDir) d = g_dir_open (dir, 0, NULL);
+    gsize n = strlen (stem);
+    for (const char *e; d != NULL && (e = g_dir_read_name (d)) != NULL;)
+        if (strcmp (e, name) != 0 && strncmp (e, stem, n) == 0 && e[n] == '.' && strchr (e + n + 1, '.') == NULL
+            && vc_mode_accepts (VC_MODE_IMAGES, e))
+            return TRUE;
+    return FALSE;
+}
+
+/* compressed/<stem>.<ext> next to the input, or its hidden part .<stem><tag>.part.<ext>. With a twin
+ * the stem is the whole name (photo.png.webp), so twins never share an output. */
 static char *
 out_path (const char *input, const char *tag, const char *ext)
 {
     g_autofree char *dir = g_path_get_dirname (input);
-    g_autofree char *base = g_path_get_basename (input);
+    g_autofree char *name = g_path_get_basename (input);
+    g_autofree char *base = g_strdup (name);
     char *dot = strrchr (base, '.');
-    if (dot != NULL && dot != base)
+    if (dot != NULL && dot != base) {
         *dot = '\0';
-    g_autofree char *name = tag != NULL ? g_strdup_printf (".%s%s.part.%s", base, tag, ext)
+        if (has_twin (dir, name, base)) {
+            g_free (base);
+            base = g_strdup (name);
+        }
+    }
+    g_autofree char *file = tag != NULL ? g_strdup_printf (".%s%s.part.%s", base, tag, ext)
                                         : g_strdup_printf ("%s.%s", base, ext);
-    return g_build_filename (dir, "compressed", name, NULL);
+    return g_build_filename (dir, "compressed", file, NULL);
 }
 
 /* The same-type extension: BMP/TIFF become png (alpha) or jpg. */
