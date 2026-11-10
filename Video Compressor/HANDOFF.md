@@ -2,6 +2,7 @@
 
 Last updated 2026-11-10 (Phase 8). Read [SPEC.md](SPEC.md) (source of truth), then [tasks/plan.md](tasks/plan.md)
 and [tasks/todo.md](tasks/todo.md). Checkboxes in `todo.md` are ticked only for things actually verified.
+[TEST.md](TEST.md) lists every test the user still runs by hand, with the expected result of each.
 
 ## Where things stand
 
@@ -16,24 +17,28 @@ and [tasks/todo.md](tasks/todo.md). Checkboxes in `todo.md` are ticked only for 
 | 6b. v2 UI (Figma) | – | **Built 2026-11-08**, screenshotted on Xvfb. The Phase 7 ASan run (2026-11-10) went through it. Committed |
 | Performance | R1–R12 | GPU encoder, size samples, x265 tuning, nice/idle I/O, mtime copy. See [tasks/plan-performance.md](tasks/plan-performance.md) and [tasks/todo-performance.md](tasks/todo-performance.md). Committed |
 | 7. App shell | T16–T18 | **Done, verified on Xvfb with ASan (2026-11-10)**: `modes.c`, multi-step runner, Choose Files, title `Media Tools`. Committed `7541405`. Checkpoint 7 still open (see below) |
-| 8. Web video | T19, T20 | **Done, verified on Xvfb with ASan (2026-11-10)**: `web_video.c`, Mode dropdown, per-mode options, split tool check, banner. **Not committed yet**; Checkpoint 8 needs the user (web-video 5, 6, review) |
+| 8. Web video | T19, T20 | **Done, verified on Xvfb with ASan (2026-11-10)**: `web_video.c`, Mode dropdown, per-mode options, split tool check, banner. Committed `7de014b`. Checkpoint 8 needs the user (web-video 5, 6, review) |
 
-Everything up to `7541405` is pushed to `origin/main`.
+Everything up to `7de014b` is pushed to `origin/main`.
 
 **Media Tools (Phases 7–10):** the app grows into four modules mapped in [CAPABILITIES.md](CAPABILITIES.md):
 `app-shell` → `web-video` → `video-frames` → `image-compress`, each with a `SPEC-<id>.md` and tasks T16–T27 in `todo.md`.
-`app-shell` (Phase 7) is built. `image-compress` needs `sudo dnf install pngquant` (approved).
+`app-shell` (Phase 7) and `web-video` (Phase 8) are built. `image-compress` needs `sudo dnf install pngquant` (approved).
 
-**Next step:** review Phase 8 with the user and commit it, then Phase 9 (T21, `frames.c`).
+**Next step:** the user runs [TEST.md](TEST.md) and reviews Phases 7–8, then Phase 9 (T21, `frames.c`).
 1. Checkpoint 7 still needs: a one-by-one re-run of SPEC.md criteria 1–3 and 5–13 (the read-only-folder and failed-output-check
    cases weren't repeated), Choose Folder → Choose Files clicked through (only Files → Folder was), and a review with the user.
 2. Checkpoint 8 needs the user: web-video criterion 5 (no GPS tag on a real phone clip's output) and 6 (plays in Safari on iOS
    before it has fully downloaded).
 
-Still only the user can do:
+Still only the user can do (steps and expected results in [TEST.md](TEST.md), sections 1–2):
 1. Supply a real 200 MB+ phone clip and judge it at `slow` and `faster` (Criterion 4). Fill the empty row in `plan.md`, and use it
    to recalibrate `EST_VIDEO_KBPS` (the size estimate) in `compress.c`.
 2. Judge a real iPhone HDR clip for washed-out colour (Criterion 12).
+3. Web video: no GPS tag in a real phone clip's output (web-video 5), and the output plays in Safari on iOS before it has
+   downloaded (web-video 6). Serve it with `npx http-server`: Python's `http.server` has no byte ranges, which Safari needs.
+
+**Ask the user:** Compress video fails on odd-sized video (see "Open issues"). Fixing it changes what Compress video encodes.
 
 T11 results and the measured preset factors are in `tasks/plan.md`.
 
@@ -290,6 +295,13 @@ Gotchas:
   `ls -A compressed/` (no `.part`) and `sha256sum` the original.
 
 ## Open issues and limits
+
+- **Compress video fails on a video with an odd width or height** (found 2026-11-10, not fixed). x265 rejects 853×479 in 4:2:0
+  ("Picture width must be an integer multiple of the specified chroma subsampling"), so `odd-853x479.mp4` ends `Failed`, original
+  untouched. The bug predates Phase 8; the new fixture is the first to expose it. The fix would be scaling to even dimensions
+  (as web mode's `trunc(iw/2)*2`) when the source is odd. It changes what Compress video encodes, so ask first.
+- Fixture count since Phase 8: 13 video-named files (12 readable + `fake.mp4`) plus `notes.txt`. Web video gives 12 outputs.
+  Compress video gives 10 (minus `lowbitrate.mp4`, rejected, and `odd-853x479.mp4`, failed).
 
 - An empty folder (or one with no videos) shows a blank list, not the "No videos" placeholder.
   `gtk_list_box_remove_all()` in `load_source` appears to drop the placeholder. Minor; not fixed.
