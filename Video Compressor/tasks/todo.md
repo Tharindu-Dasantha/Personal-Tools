@@ -287,7 +287,7 @@ before every commit. Manual GUI checks use Xvfb as described in [../HANDOFF.md](
 
 ## Phase 7: App shell ([SPEC-app-shell.md](../SPEC-app-shell.md))
 
-### - [ ] T16: `modes.c` core
+### - [x] T16: `modes.c` core
 **Description:** Add `src/modes.c/.h` to `vc_core` with `VcMode`, `VcStep`, `VcOptions`, `vc_mode_accepts()`,
 `vc_mode_out_dir()`, `vc_mode_can_trash()`, `vc_mode_missing_tool()` (`VC_HAVE_*` bits), `vc_mode_steps()` and
 `vc_step_free()`. Only the `VC_MODE_COMPRESS` branch of `vc_mode_steps()` is real: it wraps `vc_output_path()` +
@@ -297,20 +297,20 @@ empties a `.part` directory of its regular files and removes it. It refuses any 
 (before the extension) and any directory that contains a subdirectory.
 
 **Acceptance criteria:**
-- [ ] `test_compress` passes unchanged
-- [ ] `vc_mode_steps(VC_MODE_COMPRESS, …)` gives exactly what `main.c` builds today
+- [x] `test_compress` passes unchanged
+- [x] `vc_mode_steps(VC_MODE_COMPRESS, …)` gives exactly what `main.c` builds today
 
 **Verification:**
-- [ ] Unit (`tests/test_modes.c`): every test listed in the spec's Testing Strategy (accepts, out dir, can-trash,
+- [x] Unit (`tests/test_modes.c`): every test listed in the spec's Testing Strategy (accepts, out dir, can-trash,
       missing tool per mode, compress step equals the existing argv/part/output for 8-bit, 10-bit HLG and keep-subs)
-- [ ] Unit: `vc_remove_part()` on a temp file, a temp `.part` dir with files, a non-`.part` path (refused, untouched)
+- [x] Unit: `vc_remove_part()` on a temp file, a temp `.part` dir with files, a non-`.part` path (refused, untouched)
       and a dir with a subdirectory (refused, untouched)
 
 **Dependencies:** None (Phases 1–6 are committed)
 **Files:** `src/modes.c/.h`, `tests/test_modes.c`, `CMakeLists.txt`
 **Scope:** M
 
-### - [ ] T17: Multi-step job runner
+### - [x] T17: Multi-step job runner
 **Description:** `Item` holds the `GPtrArray` of `VcStep` from `vc_mode_steps()`. `start_job()` runs the steps in order,
 and the next step starts only after the previous one's three events (stdout EOF, stderr EOF, exit). Exit 0 or the step's
 `soft_exit` continues. When the last step ends, each step with an `output` and an existing `part` is moved with
@@ -320,37 +320,37 @@ The `State` machine, selection rules and the trash path are unchanged. Compress 
 one-step job.
 
 **Acceptance criteria:**
-- [ ] Compress video behaves exactly as before: progress, pause/resume, stop, skip, "already efficient", trash, close
+- [x] Compress video behaves exactly as before: progress, pause/resume, stop, skip, "already efficient", trash, close
       mid-encode
-- [ ] Kept from the performance work ([todo-performance.md](todo-performance.md)): each step's ffmpeg still starts at
+- [x] Kept from the performance work ([todo-performance.md](todo-performance.md)): each step's ffmpeg still starts at
       nice 10 / idle I/O through the launcher's child setup (R2), and a kept output still gets the source's mtime
       before the trash check (R12)
-- [ ] `grep -nE 'unlink|g_file_delete|remove\(' src/` shows deletes only in `vc_remove_part()` and rejected-output cleanup
+- [x] `grep -nE 'unlink|g_file_delete|remove\(' src/` shows deletes only in `vc_remove_part()` and rejected-output cleanup
 
 **Verification:**
-- [ ] ctest green (Debug and ASan builds)
-- [ ] Manual (Xvfb, ASan): full fixture run at `faster` with subtitles and auto-trash, stop mid-file, pause/resume,
+- [x] ctest green (Debug and ASan builds)
+- [x] Manual (Xvfb, ASan): full fixture run at `faster` with subtitles and auto-trash, stop mid-file, pause/resume,
       close mid-encode (exit 0, no ffmpeg, no `.part`), then restore the trashed originals and compare checksums
 
 **Dependencies:** T16
 **Files:** `src/main.c`
 **Scope:** M
 
-### - [ ] T18: Choose Files and the list source
+### - [x] T18: Choose Files and the list source
 **Description:** A **Choose Files** button next to Choose Folder opens `gtk_file_dialog_open_multiple()` with the video
 filter. The app keeps the list source (one folder, or a list of files) so that a later mode switch can reload it. Each
 file's output goes into `<its folder>/compressed/`. The window title becomes `Media Tools`. Folder, repo and binary names
 stay the same.
 
 **Acceptance criteria:**
-- [ ] Choosing two videos from two folders lists only those two, and each output lands in its own folder's `compressed/`
+- [x] Choosing two videos from two folders lists only those two, and each output lands in its own folder's `compressed/`
       (app-shell criterion 2)
-- [ ] Choose Folder afterwards replaces the list, and vice versa
-- [ ] Both buttons are greyed while anything is queued, encoding or being checked
+- [ ] Choose Folder afterwards replaces the list (verified), and vice versa (not yet clicked through)
+- [x] Both buttons are greyed while anything is queued, encoding or being checked
 
 **Verification:**
-- [ ] Manual (Xvfb): the two-folder run, then Choose Folder on the fixtures
-- [ ] Manual: the window title reads `Media Tools`
+- [x] Manual (Xvfb): the two-folder run, then Choose Folder on the fixtures
+- [x] Manual: the window title reads `Media Tools`
 
 **Dependencies:** T17
 **Files:** `src/main.c`
@@ -358,7 +358,7 @@ stay the same.
 
 ### Checkpoint 7
 - [ ] SPEC.md criteria 1–3 and 5–13 still pass in Compress video mode (Xvfb, ASan). Criterion 4 is still waiting on your clip
-- [ ] App-shell criterion 2 passes, ctest green, Debug build clean
+- [x] App-shell criterion 2 passes, ctest green, Debug build clean
 - [ ] Review with you, then commit before Phase 8
 
 ---

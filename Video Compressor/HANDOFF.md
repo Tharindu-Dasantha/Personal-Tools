@@ -13,6 +13,7 @@ and [tasks/todo.md](tasks/todo.md). Checkboxes in `todo.md` are ticked only for 
 | 4. Delete originals | T9, T10 | **Done, all checks verified** (GUI on Xvfb, 2026-11-08). Committed `e0a1656` |
 | 5. Harden | T11 | **Done except Criterion 4 and 12's iPhone half (the user's eyes).** ASan/UBSan clean. Close-mid-encode crash fixed. Uncommitted |
 | 6. Controls + estimates | T12–T15 | **Done, verified on Xvfb with ASan.** Icon buttons, pause, per-item/multi-select actions, size estimate, speed guide. Uncommitted; awaiting review |
+| 7. App shell | T16–T18 | **Built 2026-11-10, verified on Xvfb with ASan** (`modes.c`, step runner, Choose Files, title `Media Tools`). Uncommitted; awaiting review |
 | 6b. v2 UI (Figma) | – | **Built 2026-11-08, screenshotted on Xvfb** (empty, ready, guide, selection, running, paused, finished, dark). Not yet re-run under ASan. Uncommitted; awaiting review |
 
 Pushed to `origin/main` (Phase 2 checks: `026de4e`).
@@ -62,6 +63,9 @@ cmake -S "Video Compressor" -B "Video Compressor/build/san" -DCMAKE_BUILD_TYPE=D
   - `VC_CLASSES[]` (the CRF/audio table) is **ask-first** to change.
   - `EST_VIDEO_KBPS[]` (parallel to `VC_CLASSES`, static-asserted) and `PRESET_FACTORS[]` only feed the size estimate
     and the speed guide. They never change what is encoded. The factors were measured (plan.md, "Preset factors"); the kbps values are guesses.
+- `src/modes.c/.h` (Phase 7): `VcMode`, `VcStep`, per-mode filter/out dir/trash/tool check, and `vc_mode_steps()`, which
+  builds an item's steps (only Compress video has a builder so far; it also does the existing-output skip).
+  `vc_remove_part()` is the only delete in `src/`. Options stay in `compress.h`'s `VcOptions`.
 - `src/main.c`: UI plus async process wiring. There is one global `App app` (the SPEC allows this).
   - Probing runs one ffprobe at a time (`probe_step` → `probe_done`). When a new folder is chosen,
     `app.probe_cancel` is cancelled. A cancelled callback returns **before** touching `app.items`.
@@ -75,9 +79,10 @@ cmake -S "Video Compressor" -B "Video Compressor/build/san" -DCMAKE_BUILD_TYPE=D
     state change (`set_status()` does). `update_controls()` picks the page (empty/list), the bottom bar (ready/running/finished),
     the selection bar and the summary. `update_progress()` drives the running bar and ETA. Styling is the `CSS[]` string,
     using GTK Default theme colours so dark mode works. `in_batch` marks what the running bar and summary count.
-  - Encoding: `encode_next()` → `start_job()`. Each job waits for three events (stdout EOF,
-    stderr EOF, process exit), counted in `app.pending`. `finish_job()` runs only when all three
-    are done, so the `.part` file is deleted only after ffmpeg has closed it.
+  - Encoding: `encode_next()` → `vc_mode_steps()` → `start_job()` → `spawn_step()` per step. Each step waits for three
+    events (stdout EOF, stderr EOF, process exit), counted in `app.pending`; `step_ended()` then starts the next step or
+    calls `finish_job()`, which moves outputs into place and runs every step's part through `vc_remove_part()`.
+  - List source: `load_source(folder, files)`, one folder or the Choose Files list (`app.folder` / `app.files`).
   - Stop sets `it->stop` and calls `g_subprocess_force_exit()` (SIGKILL ends a paused ffmpeg too). `finish_job()` sees `it->stop`.
     Closing the window mid-encode kills ffmpeg, waits for it and unlinks the `.part`
     synchronously (`on_close`). `on_close` also sets `app.closing`. GTK destroys the widgets, but async

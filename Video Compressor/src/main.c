@@ -1,4 +1,4 @@
-#include "compress.h"
+#include "modes.h"
 
 #include <errno.h>
 #include <glib/gstdio.h>
@@ -35,7 +35,9 @@ typedef struct {
     const char *extra;   /* after the meta line: "Original in Trash", "Original kept" */
     gboolean hover, in_batch;
     guint prio;          /* > 0: "Compress next" was pressed; the highest goes first */
-    double fraction;     /* encode progress while active */
+    double fraction;     /* encode progress while active, over all steps */
+    GPtrArray *steps;    /* VcStep list while active (from vc_mode_steps), else NULL */
+    guint step;          /* the step running now */
     /* GPU sample: tried at these Max size / Max fps settings; kbps is 0 when it failed */
     gboolean sampled;
     int sample_side, sample_fps;
@@ -46,11 +48,11 @@ typedef struct {
 
 typedef struct {
     GtkWindow *win;
-    GtkWidget *title, *subtitle, *choose_btn, *pages, *list, *select_all;
+    GtkWidget *title, *subtitle, *choose_btn, *files_btn, *pages, *list, *select_all;
     GtkWidget *summary, *sum_title, *sum_sub, *sum_before, *sum_after, *sum_pct;
     GtkWidget *bottom, *bottom_stack, *controls, *start_btn, *pause_btn, *stop_btn;
     GtkWidget *speed_btns[8], *speed_caption, *guide_rows, *subs, *trash, *total, *total_sub;
-    GtkWidget *fps30, *max_size, *choose_empty;
+    GtkWidget *fps30, *max_size, *choose_empty, *files_empty;
     GtkWidget *run_title, *run_eta, *run_bar, *run_sub;
     GtkWidget *selbar, *sel_label, *sel_start, *sel_pause, *sel_stop, *sel_trash;
     GtkWidget *toast, *toast_label;
@@ -62,7 +64,9 @@ typedef struct {
     gboolean ask_sel;
     gint64 batch_t0, batch_end;
 
+    /* the list source, kept so a mode switch can reload it: one folder, or chosen files */
     char *folder;
+    char **files;
     GPtrArray *items;
     GCancellable *probe_cancel;
     guint probe_next, probes_done;   /* ffprobe started / finished, in list order */
@@ -83,8 +87,10 @@ typedef struct {
     gboolean paused;
     gint64 job_t0, paused_at, paused_total;
     GSubprocess *proc;
-    int pending;         /* stdout EOF + stderr EOF + process exit */
-    char *part_path, *out_path, *last_err;
+    int pending;         /* the current step's stdout EOF + stderr EOF + process exit */
+    char *last_err;
+    guint pulse_id;      /* pulses the bar during a step without progress output */
+    VcMode mode;
 } App;
 
 static App app;
@@ -101,6 +107,7 @@ item_free (Item *it)
     g_free (it->note);
     g_free (it->tip);
     vc_probe_free (it->probe);
+    g_clear_pointer (&it->steps, g_ptr_array_unref);
     g_free (it);
 }
 
@@ -727,15 +734,19 @@ update_controls (void)
     if (busy != app.was_busy)
         on_busy_changed (busy);
 
-    gtk_stack_set_visible_child_name (GTK_STACK (app.pages), app.folder != NULL ? "list" : "empty");
-    gtk_widget_set_visible (app.bottom, app.folder != NULL);
+    gboolean loaded = app.items != NULL;
+    gtk_stack_set_visible_child_name (GTK_STACK (app.pages), loaded ? "list" : "empty");
+    gtk_widget_set_visible (app.bottom, loaded);
     gtk_stack_set_visible_child_name (GTK_STACK (app.bottom_stack),
                                       busy ? "running" : finished ? "finished" : "ready");
     gtk_widget_set_visible (app.controls, !finished);
     gtk_widget_set_visible (app.summary, finished);
-    gtk_widget_set_visible (app.choose_btn, app.folder != NULL && !busy && !finished);
+    gtk_widget_set_visible (app.choose_btn, loaded && !busy && !finished);
+    gtk_widget_set_visible (app.files_btn, loaded && !busy && !finished);
     gtk_widget_set_sensitive (app.choose_btn, app.tools_ok && !busy);
+    gtk_widget_set_sensitive (app.files_btn, app.tools_ok && !busy);
     gtk_widget_set_sensitive (app.choose_empty, app.tools_ok);
+    gtk_widget_set_sensitive (app.files_empty, app.tools_ok);
 
     gtk_widget_set_sensitive (app.start_btn, app.tools_ok && !probing && start
                                              && (!busy || app.paused));
@@ -933,9 +944,9 @@ do_start (Item *one, gboolean sel)
             continue;
         }
         g_autofree char *dir = g_path_get_dirname (it->path);
-        g_autofree char *out_dir = g_build_filename (dir, "compressed", NULL);
+        g_autofree char *out_dir = g_build_filename (dir, vc_mode_out_dir (app.mode), NULL);
         if (g_mkdir_with_parents (out_dir, 0755) != 0) {
-            alert ("Cannot create the compressed folder", g_strerror (errno), NULL);
+            alert ("Cannot create the output folder", g_strerror (errno), NULL);
             break;
         }
         it->state = ST_QUEUED;
@@ -1142,57 +1153,91 @@ copy_mtime (const char *from, const char *to)
         g_file_set_attributes_from_info (dst, info, G_FILE_QUERY_INFO_NONE, NULL, NULL);
 }
 
+/* Runs when the job's last step has ended (or one failed, or it was stopped): moves the outputs
+ * into place, removes every other part, and sets the row. The caller starts the next item. */
 static void
-finish_job (void)
+finish_job (gboolean ok)
 {
     Item *it = g_steal_pointer (&app.job);
-    g_autoptr (GSubprocess) proc = g_steal_pointer (&app.proc);
-    g_autofree char *part = g_steal_pointer (&app.part_path);
-    g_autofree char *out = g_steal_pointer (&app.out_path);
+    g_autoptr (GPtrArray) steps = g_steal_pointer (&it->steps);
     g_autofree char *last_err = g_steal_pointer (&app.last_err);
+    g_clear_handle_id (&app.pulse_id, g_source_remove);
     app.paused = FALSE;
     app.batch_end = g_get_monotonic_time ();
     it->state = ST_NEW;
 
-    GStatBuf st;
+    g_autoptr (GError) error = NULL;
+    g_autofree char *kept = NULL;
+    guint64 kept_size = 0;
+    for (guint i = 0; ok && !it->stop && error == NULL && i < steps->len; i++) {
+        VcStep *s = steps->pdata[i];
+        GStatBuf st;
+        /* An output that isn't at least 5% smaller is dropped with the other parts below.
+         * shortcut: the compress rule for every output; images (T23) bring their own rules. */
+        if (s->output == NULL || g_stat (s->part, &st) != 0
+            || !vc_output_is_worth_keeping (it->size, st.st_size))
+            continue;
+        g_autoptr (GFile) src = g_file_new_for_path (s->part);
+        g_autoptr (GFile) dst = g_file_new_for_path (s->output);
+        /* No OVERWRITE flag: an existing output is never replaced. */
+        if (g_file_move (src, dst, G_FILE_COPY_NONE, NULL, NULL, NULL, &error)) {
+            copy_mtime (it->path, s->output);
+            g_free (kept);
+            kept = g_strdup (s->output);
+            kept_size = st.st_size;
+        }
+    }
+    for (guint i = 0; i < steps->len; i++)   /* moved parts are already gone */
+        vc_remove_part (((VcStep *) steps->pdata[i])->part);
+
     if (it->stop) {
         it->stop = FALSE;
-        g_unlink (part);
         set_status (it, "Stopped", NULL);
-    } else if (!g_subprocess_get_if_exited (proc) || g_subprocess_get_exit_status (proc) != 0
-               || g_stat (part, &st) != 0) {
-        g_unlink (part);
-        set_status (it, "Failed", last_err != NULL ? last_err : "ffmpeg failed");
-    } else if (!vc_output_is_worth_keeping (it->size, st.st_size)) {
-        g_unlink (part);
+    } else if (!ok || error != NULL) {
+        set_status (it, "Failed", error != NULL ? error->message
+                                  : last_err != NULL ? last_err : "ffmpeg failed");
+    } else if (kept == NULL) {
         it->state = ST_DONE;   /* no output: nothing to trash, and no point encoding again */
         set_status (it, NULL, NULL);
     } else {
-        g_autoptr (GFile) src = g_file_new_for_path (part);
-        g_autoptr (GFile) dst = g_file_new_for_path (out);
-        g_autoptr (GError) error = NULL;
-        /* No OVERWRITE flag: an existing output is never replaced. */
-        if (!g_file_move (src, dst, G_FILE_COPY_NONE, NULL, NULL, NULL, &error)) {
-            g_unlink (part);
-            set_status (it, "Failed", error->message);
-        } else {
-            copy_mtime (it->path, out);
-            it->state = ST_DONE;
-            it->out = g_steal_pointer (&out);
-            it->out_size = st.st_size;
-            set_status (it, NULL, it->out);
-            if (gtk_switch_get_active (GTK_SWITCH (app.trash)))
-                check_then_trash (it);   /* runs alongside the next encode */
-        }
+        it->state = ST_DONE;
+        g_free (it->out);
+        it->out = g_steal_pointer (&kept);
+        it->out_size = kept_size;
+        set_status (it, NULL, it->out);
+        if (gtk_switch_get_active (GTK_SWITCH (app.trash)) && vc_mode_can_trash (app.mode))
+            check_then_trash (it);   /* runs alongside the next encode */
     }
+}
+
+static gboolean spawn_step (void);
+
+/* All three events of the current step are in: start the next step, or finish the job. */
+static void
+step_ended (void)
+{
+    Item *it = app.job;
+    VcStep *s = it->steps->pdata[it->step];
+    g_autoptr (GSubprocess) proc = g_steal_pointer (&app.proc);
+    int code = g_subprocess_get_if_exited (proc) ? g_subprocess_get_exit_status (proc) : -1;
+    /* Exit 0 must leave the part behind; a soft exit means "no output" and is fine. */
+    gboolean ok = (code == 0 && g_file_test (s->part, G_FILE_TEST_EXISTS))
+                  || (s->soft_exit != 0 && code == s->soft_exit);
+    if (ok && !it->stop && it->step + 1 < it->steps->len) {
+        it->step++;
+        if (spawn_step ())
+            return;
+        ok = FALSE;
+    }
+    finish_job (ok);
     encode_next ();
 }
 
 static void
 job_step_done (void)
 {
-    if (--app.pending == 0 && !app.closing)   /* on_close already removed the .part */
-        finish_job ();
+    if (--app.pending == 0 && !app.closing)   /* on_close already removed the parts */
+        step_ended ();
 }
 
 static void
@@ -1207,16 +1252,17 @@ on_progress_line (GObject *source, GAsyncResult *res, gpointer user_data)
     }
     if (!app.closing) {   /* after close, keep draining to EOF but leave the widgets alone */
         Item *it = app.job;
+        VcStep *s = it->steps->pdata[it->step];
         double fraction;
-        if (vc_parse_progress_line (line, it->probe->duration, &fraction)) {
-            it->fraction = fraction;
-            gtk_progress_bar_set_fraction (GTK_PROGRESS_BAR (it->bar), fraction);
+        if (s->progress && vc_parse_progress_line (line, it->probe->duration, &fraction)) {
+            it->fraction = (it->step + fraction) / it->steps->len;
+            gtk_progress_bar_set_fraction (GTK_PROGRESS_BAR (it->bar), it->fraction);
             if (!it->stop) {
-                g_autofree char *pct = g_strdup_printf ("%d%%", (int) (fraction * 100));
+                g_autofree char *pct = g_strdup_printf ("%d%%", (int) (it->fraction * 100));
                 gtk_label_set_text (GTK_LABEL (it->pct), pct);
             }
             update_progress ();
-        } else if (it->probe->duration <= 0 && g_str_has_prefix (line, "progress=")) {
+        } else if (s->progress && it->probe->duration <= 0 && g_str_has_prefix (line, "progress=")) {
             gtk_progress_bar_pulse (GTK_PROGRESS_BAR (it->bar));
         }
     }
@@ -1251,6 +1297,16 @@ on_ffmpeg_exit (GObject *source, GAsyncResult *res, gpointer user_data)
     job_step_done ();
 }
 
+static gboolean
+pulse_bar (gpointer data)
+{
+    (void) data;
+    if (app.closing || app.job == NULL || app.paused)
+        return G_SOURCE_CONTINUE;   /* finish_job and stop_for_quit remove it */
+    gtk_progress_bar_pulse (GTK_PROGRESS_BAR (app.job->bar));
+    return G_SOURCE_CONTINUE;
+}
+
 /* Runs in the child before exec: low CPU and idle disk priority, so the desktop wins while you
  * use the laptop and the encode runs at full speed when you don't. The PID stays ffmpeg's. */
 static void
@@ -1261,42 +1317,54 @@ lower_priority (gpointer data)
     syscall (SYS_ioprio_set, 1 /* IOPRIO_WHO_PROCESS */, 0, 3 << 13 /* IOPRIO_CLASS_IDLE */);
 }
 
+/* Starts app.job's current step. FALSE (with app.last_err set) when it can't be started. */
 static gboolean
-start_job (Item *it, char *out, char *part)
+spawn_step (void)
 {
-    VcOptions o = current_options ();
-    g_auto (GStrv) argv = vc_build_ffmpeg_argv (it->path, part, it->probe, &o);
+    Item *it = app.job;
+    VcStep *s = it->steps->pdata[it->step];
     g_autoptr (GError) error = NULL;
     g_autoptr (GSubprocessLauncher) launcher = g_subprocess_launcher_new (
         G_SUBPROCESS_FLAGS_STDOUT_PIPE | G_SUBPROCESS_FLAGS_STDERR_PIPE);
     g_subprocess_launcher_set_child_setup (launcher, lower_priority, NULL, NULL);
-    GSubprocess *proc = g_subprocess_launcher_spawnv (launcher, (const char *const *) argv, &error);
-    if (proc == NULL) {
-        it->state = ST_NEW;
-        set_status (it, "Failed", error->message);
-        g_free (out);
-        g_free (part);
+    g_clear_pointer (&app.last_err, g_free);
+    app.proc = g_subprocess_launcher_spawnv (launcher, (const char *const *) s->argv, &error);
+    if (app.proc == NULL) {
+        app.last_err = g_strdup (error->message);
         return FALSE;
     }
-    app.job = it;
-    app.proc = proc;
-    app.out_path = out;
-    app.part_path = part;
+    if (app.paused)   /* paused just as the previous step ended */
+        g_subprocess_send_signal (app.proc, SIGSTOP);
     app.pending = 3;
+    if (!s->progress && app.pulse_id == 0)
+        app.pulse_id = g_timeout_add (100, pulse_bar, NULL);
+    else if (s->progress)
+        g_clear_handle_id (&app.pulse_id, g_source_remove);
+
+    GDataInputStream *so = g_data_input_stream_new (g_subprocess_get_stdout_pipe (app.proc));
+    GDataInputStream *se = g_data_input_stream_new (g_subprocess_get_stderr_pipe (app.proc));
+    g_data_input_stream_read_line_async (so, G_PRIORITY_DEFAULT, NULL, on_progress_line, NULL);
+    g_data_input_stream_read_line_async (se, G_PRIORITY_DEFAULT, NULL, on_stderr_line, NULL);
+    g_subprocess_wait_async (app.proc, NULL, on_ffmpeg_exit, NULL);
+    return TRUE;
+}
+
+/* Takes `steps`. The caller starts the next item if this one can't start. */
+static void
+start_job (Item *it, GPtrArray *steps)
+{
+    app.job = it;
     app.job_t0 = g_get_monotonic_time ();
     app.paused_total = 0;
+    it->steps = steps;
+    it->step = 0;
     it->state = ST_ACTIVE;
     it->stop = FALSE;
     it->fraction = 0;
     gtk_progress_bar_set_fraction (GTK_PROGRESS_BAR (it->bar), 0);
     set_status (it, NULL, NULL);
-
-    GDataInputStream *so = g_data_input_stream_new (g_subprocess_get_stdout_pipe (proc));
-    GDataInputStream *se = g_data_input_stream_new (g_subprocess_get_stderr_pipe (proc));
-    g_data_input_stream_read_line_async (so, G_PRIORITY_DEFAULT, NULL, on_progress_line, NULL);
-    g_data_input_stream_read_line_async (se, G_PRIORITY_DEFAULT, NULL, on_stderr_line, NULL);
-    g_subprocess_wait_async (proc, NULL, on_ffmpeg_exit, NULL);
-    return TRUE;
+    if (!spawn_step ())
+        finish_job (FALSE);
 }
 
 /* ---- GPU size samples ---- */
@@ -1406,7 +1474,7 @@ sample_next (void)
 static void
 encode_next (void)
 {
-    gboolean keep_subs = gtk_switch_get_active (GTK_SWITCH (app.subs));
+    VcOptions o = current_options ();
     while (app.job == NULL) {
         Item *it = NULL;
         for (guint i = 0; i < app.items->len; i++) {
@@ -1417,20 +1485,20 @@ encode_next (void)
         if (it == NULL)
             break;
         it->prio = 0;
-        char *part = NULL;
-        char *out = vc_output_path (it->path, keep_subs, &part);
-        GStatBuf st;
-        if (g_stat (out, &st) == 0) {
+        g_autofree char *reason = NULL;
+        GPtrArray *steps = vc_mode_steps (app.mode, it->path, it->probe, &o, &reason);
+        if (steps == NULL) {
             it->state = ST_DONE;
             g_free (it->out);
-            it->out = out;   /* an earlier finished output, so its original can be trashed */
-            it->out_size = st.st_size;
+            /* an earlier finished output, so its original can be trashed */
+            it->out = vc_output_path (it->path, o.keep_subs, NULL);
+            GStatBuf st;
+            it->out_size = g_stat (it->out, &st) == 0 ? st.st_size : 0;
             it->extra = "Already compressed";
-            set_status (it, NULL, out);
-            g_free (part);
+            set_status (it, NULL, reason);
             continue;
         }
-        start_job (it, out, part);   /* takes out and part */
+        start_job (it, steps);   /* takes steps */
     }
     update_controls ();
 }
@@ -1510,7 +1578,9 @@ on_select_all (GtkCheckButton *b, gpointer user_data)
 static void
 on_finished_show (void)
 {
-    g_autofree char *dir = g_build_filename (app.folder, "compressed", NULL);
+    g_autofree char *base = app.folder != NULL ? g_strdup (app.folder)
+                            : g_path_get_dirname (((Item *) app.items->pdata[0])->path);
+    g_autofree char *dir = g_build_filename (base, vc_mode_out_dir (app.mode), NULL);
     show_in_files (dir, FALSE);
 }
 
@@ -1772,10 +1842,39 @@ make_row (Item *it)
     return it->box;
 }
 
-/* ---- choosing a folder ---- */
+/* ---- choosing a folder or files ---- */
+
+/* A run killed from outside (logout, crash) leaves its hidden temp file behind. Only this app
+ * writes `.<name>.part.<ext>` there, and only one instance runs, so none is in use now. */
+static void
+remove_stale_parts (const char *folder)
+{
+    g_autofree char *cdir_path = g_build_filename (folder, vc_mode_out_dir (app.mode), NULL);
+    g_autoptr (GDir) cdir = g_dir_open (cdir_path, 0, NULL);
+    for (const char *name; cdir != NULL && (name = g_dir_read_name (cdir)) != NULL;) {
+        if (name[0] == '.' && (g_str_has_suffix (name, ".part.mp4")
+                               || g_str_has_suffix (name, ".part.mkv"))) {
+            g_autofree char *stale = g_build_filename (cdir_path, name, NULL);
+            vc_remove_part (stale);
+        }
+    }
+}
 
 static void
-load_folder (const char *folder)
+add_item (const char *path)
+{
+    GStatBuf st;
+    if (g_stat (path, &st) != 0 || !S_ISREG (st.st_mode))
+        return;
+    Item *it = g_new0 (Item, 1);
+    it->path = g_strdup (path);
+    it->size = st.st_size;
+    g_ptr_array_add (app.items, it);
+}
+
+/* Lists one folder (`files` NULL) or the chosen files (`folder` NULL), replacing the list. */
+static void
+load_source (const char *folder, char *const *files)
 {
     g_cancellable_cancel (app.probe_cancel);
     g_clear_object (&app.probe_cancel);
@@ -1788,51 +1887,61 @@ load_folder (const char *folder)
     app.probe_next = app.probes_done = 0;
     app.anchor = NULL;
     app.batch_t0 = app.batch_end = 0;
+    char *new_folder = g_strdup (folder);   /* copies first: a reload passes app.folder/app.files */
+    char **new_files = g_strdupv ((char **) files);
     g_free (app.folder);
-    app.folder = g_strdup (folder);
+    g_strfreev (app.files);
+    app.folder = new_folder;
+    app.files = new_files;
 
-    g_autofree char *base = basename_display (folder);
-    g_autofree char *display = g_filename_display_name (folder);
-    const char *home = g_get_home_dir ();
-    gsize hl = strlen (home);
-    g_autofree char *sub = strncmp (display, home, hl) == 0 && (display[hl] == '/' || !display[hl])
-                               ? g_strconcat ("~", display + hl, NULL)
-                               : g_strdup (display);
-    gtk_label_set_text (GTK_LABEL (app.title), base);
-    gtk_label_set_text (GTK_LABEL (app.subtitle), sub);
-
-    /* A run killed from outside (logout, crash) leaves its hidden temp file behind. Only this app
-     * writes `.<name>.part.<ext>` there, and only one instance runs, so none is in use now. */
-    g_autofree char *cdir_path = g_build_filename (folder, "compressed", NULL);
-    g_autoptr (GDir) cdir = g_dir_open (cdir_path, 0, NULL);
-    for (const char *name; cdir != NULL && (name = g_dir_read_name (cdir)) != NULL;) {
-        if (name[0] == '.' && (g_str_has_suffix (name, ".part.mp4")
-                               || g_str_has_suffix (name, ".part.mkv"))) {
-            g_autofree char *stale = g_build_filename (cdir_path, name, NULL);
-            g_unlink (stale);
+    if (app.files != NULL) {
+        guint hidden = 0;
+        g_autofree char *last_dir = NULL;
+        for (char **f = app.files; *f != NULL; f++) {
+            g_autofree char *dir = g_path_get_dirname (*f);
+            g_autofree char *base = g_path_get_basename (*f);
+            if (g_strcmp0 (dir, last_dir) != 0)   /* the dialog lists one folder's files together */
+                remove_stale_parts (dir);
+            g_free (last_dir);
+            last_dir = g_steal_pointer (&dir);
+            if (vc_mode_accepts (app.mode, base))
+                add_item (*f);
+            else
+                hidden++;
         }
-    }
+        guint n = app.items->len;
+        g_autofree char *sub = hidden == 0
+            ? g_strdup_printf ("%u file%s", n, n == 1 ? "" : "s")
+            : g_strdup_printf ("%u file%s · %u hidden (not videos)", n, n == 1 ? "" : "s", hidden);
+        gtk_label_set_text (GTK_LABEL (app.title), "Chosen files");
+        gtk_label_set_text (GTK_LABEL (app.subtitle), sub);
+    } else {
+        g_autofree char *base = basename_display (folder);
+        g_autofree char *display = g_filename_display_name (folder);
+        const char *home = g_get_home_dir ();
+        gsize hl = strlen (home);
+        g_autofree char *sub = strncmp (display, home, hl) == 0 && (display[hl] == '/' || !display[hl])
+                                   ? g_strconcat ("~", display + hl, NULL)
+                                   : g_strdup (display);
+        gtk_label_set_text (GTK_LABEL (app.title), base);
+        gtk_label_set_text (GTK_LABEL (app.subtitle), sub);
+        remove_stale_parts (folder);
 
-    g_autoptr (GError) error = NULL;
-    g_autoptr (GDir) dir = g_dir_open (folder, 0, &error);
-    if (dir == NULL) {
-        alert ("Cannot open folder", error->message, NULL);
-        update_speed_guide ();
-        update_controls ();
-        return;
-    }
-    /* Not recursive, by design; `compressed/` has no video extension so it never matches. */
-    for (const char *name; (name = g_dir_read_name (dir)) != NULL;) {
-        if (!vc_is_video_name (name))
-            continue;
-        g_autofree char *path = g_build_filename (folder, name, NULL);
-        GStatBuf st;
-        if (g_stat (path, &st) != 0 || !S_ISREG (st.st_mode))
-            continue;
-        Item *it = g_new0 (Item, 1);
-        it->path = g_steal_pointer (&path);
-        it->size = st.st_size;
-        g_ptr_array_add (app.items, it);
+        g_autoptr (GError) error = NULL;
+        g_autoptr (GDir) dir = g_dir_open (folder, 0, &error);
+        if (dir == NULL) {
+            alert ("Cannot open folder", error->message, NULL);
+            update_speed_guide ();
+            update_controls ();
+            return;
+        }
+        /* Not recursive, by design; the output folder has no media extension so it never matches. */
+        for (const char *name; (name = g_dir_read_name (dir)) != NULL;) {
+            if (!vc_mode_accepts (app.mode, name))
+                continue;
+            g_autofree char *path = g_build_filename (folder, name, NULL);
+            add_item (path);
+        }
     }
     g_ptr_array_sort (app.items, compare_items);
     for (guint i = 0; i < app.items->len; i++) {
@@ -1854,7 +1963,7 @@ folder_chosen (GObject *source, GAsyncResult *res, gpointer user_data)
                                                                    res, NULL);
     g_autofree char *path = file != NULL ? g_file_get_path (file) : NULL;
     if (path != NULL)
-        load_folder (path);
+        load_source (path, NULL);
 }
 
 static void
@@ -1863,6 +1972,39 @@ on_choose (void)
     g_autoptr (GtkFileDialog) d = gtk_file_dialog_new ();
     gtk_file_dialog_set_title (d, "Choose a folder of videos");
     gtk_file_dialog_select_folder (d, app.win, NULL, folder_chosen, NULL);
+}
+
+static void
+files_chosen (GObject *source, GAsyncResult *res, gpointer user_data)
+{
+    (void) user_data;
+    g_autoptr (GListModel) list = gtk_file_dialog_open_multiple_finish (GTK_FILE_DIALOG (source),
+                                                                        res, NULL);
+    if (list == NULL)
+        return;
+    g_autoptr (GStrvBuilder) b = g_strv_builder_new ();
+    for (guint i = 0; i < g_list_model_get_n_items (list); i++) {
+        g_autoptr (GFile) f = g_list_model_get_item (list, i);
+        g_autofree char *path = g_file_get_path (f);
+        if (path != NULL)
+            g_strv_builder_add (b, path);
+    }
+    g_auto (GStrv) files = g_strv_builder_end (b);
+    if (files[0] != NULL)
+        load_source (NULL, files);
+}
+
+static void
+on_choose_files (void)
+{
+    g_autoptr (GtkFileDialog) d = gtk_file_dialog_new ();
+    gtk_file_dialog_set_title (d, "Choose videos");
+    g_autoptr (GtkFileFilter) f = gtk_file_filter_new ();
+    gtk_file_filter_set_name (f, "Videos");
+    gtk_file_filter_add_mime_type (f, "video/*");
+    gtk_file_filter_add_suffix (f, "ts");   /* often typed as a Qt translation file */
+    gtk_file_dialog_set_default_filter (d, f);
+    gtk_file_dialog_open_multiple (d, app.win, NULL, files_chosen, NULL);
 }
 
 static gboolean
@@ -1874,7 +2016,7 @@ on_drop (GtkDropTarget *t, const GValue *value, double x, double y, gpointer use
     g_autofree char *path = g_file_get_path (g_value_get_object (value));
     if (path == NULL || !g_file_test (path, G_FILE_TEST_IS_DIR))
         return FALSE;
-    load_folder (path);
+    load_source (path, NULL);
     return TRUE;
 }
 
@@ -1966,10 +2108,12 @@ static void
 stop_for_quit (void)
 {
     app.closing = TRUE;
+    g_clear_handle_id (&app.pulse_id, g_source_remove);
     if (app.proc != NULL) {
         g_subprocess_force_exit (app.proc);   /* SIGKILL works on a paused ffmpeg too */
         g_subprocess_wait (app.proc, NULL, NULL);
-        g_unlink (app.part_path);
+        for (guint i = 0; i < app.job->steps->len; i++)
+            vc_remove_part (((VcStep *) app.job->steps->pdata[i])->part);
     }
     g_cancellable_cancel (app.probe_cancel);
     sample_stop ();
@@ -2185,7 +2329,12 @@ build_empty_page (void)
     GtkWidget *choose = label_button ("folder-symbolic", "_Choose Folder…", G_CALLBACK (on_choose));
     app.choose_empty = choose;
     gtk_widget_add_css_class (choose, "suggested-action");
-    gtk_widget_set_halign (choose, GTK_ALIGN_CENTER);
+    app.files_empty = label_button ("document-open-symbolic", "Choose _Files…",
+                                    G_CALLBACK (on_choose_files));
+    GtkWidget *buttons = hbox (10);
+    gtk_widget_set_halign (buttons, GTK_ALIGN_CENTER);
+    gtk_box_append (GTK_BOX (buttons), choose);
+    gtk_box_append (GTK_BOX (buttons), app.files_empty);
     GtkWidget *features = hbox (8);
     gtk_widget_set_halign (features, GTK_ALIGN_CENTER);
     const char *f[][2] = { { "starred-symbolic", "Quality set automatically" },
@@ -2208,7 +2357,7 @@ build_empty_page (void)
     gtk_label_set_wrap (GTK_LABEL (sub), TRUE);
     gtk_box_append (GTK_BOX (inner), sub);
     gtk_widget_set_margin_bottom (sub, 8);
-    gtk_box_append (GTK_BOX (inner), choose);
+    gtk_box_append (GTK_BOX (inner), buttons);
     gtk_widget_set_margin_top (features, 20);
     gtk_box_append (GTK_BOX (inner), features);
     GtkWidget *zone = vbox (0);
@@ -2580,11 +2729,11 @@ activate (GtkApplication *gapp, gpointer user_data)
         app.guide_cols[i] = gtk_size_group_new (GTK_SIZE_GROUP_HORIZONTAL);
 
     app.win = GTK_WINDOW (gtk_application_window_new (gapp));
-    gtk_window_set_title (app.win, "Video Compressor");
+    gtk_window_set_title (app.win, "Media Tools");
     gtk_window_set_default_size (app.win, 1260, 720);
     g_signal_connect (app.win, "close-request", G_CALLBACK (on_close), NULL);
 
-    app.title = styled_label ("Video Compressor", "heading", 0.5);
+    app.title = styled_label ("Media Tools", "heading", 0.5);
     app.subtitle = styled_label ("No folder selected", "caption", 0.5);
     gtk_label_set_ellipsize (GTK_LABEL (app.subtitle), PANGO_ELLIPSIZE_START);
     GtkWidget *title = vbox (0);
@@ -2595,6 +2744,9 @@ activate (GtkApplication *gapp, gpointer user_data)
     gtk_header_bar_set_title_widget (GTK_HEADER_BAR (header), title);
     app.choose_btn = label_button ("folder-symbolic", "_Choose Folder…", G_CALLBACK (on_choose));
     gtk_header_bar_pack_end (GTK_HEADER_BAR (header), app.choose_btn);
+    app.files_btn = label_button ("document-open-symbolic", "Choose _Files…",
+                                  G_CALLBACK (on_choose_files));
+    gtk_header_bar_pack_end (GTK_HEADER_BAR (header), app.files_btn);
     gtk_window_set_titlebar (app.win, header);
 
     app.pages = gtk_stack_new ();

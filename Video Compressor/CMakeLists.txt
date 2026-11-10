@@ -10,7 +10,7 @@ pkg_check_modules(GLIB REQUIRED IMPORTED_TARGET glib-2.0)
 
 add_compile_options(-Wall -Wextra $<$<CONFIG:Debug>:-Werror>)
 
-add_library(vc_core STATIC src/compress.c)
+add_library(vc_core STATIC src/compress.c src/modes.c)
 target_include_directories(vc_core PUBLIC src)
 target_link_libraries(vc_core PUBLIC PkgConfig::GLIB m)
 
@@ -21,6 +21,9 @@ enable_testing()
 add_executable(test_compress tests/test_compress.c)
 target_link_libraries(test_compress PRIVATE vc_core)
 add_test(NAME test_compress COMMAND test_compress)
+add_executable(test_modes tests/test_modes.c)
+target_link_libraries(test_modes PRIVATE vc_core)
+add_test(NAME test_modes COMMAND test_modes)
 
 # The .desktop name must match the GApplication id: GNOME drops notifications from apps it can't
 # find. For a user install: cmake -B build --install-prefix ~/.local && cmake --install build
