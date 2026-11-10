@@ -186,7 +186,7 @@ test_ffmpeg_argv_8bit (void)
         "ffmpeg", "-hide_banner", "-nostdin", "-loglevel", "error", "-nostats",
         "-progress", "pipe:1", "-y", "-i", name,
         "-map", "0:v:0", "-map", "0:a?", "-map_metadata", "0",
-        "-c:v", "libx265", "-preset", "slow", "-crf", "24", "-x265-params", "log-level=error",
+        "-c:v", "libx265", "-preset", "slow", "-crf", "24", "-x265-params", "log-level=error:ctu=32:rect=0:rskip=2",
         "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-b:a", "96k",
         "-sn", "-tag:v", "hvc1", "-movflags", "+faststart+use_metadata_tags",
@@ -237,7 +237,15 @@ test_ffmpeg_argv_presets (void)
                                                     &(VcOptions) { .preset = VC_PRESETS[i] });
         g_assert_cmpstr (argv_value (argv, "-preset"), ==, VC_PRESETS[i]);
         g_assert_cmpstr (argv_value (argv, "-c:v"), ==, "libx265");
+        /* HandBrake's rect=0:rskip=2 only on the presets that turn rect on (1080p: no ctu=32) */
+        gboolean rect = g_str_equal (VC_PRESETS[i], "slow") || g_str_equal (VC_PRESETS[i], "slower");
+        g_assert_cmpstr (argv_value (argv, "-x265-params"), ==,
+                         rect ? "log-level=error:rect=0:rskip=2" : "log-level=error");
     }
+    /* ctu=32 follows the output size: a 1080p source downscaled to 480p gets it */
+    g_auto (GStrv) small = vc_build_ffmpeg_argv ("/a.mp4", "/b.mp4", p,
+                                                 &(VcOptions) { .preset = "medium", .max_short_side = 480 });
+    g_assert_cmpstr (argv_value (small, "-x265-params"), ==, "log-level=error:ctu=32");
 }
 
 static void
@@ -303,15 +311,15 @@ test_ffmpeg_argv_hdr10 (void)
         "pix_fmt=yuv420p10le\ncolor_space=bt2020nc\ncolor_transfer=smpte2084\n"
         "color_primaries=bt2020\n", NULL);
     g_auto (GStrv) a = vc_build_ffmpeg_argv ("/a.mkv", "/o.mp4", pq, &(VcOptions) { .preset = "slow" });
-    g_assert_cmpstr (argv_value (a, "-x265-params"), ==, "log-level=error:hdr10=1:repeat-headers=1");
+    g_assert_cmpstr (argv_value (a, "-x265-params"), ==, "log-level=error:hdr10=1:repeat-headers=1:rect=0:rskip=2");
     g_assert_cmpstr (argv_value (a, "-color_trc"), ==, "smpte2084");
 
     g_autoptr (VcProbe) hlg = vc_parse_probe (PROBE_HLG, NULL);
     g_autoptr (VcProbe) sdr = vc_parse_probe (PROBE_8BIT_SUBS, NULL);
     g_auto (GStrv) b = vc_build_ffmpeg_argv ("/a.mov", "/o.mp4", hlg, &(VcOptions) { .preset = "slow" });
     g_auto (GStrv) c = vc_build_ffmpeg_argv ("/a.mp4", "/o.mp4", sdr, &(VcOptions) { .preset = "slow" });
-    g_assert_cmpstr (argv_value (b, "-x265-params"), ==, "log-level=error");
-    g_assert_cmpstr (argv_value (c, "-x265-params"), ==, "log-level=error");
+    g_assert_cmpstr (argv_value (b, "-x265-params"), ==, "log-level=error:rect=0:rskip=2");
+    g_assert_cmpstr (argv_value (c, "-x265-params"), ==, "log-level=error:ctu=32:rect=0:rskip=2");
 }
 
 /* 1080p video plus the given audio streams ("codec:bps", bps may be N/A). */

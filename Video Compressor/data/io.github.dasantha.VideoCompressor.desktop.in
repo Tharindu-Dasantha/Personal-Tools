@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Video Compressor
+Comment=Make videos smaller without losing quality
+Exec=@CMAKE_INSTALL_FULL_BINDIR@/video-compressor
+Icon=video-x-generic
+Terminal=false
+Categories=AudioVideo;Video;
+StartupNotify=true

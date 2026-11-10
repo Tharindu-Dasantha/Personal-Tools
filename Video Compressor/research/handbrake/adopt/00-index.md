@@ -11,7 +11,7 @@ Each note below is one technique HandBrake uses, written against our code. Every
 sections: **What HandBrake does → What we do now → Change → Gain → Risk → How to verify → Effort**.
 Background on how HandBrake works is in the parent folder ([../00-index](../00-index.md)).
 
-Nothing here is implemented yet. Anything that changes output needs the VMAF/size/time check from
+Only [16](16-encode-speed.md) is implemented so far. Anything that changes output needs the VMAF/size/time check from
 [`tasks/plan-performance.md`](../../../tasks/plan-performance.md) before it ships.
 
 ## Ranked list
@@ -28,6 +28,7 @@ Nothing here is implemented yet. Anything that changes output needs the VMAF/siz
 | 8 | HDR10 mastering / MaxCLL passthrough | correctness (PQ only) | correct HDR10 tone mapping | M | low | [06](06-hdr10-static-metadata.md) |
 | 9 | Quality preview clip | UX | judge quality before a long batch | M | low | [10](10-quality-preview-clip.md) |
 | 10 | Robust probing | reliability | fewer "Unreadable" edge cases | XS–S | low | [11](11-robust-probing.md) |
+| ✓ | **Adopted:** x265 speed (`ctu=32` small video, `rect=0:rskip=2` at slow) | speed | slow 2× faster on 324p, 20 % on 720p/1080p | done | low | [16](16-encode-speed.md) |
 | 11 | 10-bit encode for 8-bit sources | quality / size | possible, must measure | XS to try | **SPEC decision** | [07](07-10bit-for-8bit-sources.md) |
 | 12 | Selective deinterlacing | quality (old camcorder files) | large *if* such files exist | S | low | [12](12-selective-deinterlace.md) |
 | 13 | Auto-crop black bars | size (letterboxed files) | 5–25 % fewer pixels on those files | M | **high** (crops content if wrong) | [13](13-auto-crop.md) |

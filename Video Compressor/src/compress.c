@@ -32,7 +32,9 @@ G_STATIC_ASSERT (G_N_ELEMENTS (EST_VIDEO_KBPS) == G_N_ELEMENTS (VC_CLASSES));
 static const struct { const char *name; double time, size; } PRESET_FACTORS[] = {
     { VC_PRESET_GPU, 0.08, 1.15 },   /* R8 medians over 6 clips (0.06-0.14x time, 1.06-1.41x size) */
     { "faster", 0.69, 0.99 }, { "fast", 0.85, 1.06 }, { "medium", 1.0, 1.0 },
-    { "slow", 2.1, 1.08 },    { "slower", 8.2, 1.06 },
+    /* slow: 2.1 before rect=0:rskip=2, which took 20-22% off on 720p/1080p clips (2026-11-10).
+     * shortcut: slower's 8.2 predates that tuning too; remeasure if slower gets used. */
+    { "slow", 1.7, 1.08 },    { "slower", 8.2, 1.06 },
 };
 
 /* How far below its own bitrate HEVC can go for each source codec, for the estimate. Older codecs
@@ -362,12 +364,21 @@ add_video_output (GStrvBuilder *b, const VcProbe *probe, const VcOptions *opt, g
             g_strv_builder_add_many (b, "-profile:v", "main10", NULL);
     } else {
         g_snprintf (num, sizeof num, "%d", cls->crf);
+        GString *xp = g_string_new ("log-level=error");
         /* PQ (HDR10) needs its SEI headers for players to switch to HDR; HLG does not. */
-        gboolean pq = g_strcmp0 (probe->color_transfer, "smpte2084") == 0;
+        if (g_strcmp0 (probe->color_transfer, "smpte2084") == 0)
+            g_string_append (xp, ":hdr10=1:repeat-headers=1");
+        /* x265 works on rows of 64 px blocks in parallel, so a 324 px tall frame kept only ~4 of 16
+         * threads busy. 32 px blocks double the rows: medium 37% faster, same VMAF, +2% size. */
+        if (side <= 576)
+            g_string_append (xp, ":ctu=32");
+        /* HandBrake's x265 tuning: rectangular partitions are ~1/3 of slow's time for no VMAF gain. */
+        if (g_strcmp0 (opt->preset, "slow") == 0 || g_strcmp0 (opt->preset, "slower") == 0)
+            g_string_append (xp, ":rect=0:rskip=2");
         g_strv_builder_add_many (b, "-c:v", "libx265", "-preset", opt->preset, "-crf", num,
-                                 "-x265-params",
-                                 pq ? "log-level=error:hdr10=1:repeat-headers=1" : "log-level=error",
+                                 "-x265-params", xp->str,
                                  "-pix_fmt", ten ? "yuv420p10le" : "yuv420p", NULL);
+        g_string_free (xp, TRUE);
         if (ten)
             g_strv_builder_add_many (b, "-profile:v", "main10", NULL);
     }

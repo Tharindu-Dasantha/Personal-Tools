@@ -75,6 +75,8 @@ typedef struct {
     int sample_side, sample_fps;   /* the settings samples_taken counts for */
     double sample_secs;
     gboolean closing;    /* window destroyed: late async callbacks must not touch widgets */
+    gboolean was_busy;   /* a batch was running at the last update_controls */
+    guint inhibit;       /* suspend inhibitor held while a batch runs, or 0 */
 
     /* the one encode allowed at a time (SPEC); a paused one still counts */
     Item *job;
@@ -651,6 +653,43 @@ update_summary (void)
 }
 
 static void
+notify (const char *id, const char *title, const char *body)
+{
+    g_autoptr (GNotification) n = g_notification_new (title);
+    g_notification_set_body (n, body);
+    /* no default action: a click activates the app, and activate() shows the window */
+    g_application_send_notification (g_application_get_default (), id, n);
+}
+
+/* A batch may run with the window closed to the background or behind other windows: keep the
+ * computer from sleeping through it, and say when it ends. */
+static void
+on_busy_changed (gboolean busy)
+{
+    GtkApplication *gapp = GTK_APPLICATION (g_application_get_default ());
+    app.was_busy = busy;
+    if (busy) {
+        app.inhibit = gtk_application_inhibit (gapp, app.win, GTK_APPLICATION_INHIBIT_SUSPEND,
+                                               "Compressing videos");
+        return;
+    }
+    if (app.inhibit != 0)
+        gtk_application_uninhibit (gapp, app.inhibit);
+    app.inhibit = 0;
+    g_application_withdraw_notification (G_APPLICATION (gapp), "background");
+    if (gtk_window_is_active (app.win))
+        return;
+    guint failed = 0;
+    for (guint i = 0; i < app.items->len; i++)
+        failed += g_strcmp0 (((Item *) app.items->pdata[i])->note, "Failed") == 0;
+    update_summary ();
+    const char *sub = gtk_label_get_text (GTK_LABEL (app.sum_sub));
+    g_autofree char *body = failed == 0 ? g_strdup (sub)
+                                        : g_strdup_printf ("%s · %u failed", sub, failed);
+    notify ("done", gtk_label_get_text (GTK_LABEL (app.sum_title)), body);
+}
+
+static void
 update_controls (void)
 {
     if (app.closing)
@@ -685,6 +724,8 @@ update_controls (void)
         }
     }
     gboolean finished = n > 0 && !busy && !start && any_done;
+    if (busy != app.was_busy)
+        on_busy_changed (busy);
 
     gtk_stack_set_visible_child_name (GTK_STACK (app.pages), app.folder != NULL ? "list" : "empty");
     gtk_widget_set_visible (app.bottom, app.folder != NULL);
@@ -1760,6 +1801,18 @@ load_folder (const char *folder)
     gtk_label_set_text (GTK_LABEL (app.title), base);
     gtk_label_set_text (GTK_LABEL (app.subtitle), sub);
 
+    /* A run killed from outside (logout, crash) leaves its hidden temp file behind. Only this app
+     * writes `.<name>.part.<ext>` there, and only one instance runs, so none is in use now. */
+    g_autofree char *cdir_path = g_build_filename (folder, "compressed", NULL);
+    g_autoptr (GDir) cdir = g_dir_open (cdir_path, 0, NULL);
+    for (const char *name; cdir != NULL && (name = g_dir_read_name (cdir)) != NULL;) {
+        if (name[0] == '.' && (g_str_has_suffix (name, ".part.mp4")
+                               || g_str_has_suffix (name, ".part.mkv"))) {
+            g_autofree char *stale = g_build_filename (cdir_path, name, NULL);
+            g_unlink (stale);
+        }
+    }
+
     g_autoptr (GError) error = NULL;
     g_autoptr (GDir) dir = g_dir_open (folder, 0, &error);
     if (dir == NULL) {
@@ -1868,11 +1921,50 @@ on_escape (GtkWidget *w, GVariant *args, gpointer user_data)
     return TRUE;
 }
 
+static void stop_for_quit (void);
+
+static void
+close_chosen (GObject *source, GAsyncResult *res, gpointer user_data)
+{
+    (void) user_data;
+    int choice = gtk_alert_dialog_choose_finish (GTK_ALERT_DIALOG (source), res, NULL);
+    if (choice == 1) {
+        stop_for_quit ();
+        gtk_window_destroy (app.win);
+    } else if (choice == 2 && is_busy ()) {
+        if (app.paused)
+            resume_job ();
+        /* A hidden window still holds the GtkApplication, so the process and its encodes go on;
+         * launching the app again or clicking a notification shows the window. */
+        gtk_widget_set_visible (GTK_WIDGET (app.win), FALSE);
+        notify ("background", "Compressing in the background",
+                "You'll get a notification when it's done. Open Video Compressor to see progress.");
+    }
+}
+
 static gboolean
 on_close (GtkWindow *win, gpointer user_data)
 {
     (void) win; (void) user_data;
-    /* The main loop ends with the window, so clean up synchronously here. */
+    if (is_busy ()) {
+        g_autoptr (GtkAlertDialog) d = gtk_alert_dialog_new ("Keep compressing in the background?");
+        gtk_alert_dialog_set_detail (d, "The window closes and the videos keep compressing. "
+                                        "You'll get a notification when they're done.");
+        const char *buttons[] = { "Cancel", "Stop and Quit", "Run in Background", NULL };
+        gtk_alert_dialog_set_buttons (d, buttons);
+        gtk_alert_dialog_set_cancel_button (d, 0);
+        gtk_alert_dialog_set_default_button (d, 2);
+        gtk_alert_dialog_choose (d, app.win, NULL, close_chosen, NULL);
+        return TRUE;
+    }
+    stop_for_quit ();
+    return FALSE;
+}
+
+/* The main loop ends with the window, so clean up synchronously here. */
+static void
+stop_for_quit (void)
+{
     app.closing = TRUE;
     if (app.proc != NULL) {
         g_subprocess_force_exit (app.proc);   /* SIGKILL works on a paused ffmpeg too */
@@ -1883,7 +1975,6 @@ on_close (GtkWindow *win, gpointer user_data)
     sample_stop ();
     if (app.toast_id != 0)
         g_source_remove (app.toast_id);
-    return FALSE;
 }
 
 /* ---- startup ---- */

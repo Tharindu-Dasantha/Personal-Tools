@@ -21,3 +21,12 @@ enable_testing()
 add_executable(test_compress tests/test_compress.c)
 target_link_libraries(test_compress PRIVATE vc_core)
 add_test(NAME test_compress COMMAND test_compress)
+
+# The .desktop name must match the GApplication id: GNOME drops notifications from apps it can't
+# find. For a user install: cmake -B build --install-prefix ~/.local && cmake --install build
+include(GNUInstallDirs)
+install(TARGETS video-compressor)
+configure_file(data/io.github.dasantha.VideoCompressor.desktop.in
+               io.github.dasantha.VideoCompressor.desktop @ONLY)
+install(FILES ${CMAKE_CURRENT_BINARY_DIR}/io.github.dasantha.VideoCompressor.desktop
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
