@@ -427,7 +427,7 @@ progress. `vc_mode_steps()` dispatches to it. `make-fixtures.sh` adds `odd-853x4
 
 ## Phase 9: Video → frames ([SPEC-video-frames.md](../SPEC-video-frames.md))
 
-### - [ ] T21: `frames.c` core
+### - [x] T21: `frames.c` core
 **Description:** `vc_parse_time()`, `vc_frames_jpeg_qscale()`, `vc_frames_estimate()` and `vc_frames_steps()` as in the
 spec. The step writes the directory part `frames/.<stem>.part/frame_%04d.<ext>` and has output `frames/<stem>/`. It skips
 with `frames/<stem>/ exists`, or with `starts after the end` when Start ≥ duration. Trim goes before `-i`. The step's
@@ -435,20 +435,20 @@ progress duration is the range length. `vc_build_ffprobe_argv()` also asks for `
 fills `VcProbe.fps` (`30000/1001`; `0/0` → 0).
 
 **Acceptance criteria:**
-- [ ] Every test in the spec's unit list passes, and `test_compress` still passes with the extra probe field
+- [x] Every test in the spec's unit list passes, and `test_compress` still passes with the extra probe field
 
 **Verification:**
-- [ ] Unit (`tests/test_frames.c`): time parsing accepts/rejects, qscale 1/80/100 → 31/8/2 and monotonic, estimates
+- [x] Unit (`tests/test_frames.c`): time parsing accepts/rejects, qscale 1/80/100 → 31/8/2 and monotonic, estimates
       (whole, range, End past end, Start past end = 0, `Every frame` at 30000/1001), WebP and JPG argv with and without
       range, no `fps=` for `Every frame`, Original width, tone-map present or absent, dir naming, special-character name
-- [ ] Unit: `avg_frame_rate` parsing in `vc_parse_probe()`
+- [x] Unit: `avg_frame_rate` parsing in `vc_parse_probe()`
 
 **Dependencies:** T16
 **Files:** `src/frames.c`, `src/compress.c/.h`, `src/modes.c/.h`, `tests/test_frames.c`, `tests/test_compress.c`,
 `CMakeLists.txt`
 **Scope:** M
 
-### - [ ] T22: Frames mode UI
+### - [x] T22: Frames mode UI
 **Description:** Add `Video → frames` to the Mode dropdown. Options bar: **FPS** (`5`, `10`, `12`, `15` default, `24`,
 `30`, `Every frame`), **Start** and **End** entries (an invalid value turns the field red and greys Start), **Max width**
 (default `1920`), **Format** (`WebP` default, `JPG`) and **Quality** (1–100, default 80). Each row's hint shows
@@ -457,22 +457,23 @@ of the folder). Trash controls are hidden. The runner moves the finished directo
 or close removes it.
 
 **Acceptance criteria:**
-- [ ] Video-frames criteria 1–7 pass
+- [x] Video-frames criteria 1–7 pass
 
 **Verification:**
-- [ ] Manual (Xvfb): `720p.mp4` at 15 fps WebP q80 → 900 frames (±1), with `≈ 900 frames` shown beforehand
-- [ ] Manual: Start `10`, End `0:12` at 12 fps → 24 frames (±1), and the first frame matches the source at 10 s
-- [ ] Manual: Max width 640 → 1080p gives 640 wide, portrait gives 640×1138
-- [ ] Manual: JPG q80 and HLG frames look right next to a source screenshot
-- [ ] Manual: stop mid-extraction (no `.part` dir, no final dir), re-run extracts, a second re-run skips
-- [ ] Manual: Start `abc` turns red and greys Start. A Start past one video's length skips only that video
+- [x] Manual (Xvfb): `720p.mp4` at 15 fps WebP q80 → 900 frames (±1), with `≈ 900 frames` shown beforehand
+- [x] Manual: Start `10`, End `0:12` at 12 fps → 24 frames (±1), and the first frame matches the source at 10 s
+- [x] Manual: Max width 640 → 1080p gives 640 wide, portrait gives 640×1138
+- [x] Manual: JPG q80 and HLG frames look right next to a source screenshot (testsrc fixtures; a real iPhone HDR clip is
+      TEST.md 5b.4, your eyes)
+- [x] Manual: stop mid-extraction (no `.part` dir, no final dir), re-run extracts, a second re-run skips
+- [x] Manual: Start `abc` turns red and greys Start. A Start past one video's length skips only that video
 
 **Dependencies:** T20, T21
 **Files:** `src/main.c`
 **Scope:** M
 
 ### Checkpoint 9
-- [ ] Video-frames criteria 1–7 pass, ctest green, ASan run of the mode clean
+- [x] Video-frames criteria 1–7 pass, ctest green, ASan run of the mode clean
 - [ ] Review with you, then commit
 
 ---

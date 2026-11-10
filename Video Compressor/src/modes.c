@@ -80,7 +80,9 @@ vc_mode_steps (VcMode mode, const char *input, const VcProbe *probe, const VcOpt
         return compress_steps (input, probe, opt, skip_reason);
     if (mode == VC_MODE_WEB_VIDEO)
         return vc_web_video_steps (input, probe, opt, skip_reason);
-    return NULL;   /* frames.c and images.c add theirs */
+    if (mode == VC_MODE_FRAMES)
+        return vc_frames_steps (input, probe, opt, skip_reason);
+    return NULL;   /* images.c adds its own */
 }
 
 void

@@ -16,7 +16,7 @@ ctest --test-dir "Video Compressor/build" --output-on-failure
 rm -rf ~/vc-test && cp -a "Video Compressor/build/fixtures" ~/vc-test && rm -rf ~/vc-test/compressed
 cd ~/vc-test && sha256sum -- *.* > ~/vc-test.sha256                             # to prove originals are untouched
 ```
-- [ ] `ctest` prints `100% tests passed, 0 tests failed out of 3` (test_compress, test_modes, test_web_video).
+- [ ] `ctest` prints `100% tests passed, 0 tests failed out of 4` (test_compress, test_modes, test_web_video, test_frames).
 - [ ] `~/vc-test` holds 13 video-named files (12 real ones plus the decoy `fake.mp4`) and the decoy `notes.txt`.
 
 Use `~/vc-test` (not `build/`) for the Trash tests: the Trash only works on the same filesystem as your home.
@@ -209,6 +209,24 @@ App-shell criterion 6 (multi-step stop) waits for the images module (Phase 10).
 
 ---
 
+## 5b. Video → frames (SPEC-video-frames.md)
+
+Switch Mode to `Video → frames` and choose `~/vc-test`. Delete `~/vc-test/frames` between runs (`rm -rf ~/vc-test/frames`), then
+switch Mode away and back so the rows start fresh.
+
+| # | Steps | Expected |
+|---|---|---|
+| 5b.1 (crit. 1) | Defaults (15 fps, WebP, q80, Max 1920 px), Start | [ ] Before Start, `720p.mp4` shows `≈ 900 frames`. [ ] `ls ~/vc-test/frames/720p \| wc -l` → 900 (±1), `frame_0001.webp` … `frame_0900.webp`. [ ] The row ends `900 frames · <size>`. |
+| 5b.2 (crit. 2) | 12 fps, Start `10`, End `0:12`, Start | [ ] Rows show `≈ 24 frames` before Start. [ ] 24 files (±1) per video. [ ] `frame_0001` matches the source at 10 s (the counter in the test pattern reads `10`). |
+| 5b.3 (crit. 3) | Max 640 px | [ ] `1080p` frames are 640×360, `portrait` 640×1138 (`ffprobe -v error -show_entries stream=width,height -of csv=p=0 <frame>`). |
+| 5b.4 (crit. 4, 5) | Format JPG, q80; open `frames/1080p/frame_0001.jpg` and `frames/hlg-10bit/frame_0001.jpg` in Image Viewer next to the source paused in a player | [ ] Neither crushed nor washed out. **With a real iPhone HDR clip** (your eyes): frames look like the clip does on the phone. |
+| 5b.5 (crit. 6) | Start, press Stop during a video | [ ] `ls -a ~/vc-test/frames` has no `.NAME.part` and no folder for that video. [ ] Start again extracts it. [ ] A mode switch and Start again shows `Already extracted` for every row. |
+| 5b.6 (crit. 7) | Type `abc` in Start | [ ] The field turns red and Start greys. Clear it: both return to normal. |
+| 5b.7 (crit. 7) | Start `15` (the `hlg-10bit.mov` and `hdr10-pq.mov` fixtures are 10 s) | [ ] Only those rows say `Starts after the end` (before and after Start); the rest extract. |
+| 5b.8 | Close the window mid-extraction → Stop and Quit | [ ] No ffmpeg left (`pgrep -x ffmpeg`), no `.part` folder in `frames/`. |
+
+---
+
 ## 6. Sanitizer run (SPEC.md criterion 13, app-shell criterion 7)
 
 ```sh
@@ -218,7 +236,7 @@ cmake --build "Video Compressor/build/asan" -j
 ASAN_OPTIONS=detect_leaks=0 ctest --test-dir "Video Compressor/build/asan"
 ASAN_OPTIONS=detect_leaks=0 "Video Compressor/build/asan/video-compressor" 2> ~/vc-asan.log; echo "exit $?"
 ```
-Run 3.2–3.6 and 4.1–4.5 in that window (including a mode switch with a folder loaded), then close it.
+Run 3.2–3.6, 4.1–4.5 and 5b.1–5b.8 in that window (including a mode switch with a folder loaded), then close it.
 - [ ] ctest `100% tests passed`. [ ] `exit 0`. [ ] `grep -c 'AddressSanitizer\|runtime error' ~/vc-asan.log` prints `0`.
 
 ## Clean up

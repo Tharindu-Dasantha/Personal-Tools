@@ -9,6 +9,18 @@ basename_of (const char *path)
     return g_filename_display_name (base);
 }
 
+char *
+vc_tonemap_chain (const VcProbe *probe)
+{
+    if (!vc_probe_is_hdr (probe))
+        return NULL;
+    return g_strdup_printf ("zscale=tin=%s:pin=%s:min=%s:t=linear:npl=100,format=gbrpf32le,"
+                            "zscale=p=bt709,tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv",
+                            probe->color_transfer,
+                            probe->color_primaries ? probe->color_primaries : "bt2020",
+                            probe->color_space ? probe->color_space : "bt2020nc");
+}
+
 /* Every web output is SDR 8-bit H.264 in MP4 (SPEC-web-video.md, "Encode settings"). */
 static char **
 build_argv (const char *input, const char *part, const VcProbe *probe, const VcOptions *opt)
@@ -27,12 +39,9 @@ build_argv (const char *input, const char *part, const VcProbe *probe, const VcO
         g_string_append_printf (vf, "scale='trunc(min(iw,%d)/2)*2':-2", opt->max_width);
     else
         g_string_append (vf, "scale='trunc(iw/2)*2':-2");
-    if (vc_probe_is_hdr (probe))
-        g_string_append_printf (vf, ",zscale=tin=%s:pin=%s:min=%s:t=linear:npl=100,format=gbrpf32le,"
-                                "zscale=p=bt709,tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv",
-                                probe->color_transfer,
-                                probe->color_primaries ? probe->color_primaries : "bt2020",
-                                probe->color_space ? probe->color_space : "bt2020nc");
+    g_autofree char *tonemap = vc_tonemap_chain (probe);
+    if (tonemap != NULL)
+        g_string_append_printf (vf, ",%s", tonemap);
     g_string_append (vf, ",format=yuv420p");
     g_strv_builder_add_many (b, "-vf", vf->str, "-c:v", "libx264", "-profile:v", "high",
                              "-preset", "slow", "-crf", "23", "-pix_fmt", "yuv420p", NULL);

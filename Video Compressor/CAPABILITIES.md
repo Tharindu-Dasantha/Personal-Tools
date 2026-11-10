@@ -9,7 +9,7 @@ This map is the index of what exists. Module ids are fixed; don't rename them.
 | `video-compress` | Folder of videos → H.265 copies in `compressed/`, opt-in trash of originals | — | [SPEC.md](SPEC.md) | Built (Phases 1–6) |
 | `app-shell` | Mode dropdown, Choose Files, per-mode options bar, generic multi-step job runner, per-mode tool check | `video-compress` | [SPEC-app-shell.md](SPEC-app-shell.md) | Spec |
 | `web-video` | Safari-ready H.264 MP4 in `web/`, max width, remove audio, HDR → SDR | `app-shell` | [SPEC-web-video.md](SPEC-web-video.md) | Spec |
-| `video-frames` | Video → numbered JPG/WebP frames in `frames/<name>/` (fps, trim, width, quality) | `app-shell` | [SPEC-video-frames.md](SPEC-video-frames.md) | Spec |
+| `video-frames` | Video → numbered JPG/WebP frames in `frames/<name>/` (fps, trim, width, quality) | `app-shell` | [SPEC-video-frames.md](SPEC-video-frames.md) | Built (Phase 9) |
 | `image-compress` | Images → optimized same-type copy + `.webp` in `compressed/` (TinyPNG-style), opt-in trash | `app-shell` | [SPEC-image-compress.md](SPEC-image-compress.md) | Spec |
 
 Build order: `app-shell` → `web-video` → `video-frames` → `image-compress`

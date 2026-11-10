@@ -125,11 +125,11 @@ that each phase ends with a usable mode. Every UI task touches `main.c`, so they
 - [ ] Web-video criteria 1–4 and 7 pass on fixtures, app-shell criterion 4 passes. You check 5 (GPS on a phone clip) and 6 (Safari on iOS)
 
 ### Phase 9: Video → frames ([SPEC-video-frames.md](../SPEC-video-frames.md))
-- [ ] T21: `src/frames.c` (`vc_parse_time`, JPG qscale, frame estimate, argv) + `VcProbe.fps` from `avg_frame_rate` (pure logic, tested)
-- [ ] T22: Frames mode UI: FPS / Start / End / Max width / Format / Quality, `≈ N frames` hint, directory output via the runner
+- [x] T21: `src/frames.c` (`vc_parse_time`, JPG qscale, frame estimate, argv) + `VcProbe.fps` from `avg_frame_rate` (pure logic, tested)
+- [x] T22: Frames mode UI: FPS / Start / End / Max width / Format / Quality, `≈ N frames` hint, directory output via the runner
 
 ### Checkpoint 9
-- [ ] Video-frames criteria 1–7 pass on fixtures
+- [x] Video-frames criteria 1–7 pass on fixtures
 
 ### Phase 10: Compress images ([SPEC-image-compress.md](../SPEC-image-compress.md))
 - [ ] T23: `src/images.c` (accepted types, step plan, magick/pngquant argv, `vc_probe_has_alpha`, `vc_image_should_trash`) (pure logic, tested)

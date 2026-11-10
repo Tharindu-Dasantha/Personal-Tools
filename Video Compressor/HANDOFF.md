@@ -1,6 +1,6 @@
 # Handoff: Video Compressor
 
-Last updated 2026-11-10 (Phase 8). Read [SPEC.md](SPEC.md) (source of truth), then [tasks/plan.md](tasks/plan.md)
+Last updated 2026-11-10 (Phase 9). Read [SPEC.md](SPEC.md) (source of truth), then [tasks/plan.md](tasks/plan.md)
 and [tasks/todo.md](tasks/todo.md). Checkboxes in `todo.md` are ticked only for things actually verified.
 [TEST.md](TEST.md) lists every test the user still runs by hand, with the expected result of each.
 
@@ -18,14 +18,16 @@ and [tasks/todo.md](tasks/todo.md). Checkboxes in `todo.md` are ticked only for 
 | Performance | R1–R12 | GPU encoder, size samples, x265 tuning, nice/idle I/O, mtime copy. See [tasks/plan-performance.md](tasks/plan-performance.md) and [tasks/todo-performance.md](tasks/todo-performance.md). Committed |
 | 7. App shell | T16–T18 | **Done, verified on Xvfb with ASan (2026-11-10)**: `modes.c`, multi-step runner, Choose Files, title `Media Tools`. Committed `7541405`. Checkpoint 7 still open (see below) |
 | 8. Web video | T19, T20 | **Done, verified on Xvfb with ASan (2026-11-10)**: `web_video.c`, Mode dropdown, per-mode options, split tool check, banner. Committed `7de014b`. Checkpoint 8 needs the user (web-video 5, 6, review) |
+| 9. Video → frames | T21, T22 | **Done, verified on Xvfb with ASan (2026-11-10)**: `frames.c`, frames options bar, directory parts in the runner. **Not committed yet.** Checkpoint 9 needs the review |
 
 Everything up to `7de014b` is pushed to `origin/main`.
 
 **Media Tools (Phases 7–10):** the app grows into four modules mapped in [CAPABILITIES.md](CAPABILITIES.md):
 `app-shell` → `web-video` → `video-frames` → `image-compress`, each with a `SPEC-<id>.md` and tasks T16–T27 in `todo.md`.
-`app-shell` (Phase 7) and `web-video` (Phase 8) are built. `image-compress` needs `sudo dnf install pngquant` (approved).
+`app-shell` (Phase 7), `web-video` (Phase 8) and `video-frames` (Phase 9) are built. `image-compress` needs `sudo dnf install pngquant` (approved).
 
-**Next step:** the user runs [TEST.md](TEST.md) and reviews Phases 7–8, then Phase 9 (T21, `frames.c`).
+**Next step:** the user reviews Phase 9 (and runs [TEST.md](TEST.md) 5b) and says which commit date to use, then Phase 10
+(T23, `images.c`). Phases 7–8 also still wait on the review and the items below.
 1. Checkpoint 7 still needs: a one-by-one re-run of SPEC.md criteria 1–3 and 5–13 (the read-only-folder and failed-output-check
    cases weren't repeated), Choose Folder → Choose Files clicked through (only Files → Folder was), and a review with the user.
 2. Checkpoint 8 needs the user: web-video criterion 5 (no GPS tag on a real phone clip's output) and 6 (plays in Safari on iOS
@@ -76,6 +78,10 @@ cmake -S "Video Compressor" -B "Video Compressor/build/san" -DCMAKE_BUILD_TYPE=D
     and the speed guide. They never change what is encoded. The factors were measured (plan.md, "Preset factors"); the kbps values are guesses.
 - `src/web_video.c` (Phase 8): `vc_web_video_output()` (`web/<stem>.mp4`, lowercase) and `vc_web_video_steps()`, one libx264 step
   per SPEC-web-video.md. The zscale matrix fallback is `bt2020nc`: zscale rejects `bt2020` as a matrix name (it's a primaries name).
+- `src/frames.c` (Phase 9): `vc_parse_time()`, `vc_frames_jpeg_qscale()`, `vc_frames_estimate()`, `vc_frames_output()`
+  (`frames/<stem>`, part `frames/.<stem>.part`) and `vc_frames_steps()`. The step sets `part_is_dir` (the runner empties and
+  creates that folder before ffmpeg, which won't) and `duration` (the range length, so progress counts the range).
+  `vc_tonemap_chain()` in `web_video.c` is shared by both modes. `VcProbe.fps` (from `avg_frame_rate`) already existed.
 - `src/modes.c/.h` (Phase 7): `VcMode`, `VcStep`, per-mode filter/out dir/trash/tool check, and `vc_mode_steps()`, which
   builds an item's steps (only Compress video has a builder so far; it also does the existing-output skip).
   `vc_remove_part()` is the only delete in `src/`. Options stay in `compress.h`'s `VcOptions`.
@@ -116,6 +122,19 @@ cmake -S "Video Compressor" -B "Video Compressor/build/san" -DCMAKE_BUILD_TYPE=D
   - decoys: `notes.txt` and `fake.mp4` (a text file)
 
 ## Verified so far
+
+Phase 9, on Xvfb, `build/asan` (ASan + UBSan, `G_DEBUG=fatal-criticals`), run copies under `build/asan/p9/{f,g,h,i,j}`. Every
+session exited 0 with no sanitizer report:
+- Defaults (15 fps, WebP, q80, Max 1920) on 5 fixtures: `720p` → `frame_0001.webp` … `frame_0900.webp`, and every folder's count
+  equals the `≈` hint shown before Start (300/901/900/150/300). Rows end `900 frames · 8.7 MB`. A re-run: all `Already extracted`.
+- 12 fps, Start `10`, End `0:12`, Max 640, JPG: 24 frames each, `1080p` 640×360, portrait 640×1138. `hlg-10bit.mov` (10 s) showed
+  `Starts after the end` before Start and was the only one skipped. Hints update as FPS/Start/End change.
+- Start `abc`: the field turns red and Start greys.
+- Stop mid-extraction (164 frames written): ffmpeg gone, no `.part` folder, no final folder. Start again: extracted (1802 frames).
+- Close mid-extraction → Stop and Quit: exit 0, no ffmpeg, `frames/` empty.
+- Headless (throwaway driver): the same counts; the first trimmed frame matches the source at 10 s (same counter, best SSIM at
+  10.0 s); the tone-mapped HLG JPG looks neither washed out nor dark next to the source (testsrc only).
+- Compress video and Web video each still finished a 2-file run in the same build.
 
 Phase 8, on Xvfb, `build/asan` (ASan + UBSan), run copies under `build/asan/p8/f/`. Every session exited 0 with no sanitizer report:
 - Web video at Max 1280 on the fixture folder: 12 outputs, all `h264`/High/`avc1`/`yuv420p`, even sizes, `aac` LC, `moov` before
@@ -331,6 +350,9 @@ Gotchas:
   rotation irrelevant).
 - `on_exit` collides with libc's `on_exit()`. The callback is named `on_ffmpeg_exit` for that reason.
 
+- Frames: the summary's Before/After/`Smaller` block compares video bytes with frame bytes (true, but not a saving). The
+  Start button tooltip still says "Compress every waiting video". `N videos ready` also counts a row that will be skipped as
+  `Starts after the end`. HLG/PQ JPG frames come out `yuvj444p` (ffmpeg's pick after the float tone-map); valid JPEG, a bit bigger.
 - Web mode still uses compress wording in a few places: the close dialog ("Keep compressing in the background?"), the row menu
   ("Compress Now"), row tooltips, and the summary's `Smaller` caption under a `+N%` total.
 - `N files hidden` can't differ between the two video modes (same filter); it was not re-checked on a mode switch.

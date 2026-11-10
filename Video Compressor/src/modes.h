@@ -22,6 +22,8 @@ typedef struct {
     char *output;       /* final path; NULL = intermediate, deleted when the job ends */
     gboolean progress;  /* TRUE: argv has -progress pipe:1, so vc_parse_progress_line drives the bar */
     int soft_exit;      /* non-zero exit code meaning "no output, not an error" (pngquant 99); 0 = none */
+    gboolean part_is_dir; /* the runner creates `part` as an empty directory before the step */
+    double duration;    /* seconds the progress counts to; 0 = the probe's duration */
 } VcStep;
 
 gboolean vc_mode_accepts (VcMode mode, const char *name);     /* extension filter, case-insensitive */
@@ -39,6 +41,21 @@ char *vc_web_video_output (const char *input, char **part_path);
 /* One H.264 step; NULL + "web/<name>.mp4 exists" when it does. */
 GPtrArray *vc_web_video_steps (const char *input, const VcProbe *probe, const VcOptions *opt,
                                char **skip_reason);
+/* The zscale + tonemap filters that turn HDR into SDR BT.709, or NULL for an SDR probe. */
+char *vc_tonemap_chain (const VcProbe *probe);
+
+/* Video → frames (SPEC-video-frames.md). "1:05.25" → 65.25; FALSE for anything else.
+ * Empty string → TRUE, *seconds = 0. */
+gboolean vc_parse_time (const char *text, double *seconds);
+int vc_frames_jpeg_qscale (int quality);   /* 1..100 → mjpeg -q:v 31..2 */
+/* Frames the range gives at opt->fps (0: source_fps); 0 when the range starts past the end or
+ * the duration or rate is unknown. */
+guint vc_frames_estimate (double duration, double source_fps, const VcOptions *opt);
+/* frames/<stem> next to the input, and its part frames/.<stem>.part when part_path isn't NULL. */
+char *vc_frames_output (const char *input, char **part_path);
+/* One step writing a directory of frames; NULL + "frames/<stem>/ exists" or "starts after the end". */
+GPtrArray *vc_frames_steps (const char *input, const VcProbe *probe, const VcOptions *opt,
+                            char **skip_reason);
 
 /* Deletes a step's part: a file, or a directory of regular files (emptied, then removed). Refuses,
  * touching nothing, a path whose name doesn't end in ".part" (before any extension) and a

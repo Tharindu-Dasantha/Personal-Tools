@@ -40,6 +40,10 @@ typedef struct {
     int max_fps;          /* 0: keep the frame rate; else cap it */
     int max_width;        /* web: 0 = original; else scale wider video down to this display width */
     gboolean no_audio;    /* web */
+    double fps;           /* frames: 0 = every frame (source rate) */
+    double start, end;    /* frames: seconds; end 0 = to the end */
+    gboolean webp;        /* frames: WebP, else JPG */
+    int quality;          /* frames: 1..100 */
 } VcOptions;
 
 const VcClass *vc_class_for (int width, int height);

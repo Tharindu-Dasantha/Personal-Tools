@@ -28,7 +28,8 @@ typedef struct {
     gboolean probed;
     State state;
     char *out;           /* the kept output, or NULL */
-    guint64 out_size;
+    guint64 out_size;    /* frames: the folder's total */
+    guint n_frames;      /* frames: files in `out` */
     gboolean stop;       /* Stop pressed while encoding or checking */
     char *note;          /* pill text while ST_NEW after a run ("Failed", "Stopped"), or NULL */
     char *tip;           /* tooltip for the size column */
@@ -54,6 +55,8 @@ typedef struct {
     GtkWidget *speed_btns[8], *speed_caption, *guide_rows, *subs, *trash, *total, *total_sub;
     GtkWidget *fps30, *max_size, *choose_empty, *files_empty, *empty_sub;
     GtkWidget *mode_dd, *banner, *size_head, *compress_opts, *web_opts, *web_width, *no_audio;
+    GtkWidget *frames_opts, *frames_fps, *frames_start, *frames_end, *frames_width, *frames_format;
+    GtkWidget *frames_quality;
     GtkWidget *run_title, *run_eta, *run_bar, *run_sub;
     GtkWidget *selbar, *sel_label, *sel_start, *sel_pause, *sel_stop, *sel_trash;
     GtkWidget *toast, *toast_label;
@@ -141,8 +144,11 @@ current_preset (void)
 }
 
 /* The Mode dropdown, in order; only modes that exist are listed. */
-static const VcMode MODES[] = { VC_MODE_COMPRESS, VC_MODE_WEB_VIDEO };
-static const char *const MODE_NAMES[] = { "Compress video", "Web video (Safari)", NULL };
+static const VcMode MODES[] = { VC_MODE_COMPRESS, VC_MODE_WEB_VIDEO, VC_MODE_FRAMES };
+static const char *const MODE_NAMES[] = { "Compress video", "Web video (Safari)", "Video → frames", NULL };
+/* The frames FPS dropdown, in order; 0 is Every frame */
+static const int FRAME_RATES[] = { 5, 10, 12, 15, 24, 30, 0 };
+#define FRAMES_DEFAULT_RATE 3   /* 15 */
 /* The web Max width dropdown, in order; 0 is Original */
 static const int WEB_WIDTHS[] = { 0, 3840, 2560, 1920, 1280, 960, 640 };
 #define WEB_DEFAULT_WIDTH 3   /* 1920 */
@@ -151,6 +157,7 @@ G_STATIC_ASSERT (G_N_ELEMENTS (MODES) + 1 == G_N_ELEMENTS (MODE_NAMES));
 static const char *const EMPTY_SUB[] = {
     "Every video inside is compressed to H.265, keeping its quality and resolution.",
     "Every video inside becomes an MP4 that plays in every browser, Safari and iOS included.",
+    "Every video inside becomes a folder of numbered WebP or JPG frames, for scroll animations.",
 };
 G_STATIC_ASSERT (G_N_ELEMENTS (EMPTY_SUB) == G_N_ELEMENTS (MODES));
 
@@ -182,7 +189,12 @@ current_options (void)
 {
     static const int sizes[] = { 0, 1080, 720 };   /* the Max size dropdown, in order */
     guint size = gtk_drop_down_get_selected (GTK_DROP_DOWN (app.max_size));
-    guint width = gtk_drop_down_get_selected (GTK_DROP_DOWN (app.web_width));
+    GtkWidget *width_dd = app.mode == VC_MODE_FRAMES ? app.frames_width : app.web_width;
+    guint width = gtk_drop_down_get_selected (GTK_DROP_DOWN (width_dd));
+    guint rate = gtk_drop_down_get_selected (GTK_DROP_DOWN (app.frames_fps));
+    double start, end;   /* 0 when invalid; check_range() greys Start then */
+    vc_parse_time (gtk_editable_get_text (GTK_EDITABLE (app.frames_start)), &start);
+    vc_parse_time (gtk_editable_get_text (GTK_EDITABLE (app.frames_end)), &end);
     return (VcOptions) {
         .preset = current_preset (),
         .keep_subs = gtk_switch_get_active (GTK_SWITCH (app.subs)),
@@ -190,7 +202,31 @@ current_options (void)
         .max_fps = gtk_switch_get_active (GTK_SWITCH (app.fps30)) ? 30 : 0,
         .max_width = width < G_N_ELEMENTS (WEB_WIDTHS) ? WEB_WIDTHS[width] : 0,
         .no_audio = gtk_switch_get_active (GTK_SWITCH (app.no_audio)),
+        .fps = rate < G_N_ELEMENTS (FRAME_RATES) ? FRAME_RATES[rate] : 0,
+        .start = start,
+        .end = end,
+        .webp = gtk_drop_down_get_selected (GTK_DROP_DOWN (app.frames_format)) == 0,
+        .quality = gtk_spin_button_get_value_as_int (GTK_SPIN_BUTTON (app.frames_quality)),
     };
+}
+
+/* Frames: TRUE when Start and End parse and End (when set) is after Start. Turns a bad field red. */
+static gboolean
+check_range (void)
+{
+    double start, end;
+    gboolean s_ok = vc_parse_time (gtk_editable_get_text (GTK_EDITABLE (app.frames_start)), &start);
+    gboolean e_ok = vc_parse_time (gtk_editable_get_text (GTK_EDITABLE (app.frames_end)), &end)
+                    && (end == 0 || !s_ok || end > start);
+    GtkWidget *w[] = { app.frames_start, app.frames_end };
+    gboolean ok[] = { s_ok, e_ok };
+    for (guint i = 0; i < 2; i++) {
+        if (ok[i])
+            gtk_widget_remove_css_class (w[i], "error");
+        else
+            gtk_widget_add_css_class (w[i], "error");
+    }
+    return s_ok && e_ok;
 }
 
 static char *
@@ -385,7 +421,7 @@ render_row (Item *it)
     case ST_DONE:
     case ST_TRASHED:
         if (it->out == NULL) {
-            pill = g_strdup ("Already efficient");
+            pill = g_strdup (it->note != NULL ? it->note : "Already efficient");
             tip = tip != NULL ? tip : "A compressed copy would not be at least 5% smaller, "
                                       "so none was kept.";
         } else {
@@ -396,6 +432,13 @@ render_row (Item *it)
             pill = g_strdup_printf ("✓ %s", change);
             style = "done";
         }
+        if (it->out != NULL && app.mode == VC_MODE_FRAMES) {
+            g_autofree char *total = g_format_size (it->out_size);
+            g_free (size_text);
+            size_text = g_markup_printf_escaped ("%u frames · <b>%s</b>", it->n_frames, total);
+            g_free (pill);
+            pill = g_strdup ("✓ Done");
+        }
         break;
     case ST_NEW:
         if (it->probed && it->probe == NULL) {
@@ -405,6 +448,16 @@ render_row (Item *it)
             size_text = g_strdup (size);
             pill = g_strdup (it->note);
             style = strcmp (it->note, "Failed") == 0 ? "error" : "neutral";
+        } else if (app.mode == VC_MODE_FRAMES && it->probe != NULL) {
+            VcOptions o = current_options ();
+            guint n = vc_frames_estimate (it->probe->duration, it->probe->fps, &o);
+            size_text = g_strdup (size);
+            if (it->probe->duration > 0 && o.start >= it->probe->duration)
+                pill = g_strdup ("Starts after the end");
+            else if (n > 0)
+                pill = g_strdup_printf ("≈ %u frame%s", n, n == 1 ? "" : "s");
+            style = "estimate";
+            tip = tip != NULL ? tip : "≈ at the chosen FPS and range.";
         } else {
             VcOptions o = current_options ();
             gboolean measured;
@@ -609,7 +662,7 @@ update_progress (void)
             done++;
             finished += it->size;
         }
-        if (it->out != NULL && it->out_size < it->size)   /* a web copy can be bigger */
+        if (app.mode != VC_MODE_FRAMES && it->out != NULL && it->out_size < it->size)   /* a web copy can be bigger */
             saved += it->size - it->out_size;
     }
     Item *job = app.job;
@@ -625,7 +678,8 @@ update_progress (void)
         g_autofree char *name = basename_display (job->path);
         title = g_markup_printf_escaped ("<b>%s %u of %u</b> · %s",
                                          app.paused ? "Paused ·"
-                                         : app.mode == VC_MODE_COMPRESS ? "Compressing" : "Converting",
+                                         : app.mode == VC_MODE_COMPRESS ? "Compressing"
+                                         : app.mode == VC_MODE_FRAMES ? "Extracting" : "Converting",
                                          MIN (done + 1, total), total, name);
         double active = (g_get_monotonic_time () - app.job_t0 - app.paused_total) / 1e6;
         double rate = active > 0 ? job->fraction * job->size / active : 0;   /* source bytes/s */
@@ -664,9 +718,11 @@ update_summary (void)
             unreadable++;
         }
     }
-    gboolean web = app.mode == VC_MODE_WEB_VIDEO;
+    gboolean web = app.mode == VC_MODE_WEB_VIDEO, frames = app.mode == VC_MODE_FRAMES;
     g_autofree char *saved = g_format_size (before > after ? before - after : 0);
-    g_autofree char *title = web ? g_strdup_printf ("%u web video%s ready", compressed,
+    g_autofree char *title = frames ? g_strdup_printf ("Frames from %u video%s ready", compressed,
+                                                       compressed == 1 ? "" : "s")
+                             : web ? g_strdup_printf ("%u web video%s ready", compressed,
                                                     compressed == 1 ? "" : "s")
                              : compressed > 0 ? g_strdup_printf ("You saved %s", saved)
                              : g_strdup ("Nothing to compress");
@@ -674,7 +730,7 @@ update_summary (void)
 
     GString *s = g_string_new (NULL);
     g_string_printf (s, "%u video%s %s", compressed, compressed == 1 ? "" : "s",
-                     web ? "converted" : "compressed");
+                     web ? "converted" : frames ? "extracted" : "compressed");
     if (app.batch_t0 > 0 && app.batch_end > app.batch_t0) {
         guint min = (guint) ((app.batch_end - app.batch_t0) / G_USEC_PER_SEC / 60);
         if (min == 0)
@@ -685,7 +741,7 @@ update_summary (void)
             g_string_append_printf (s, " in %u h %u min", min / 60, min % 60);
     }
     if (efficient > 0)
-        g_string_append_printf (s, " · %u already efficient", efficient);
+        g_string_append_printf (s, " · %u %s", efficient, frames ? "skipped" : "already efficient");
     if (unreadable > 0)
         g_string_append_printf (s, " · %u unreadable", unreadable);
     gtk_label_set_text (GTK_LABEL (app.sum_sub), s->str);
@@ -798,7 +854,9 @@ update_controls (void)
                                               missing);
         gtk_label_set_text (GTK_LABEL (app.banner), b);
     }
-    gboolean can_run = app.tools_ok && missing == NULL && !probing;
+    gboolean range_ok = check_range ();
+    gboolean can_run = app.tools_ok && missing == NULL && !probing
+                       && (app.mode != VC_MODE_FRAMES || range_ok);
 
     gtk_widget_set_sensitive (app.start_btn, can_run && start
                                              && (!busy || app.paused));
@@ -820,6 +878,7 @@ update_controls (void)
     gtk_widget_set_sensitive (app.max_size, !busy);
     gtk_widget_set_sensitive (app.web_width, !busy);
     gtk_widget_set_sensitive (app.no_audio, !busy);
+    gtk_widget_set_sensitive (app.frames_opts, !busy);
 
     g_autofree char *src_text = g_format_size (src), *est_text = g_format_size (est);
     gboolean est_shown = app.mode == VC_MODE_COMPRESS;
@@ -1210,6 +1269,24 @@ copy_mtime (const char *from, const char *to)
         g_file_set_attributes_from_info (dst, info, G_FILE_QUERY_INFO_NONE, NULL, NULL);
 }
 
+/* Total bytes of the files in a frames folder, and how many there are. */
+static guint64
+dir_usage (const char *path, guint *count)
+{
+    guint64 total = 0;
+    *count = 0;
+    g_autoptr (GDir) dir = g_dir_open (path, 0, NULL);
+    for (const char *name; dir != NULL && (name = g_dir_read_name (dir)) != NULL;) {
+        g_autofree char *f = g_build_filename (path, name, NULL);
+        GStatBuf st;
+        if (g_stat (f, &st) == 0) {
+            total += st.st_size;
+            (*count)++;
+        }
+    }
+    return total;
+}
+
 /* Runs when the job's last step has ended (or one failed, or it was stopped): moves the outputs
  * into place, removes every other part, and sets the row. The caller starts the next item. */
 static void
@@ -1242,7 +1319,7 @@ finish_job (gboolean ok)
             copy_mtime (it->path, s->output);
             g_free (kept);
             kept = g_strdup (s->output);
-            kept_size = st.st_size;
+            kept_size = s->part_is_dir ? dir_usage (s->output, &it->n_frames) : (guint64) st.st_size;
         }
     }
     for (guint i = 0; i < steps->len; i++)   /* moved parts are already gone */
@@ -1311,8 +1388,8 @@ on_progress_line (GObject *source, GAsyncResult *res, gpointer user_data)
     if (!app.closing) {   /* after close, keep draining to EOF but leave the widgets alone */
         Item *it = app.job;
         VcStep *s = it->steps->pdata[it->step];
-        double fraction;
-        if (s->progress && vc_parse_progress_line (line, it->probe->duration, &fraction)) {
+        double fraction, dur = s->duration > 0 ? s->duration : it->probe->duration;
+        if (s->progress && vc_parse_progress_line (line, dur, &fraction)) {
             it->fraction = (it->step + fraction) / it->steps->len;
             gtk_progress_bar_set_fraction (GTK_PROGRESS_BAR (it->bar), it->fraction);
             if (!it->stop) {
@@ -1320,7 +1397,7 @@ on_progress_line (GObject *source, GAsyncResult *res, gpointer user_data)
                 gtk_label_set_text (GTK_LABEL (it->pct), pct);
             }
             update_progress ();
-        } else if (s->progress && it->probe->duration <= 0 && g_str_has_prefix (line, "progress=")) {
+        } else if (s->progress && dur <= 0 && g_str_has_prefix (line, "progress=")) {
             gtk_progress_bar_pulse (GTK_PROGRESS_BAR (it->bar));
         }
     }
@@ -1386,6 +1463,12 @@ spawn_step (void)
         G_SUBPROCESS_FLAGS_STDOUT_PIPE | G_SUBPROCESS_FLAGS_STDERR_PIPE);
     g_subprocess_launcher_set_child_setup (launcher, lower_priority, NULL, NULL);
     g_clear_pointer (&app.last_err, g_free);
+    /* ffmpeg writes frames into the folder but doesn't create it; a killed run may have left one */
+    if (s->part_is_dir && (!vc_remove_part (s->part) || g_mkdir (s->part, 0755) != 0)) {
+        g_autofree char *display = g_filename_display_name (s->part);
+        app.last_err = g_strdup_printf ("Cannot create %s", display);
+        return FALSE;
+    }
     app.proc = g_subprocess_launcher_spawnv (launcher, (const char *const *) s->argv, &error);
     if (app.proc == NULL) {
         app.last_err = g_strdup (error->message);
@@ -1546,6 +1629,19 @@ encode_next (void)
         it->prio = 0;
         g_autofree char *reason = NULL;
         GPtrArray *steps = vc_mode_steps (app.mode, it->path, it->probe, &o, &reason);
+        if (steps == NULL && app.mode == VC_MODE_FRAMES) {
+            it->state = ST_DONE;
+            g_clear_pointer (&it->out, g_free);
+            if (g_strcmp0 (reason, "starts after the end") == 0) {
+                set_status (it, "Starts after the end", "Start is past this video's end, so it was skipped.");
+                continue;
+            }
+            it->out = vc_frames_output (it->path, NULL);
+            it->out_size = dir_usage (it->out, &it->n_frames);
+            it->extra = "Already extracted";
+            set_status (it, NULL, reason);
+            continue;
+        }
         if (steps == NULL) {
             it->state = ST_DONE;
             g_free (it->out);
@@ -1913,7 +2009,8 @@ remove_stale_parts (const char *folder)
     g_autoptr (GDir) cdir = g_dir_open (cdir_path, 0, NULL);
     for (const char *name; cdir != NULL && (name = g_dir_read_name (cdir)) != NULL;) {
         if (name[0] == '.' && (g_str_has_suffix (name, ".part.mp4")
-                               || g_str_has_suffix (name, ".part.mkv"))) {
+                               || g_str_has_suffix (name, ".part.mkv")
+                               || g_str_has_suffix (name, ".part"))) {   /* a frames folder */
             g_autofree char *stale = g_build_filename (cdir_path, name, NULL);
             vc_remove_part (stale);
         }
@@ -2111,6 +2208,7 @@ on_mode (void)
     app.mode = MODES[i];
     gtk_widget_set_visible (app.compress_opts, app.mode == VC_MODE_COMPRESS);
     gtk_widget_set_visible (app.web_opts, app.mode == VC_MODE_WEB_VIDEO);
+    gtk_widget_set_visible (app.frames_opts, app.mode == VC_MODE_FRAMES);
     gtk_label_set_text (GTK_LABEL (app.empty_sub), EMPTY_SUB[i]);
     gtk_label_set_text (GTK_LABEL (app.size_head),
                         app.mode == VC_MODE_COMPRESS ? "SIZE → ESTIMATED" : "SIZE");
@@ -2414,6 +2512,22 @@ icon_button (const char *icon, const char *name, const char *style, GCallback cl
     gtk_accessible_update_property (GTK_ACCESSIBLE (b), GTK_ACCESSIBLE_PROPERTY_LABEL, name, -1);
     g_signal_connect (b, "clicked", clicked, NULL);
     return b;
+}
+
+/* The Max width dropdown that web video and frames each have, at 1920. */
+static GtkWidget *
+width_dropdown (void)
+{
+    const char *widths[] = { "Original width", "Max 3840 px", "Max 2560 px", "Max 1920 px",
+                             "Max 1280 px", "Max 960 px", "Max 640 px", NULL };
+    G_STATIC_ASSERT (G_N_ELEMENTS (widths) == G_N_ELEMENTS (WEB_WIDTHS) + 1);
+    GtkWidget *dd = gtk_drop_down_new_from_strings (widths);
+    gtk_drop_down_set_selected (GTK_DROP_DOWN (dd), WEB_DEFAULT_WIDTH);
+    gtk_accessible_update_property (GTK_ACCESSIBLE (dd), GTK_ACCESSIBLE_PROPERTY_LABEL, "Max width", -1);
+    gtk_widget_set_tooltip_text (dd, "Scale wider videos down to this width, keeping the aspect ratio. "
+                                     "Narrower videos are never enlarged.");
+    gtk_widget_set_valign (dd, GTK_ALIGN_CENTER);
+    return dd;
 }
 
 static GtkWidget *
@@ -2755,17 +2869,7 @@ build_bottom_bar (void)
     gtk_box_append (GTK_BOX (app.compress_opts), switches);
 
     /* Web video: Max width and Remove audio */
-    const char *widths[] = { "Original width", "Max 3840 px", "Max 2560 px", "Max 1920 px",
-                             "Max 1280 px", "Max 960 px", "Max 640 px", NULL };
-    G_STATIC_ASSERT (G_N_ELEMENTS (widths) == G_N_ELEMENTS (WEB_WIDTHS) + 1);
-    app.web_width = gtk_drop_down_new_from_strings (widths);
-    gtk_drop_down_set_selected (GTK_DROP_DOWN (app.web_width), WEB_DEFAULT_WIDTH);
-    gtk_accessible_update_property (GTK_ACCESSIBLE (app.web_width), GTK_ACCESSIBLE_PROPERTY_LABEL,
-                                    "Max width", -1);
-    gtk_widget_set_tooltip_text (app.web_width, "Scale wider videos down to this width, keeping "
-                                                "the aspect ratio. Narrower videos are never "
-                                                "enlarged.");
-    gtk_widget_set_valign (app.web_width, GTK_ALIGN_CENTER);
+    app.web_width = width_dropdown ();
     app.no_audio = gtk_switch_new ();
     gtk_widget_set_valign (app.no_audio, GTK_ALIGN_CENTER);
     GtkWidget *na_label = gtk_label_new_with_mnemonic ("Remove _audio");
@@ -2781,9 +2885,68 @@ build_bottom_bar (void)
     gtk_box_append (GTK_BOX (app.web_opts), na_row);
     gtk_widget_set_visible (app.web_opts, FALSE);
 
+    /* Video → frames: FPS, Start, End, Max width, Format, Quality */
+    const char *rates[] = { "5 fps", "10 fps", "12 fps", "15 fps", "24 fps", "30 fps", "Every frame", NULL };
+    G_STATIC_ASSERT (G_N_ELEMENTS (rates) == G_N_ELEMENTS (FRAME_RATES) + 1);
+    app.frames_fps = gtk_drop_down_new_from_strings (rates);
+    gtk_drop_down_set_selected (GTK_DROP_DOWN (app.frames_fps), FRAMES_DEFAULT_RATE);
+    gtk_accessible_update_property (GTK_ACCESSIBLE (app.frames_fps), GTK_ACCESSIBLE_PROPERTY_LABEL,
+                                    "Frames per second", -1);
+    gtk_widget_set_tooltip_text (app.frames_fps, "Frames saved per second of video. Every frame keeps "
+                                                 "the video's own rate.");
+    gtk_widget_set_valign (app.frames_fps, GTK_ALIGN_CENTER);
+    g_signal_connect (app.frames_fps, "notify::selected", G_CALLBACK (on_estimate_input), NULL);
+    GtkWidget **times[] = { &app.frames_start, &app.frames_end };
+    const char *time_label[] = { "Sta_rt", "_End" };
+    const char *time_hint[] = { "0:00", "end" };
+    const char *time_tip[] = { "Where to start: empty for the beginning, or 12, 12.5, 1:05, 0:01:05.",
+                               "Where to stop: empty for the end. The same range applies to every video." };
+    GtkWidget *range = hbox (8);
+    for (guint i = 0; i < 2; i++) {
+        *times[i] = gtk_entry_new ();
+        gtk_editable_set_width_chars (GTK_EDITABLE (*times[i]), 7);
+        gtk_entry_set_placeholder_text (GTK_ENTRY (*times[i]), time_hint[i]);
+        gtk_widget_set_valign (*times[i], GTK_ALIGN_CENTER);
+        gtk_widget_set_tooltip_text (*times[i], time_tip[i]);
+        g_signal_connect (*times[i], "changed", G_CALLBACK (on_estimate_input), NULL);
+        GtkWidget *l = gtk_label_new_with_mnemonic (time_label[i]);
+        gtk_label_set_mnemonic_widget (GTK_LABEL (l), *times[i]);
+        gtk_accessible_update_relation (GTK_ACCESSIBLE (*times[i]), GTK_ACCESSIBLE_RELATION_LABELLED_BY,
+                                        l, NULL, -1);
+        gtk_box_append (GTK_BOX (range), l);
+        gtk_box_append (GTK_BOX (range), *times[i]);
+    }
+    app.frames_width = width_dropdown ();
+    const char *formats[] = { "WebP", "JPG", NULL };
+    app.frames_format = gtk_drop_down_new_from_strings (formats);
+    gtk_accessible_update_property (GTK_ACCESSIBLE (app.frames_format), GTK_ACCESSIBLE_PROPERTY_LABEL,
+                                    "Format", -1);
+    gtk_widget_set_tooltip_text (app.frames_format, "WebP is smaller and works in every current browser, "
+                                                    "Safari 14 and later included.");
+    gtk_widget_set_valign (app.frames_format, GTK_ALIGN_CENTER);
+    app.frames_quality = gtk_spin_button_new_with_range (1, 100, 1);
+    gtk_spin_button_set_value (GTK_SPIN_BUTTON (app.frames_quality), 80);
+    gtk_widget_set_valign (app.frames_quality, GTK_ALIGN_CENTER);
+    GtkWidget *q_label = gtk_label_new_with_mnemonic ("_Quality");
+    gtk_label_set_mnemonic_widget (GTK_LABEL (q_label), app.frames_quality);
+    gtk_accessible_update_relation (GTK_ACCESSIBLE (app.frames_quality), GTK_ACCESSIBLE_RELATION_LABELLED_BY,
+                                    q_label, NULL, -1);
+    GtkWidget *q_row = hbox (8);
+    gtk_widget_set_tooltip_text (q_row, "1–100. Higher keeps more detail in bigger files.");
+    gtk_box_append (GTK_BOX (q_row), q_label);
+    gtk_box_append (GTK_BOX (q_row), app.frames_quality);
+    app.frames_opts = hbox (20);
+    gtk_box_append (GTK_BOX (app.frames_opts), app.frames_fps);
+    gtk_box_append (GTK_BOX (app.frames_opts), range);
+    gtk_box_append (GTK_BOX (app.frames_opts), app.frames_width);
+    gtk_box_append (GTK_BOX (app.frames_opts), app.frames_format);
+    gtk_box_append (GTK_BOX (app.frames_opts), q_row);
+    gtk_widget_set_visible (app.frames_opts, FALSE);
+
     GtkWidget *ready = hbox (28);
     gtk_box_append (GTK_BOX (ready), app.compress_opts);
     gtk_box_append (GTK_BOX (ready), app.web_opts);
+    gtk_box_append (GTK_BOX (ready), app.frames_opts);
     gtk_box_append (GTK_BOX (ready), totals);
 
     /* running: overall progress */
