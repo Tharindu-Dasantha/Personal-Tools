@@ -38,6 +38,8 @@ typedef struct {
     gboolean keep_subs;
     int max_short_side;   /* 0: keep the size; else downscale so the short side is at most this */
     int max_fps;          /* 0: keep the frame rate; else cap it */
+    int max_width;        /* web: 0 = original; else scale wider video down to this display width */
+    gboolean no_audio;    /* web */
 } VcOptions;
 
 const VcClass *vc_class_for (int width, int height);

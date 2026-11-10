@@ -78,7 +78,9 @@ vc_mode_steps (VcMode mode, const char *input, const VcProbe *probe, const VcOpt
     *skip_reason = NULL;
     if (mode == VC_MODE_COMPRESS)
         return compress_steps (input, probe, opt, skip_reason);
-    return NULL;   /* web_video.c, frames.c and images.c add theirs */
+    if (mode == VC_MODE_WEB_VIDEO)
+        return vc_web_video_steps (input, probe, opt, skip_reason);
+    return NULL;   /* frames.c and images.c add theirs */
 }
 
 void

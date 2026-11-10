@@ -38,6 +38,10 @@ ff $(src 1280x720 10) \
    -vf setparams=color_primaries=bt2020:color_trc=smpte2084:colorspace=bt2020nc,format=yuv422p10le \
    -c:v prores_ks -profile:v 2 -c:a aac hdr10-pq.mov
 
+# Odd size: web mode must still write even dimensions. 4:4:4, since x264 4:2:0 needs even ones.
+echo "odd-853x479.mp4"
+ff $(src 853x479 10) -c:v libx264 -preset veryfast -pix_fmt yuv444p -c:a aac odd-853x479.mp4
+
 # Already HEVC at a low bitrate: re-encoding cannot save 5%.
 echo "lowbitrate.mp4"
 ff $(src 426x240 10) -c:v libx265 -crf 40 -preset fast -x265-params log-level=error \

@@ -130,7 +130,7 @@ test_compress_steps (void)
     g_assert_nonnull (mkv);
 
     /* Modes without a builder yet. */
-    for (gsize m = 1; m < G_N_ELEMENTS (MODES); m++) {
+    for (gsize m = 2; m < G_N_ELEMENTS (MODES); m++) {
         g_assert_null (vc_mode_steps (MODES[m], input, p, &o, &reason));
         g_assert_null (reason);
     }

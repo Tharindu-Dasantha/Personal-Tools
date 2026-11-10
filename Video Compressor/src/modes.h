@@ -34,6 +34,11 @@ const char *vc_mode_missing_tool (VcMode mode, guint have);   /* NULL when ready
 GPtrArray *vc_mode_steps (VcMode mode, const char *input, const VcProbe *probe,
                           const VcOptions *opt, char **skip_reason);
 void vc_step_free (VcStep *step);
+/* Web video (SPEC-web-video.md): web/<name>.mp4 next to the input, and its part when part_path isn't NULL. */
+char *vc_web_video_output (const char *input, char **part_path);
+/* One H.264 step; NULL + "web/<name>.mp4 exists" when it does. */
+GPtrArray *vc_web_video_steps (const char *input, const VcProbe *probe, const VcOptions *opt,
+                               char **skip_reason);
 
 /* Deletes a step's part: a file, or a directory of regular files (emptied, then removed). Refuses,
  * touching nothing, a path whose name doesn't end in ".part" (before any extension) and a

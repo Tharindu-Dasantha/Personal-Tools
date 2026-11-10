@@ -1,6 +1,6 @@
 # Handoff: Video Compressor
 
-Last updated 2026-11-10 (Phase 7). Read [SPEC.md](SPEC.md) (source of truth), then [tasks/plan.md](tasks/plan.md)
+Last updated 2026-11-10 (Phase 8). Read [SPEC.md](SPEC.md) (source of truth), then [tasks/plan.md](tasks/plan.md)
 and [tasks/todo.md](tasks/todo.md). Checkboxes in `todo.md` are ticked only for things actually verified.
 
 ## Where things stand
@@ -16,6 +16,7 @@ and [tasks/todo.md](tasks/todo.md). Checkboxes in `todo.md` are ticked only for 
 | 6b. v2 UI (Figma) | – | **Built 2026-11-08**, screenshotted on Xvfb. The Phase 7 ASan run (2026-11-10) went through it. Committed |
 | Performance | R1–R12 | GPU encoder, size samples, x265 tuning, nice/idle I/O, mtime copy. See [tasks/plan-performance.md](tasks/plan-performance.md) and [tasks/todo-performance.md](tasks/todo-performance.md). Committed |
 | 7. App shell | T16–T18 | **Done, verified on Xvfb with ASan (2026-11-10)**: `modes.c`, multi-step runner, Choose Files, title `Media Tools`. Committed `7541405`. Checkpoint 7 still open (see below) |
+| 8. Web video | T19, T20 | **Done, verified on Xvfb with ASan (2026-11-10)**: `web_video.c`, Mode dropdown, per-mode options, split tool check, banner. **Not committed yet**; Checkpoint 8 needs the user (web-video 5, 6, review) |
 
 Everything up to `7541405` is pushed to `origin/main`.
 
@@ -23,11 +24,11 @@ Everything up to `7541405` is pushed to `origin/main`.
 `app-shell` → `web-video` → `video-frames` → `image-compress`, each with a `SPEC-<id>.md` and tasks T16–T27 in `todo.md`.
 `app-shell` (Phase 7) is built. `image-compress` needs `sudo dnf install pngquant` (approved).
 
-**Next step:** close Checkpoint 7, then start Phase 8 (T19, `web_video.c`).
+**Next step:** review Phase 8 with the user and commit it, then Phase 9 (T21, `frames.c`).
 1. Checkpoint 7 still needs: a one-by-one re-run of SPEC.md criteria 1–3 and 5–13 (the read-only-folder and failed-output-check
    cases weren't repeated), Choose Folder → Choose Files clicked through (only Files → Folder was), and a review with the user.
-2. T20 owns what Phase 7 left out on purpose: the Mode dropdown, the options bar, the split startup tool check (the app still
-   refuses to start without libx265) and the missing-tool banner.
+2. Checkpoint 8 needs the user: web-video criterion 5 (no GPS tag on a real phone clip's output) and 6 (plays in Safari on iOS
+   before it has fully downloaded).
 
 Still only the user can do:
 1. Supply a real 200 MB+ phone clip and judge it at `slow` and `faster` (Criterion 4). Fill the empty row in `plan.md`, and use it
@@ -68,6 +69,8 @@ cmake -S "Video Compressor" -B "Video Compressor/build/san" -DCMAKE_BUILD_TYPE=D
   - `VC_CLASSES[]` (the CRF/audio table) is **ask-first** to change.
   - `EST_VIDEO_KBPS[]` (parallel to `VC_CLASSES`, static-asserted) and `PRESET_FACTORS[]` only feed the size estimate
     and the speed guide. They never change what is encoded. The factors were measured (plan.md, "Preset factors"); the kbps values are guesses.
+- `src/web_video.c` (Phase 8): `vc_web_video_output()` (`web/<stem>.mp4`, lowercase) and `vc_web_video_steps()`, one libx264 step
+  per SPEC-web-video.md. The zscale matrix fallback is `bt2020nc`: zscale rejects `bt2020` as a matrix name (it's a primaries name).
 - `src/modes.c/.h` (Phase 7): `VcMode`, `VcStep`, per-mode filter/out dir/trash/tool check, and `vc_mode_steps()`, which
   builds an item's steps (only Compress video has a builder so far; it also does the existing-output skip).
   `vc_remove_part()` is the only delete in `src/`. Options stay in `compress.h`'s `VcOptions`.
@@ -108,6 +111,20 @@ cmake -S "Video Compressor" -B "Video Compressor/build/san" -DCMAKE_BUILD_TYPE=D
   - decoys: `notes.txt` and `fake.mp4` (a text file)
 
 ## Verified so far
+
+Phase 8, on Xvfb, `build/asan` (ASan + UBSan), run copies under `build/asan/p8/f/`. Every session exited 0 with no sanitizer report:
+- Web video at Max 1280 on the fixture folder: 12 outputs, all `h264`/High/`avc1`/`yuv420p`, even sizes, `aac` LC, `moov` before
+  `mdat`, no subtitle stream, no format tags. 1080p → 1280×720, 720p stays, portrait stays 1080×1920, `odd-853x479` → 852×478.
+  HLG and PQ outputs are `bt709`; a frame next to the source looks neither washed out nor dark (testsrc only).
+  `lowbitrate.mp4` (+178%) and `odd-853x479` (+26%) are kept with a `+N%` pill.
+- Original width + Remove audio: 1080p stays 1920×1080, outputs have no audio stream. Existing outputs show `Already converted`.
+- Stop mid-file: ffmpeg gone in 175 ms, no `.part`; Start again finished the rest. Close mid-encode → Stop and Quit: exit 0, no
+  ffmpeg, no `.part`. While running, the Mode dropdown is greyed and both Choose buttons are hidden (app-shell criterion 4).
+- Mode switch with a folder loaded relists it and resets rows, both ways. This found and fixed a heap-use-after-free in
+  `load_source()` (a reload passed `app.folder`, which it freed and then read).
+- An `ffmpeg` wrapper that drops `libx264` from `-encoders`: Web video shows the banner with Start greyed; Compress video in the
+  same session has no banner and compresses.
+- Headless (throwaway driver linked against `vc_core`): the same results on every fixture.
 
 Phase 7, on Xvfb, `build/asan` (ASan + UBSan), run copies under `build/asan/p7/`. Every session exited 0 with no sanitizer report:
 - Choose Files with `two/a/clip-720.mp4` and `two/b/clip-240.avi`: only those two listed, header `Chosen files · 2 files`, outputs
@@ -243,6 +260,10 @@ Gotchas:
   `build/`. Use **Recent** instead: write a `recently-used.xbel` listing the files into a scratch dir, launch with
   `XDG_DATA_HOME=<that dir>` (inside `dbus-run-session`, next to `GDK_DEBUG`), open Choose Files, click Recent (64,22), click the
   first row, `ctrlclick` the second, Open (826,302). Don't run Trash tests in that session: Trash moves with `XDG_DATA_HOME`.
+- Phase 8: the window opened 1260×720 (not maximised) and the bottom bar is the same height in both modes. Mode dropdown (80,26),
+  its items Compress video (80,82) and Web video (80,117); web Max width (85,677), whose items run from Original (86,424) down in
+  35 px steps (1280 is (82,564)); Remove audio (199,677); Start (1109,677), Stop (1215,677); close (1235,27). The banner pushes the
+  empty page down 39 px (Choose Folder at (558,460)).
 - Phase 7 coordinates (1280×800 screen, maximised window): empty page Choose Folder (558,436), Choose Files (706,436); header
   close (1235,27); bottom bar Faster (122,664), Slower (403,664), Keep subtitles (494,642), Move to Trash (494,680), Start
   (1109,664), Pause (1164,664), Stop (1215,664); start confirm "Compress and Move to Trash" (400,175); close dialog "Stop and
@@ -286,7 +307,7 @@ Gotchas:
 - The size estimate overshoots badly on `testsrc` fixtures (240p: ≈ 3.1 MB vs 770 kB actual), because synthetic video is unusually
   easy to compress. It is meant for real footage and is uncalibrated until a phone clip is measured.
 - Since Phase 7 the tooltip on an `Already compressed` row is `compressed/<name> exists`, not the full output path.
-- `finish_job()` applies the compress keep rule (at least 5% smaller) to every output. Images (T23) need their own rules there
+- `finish_job()` applies the compress keep rule (at least 5% smaller) only in Compress video. Images (T23) need their own rules there
   (marked `shortcut:` in the code).
 - Drag and drop still takes folders only; Choose Files is the only way to list single files. The finished bar still offers
   only "Choose Another Folder…".
@@ -297,6 +318,11 @@ Gotchas:
 - Bitrate and rotation are not read from ffprobe (nothing uses them, and the short-side class makes
   rotation irrelevant).
 - `on_exit` collides with libc's `on_exit()`. The callback is named `on_ffmpeg_exit` for that reason.
+
+- Web mode still uses compress wording in a few places: the close dialog ("Keep compressing in the background?"), the row menu
+  ("Compress Now"), row tooltips, and the summary's `Smaller` caption under a `+N%` total.
+- `N files hidden` can't differ between the two video modes (same filter); it was not re-checked on a mode switch.
+- The missing-tool banner says "needs ffmpeg with <tool>", which fits libx264/zscale/libwebp but not magick/pngquant (T24).
 
 ## Working with this user
 

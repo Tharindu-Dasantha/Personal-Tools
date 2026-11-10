@@ -365,7 +365,7 @@ stay the same.
 
 ## Phase 8: Web video ([SPEC-web-video.md](../SPEC-web-video.md))
 
-### - [ ] T19: `web_video.c` core and fixtures
+### - [x] T19: `web_video.c` core and fixtures
 **Description:** `vc_web_video_steps()` returns one ffmpeg step writing `web/.<name>.part.mp4` → `web/<name>.mp4`
 (lowercase extension), or NULL + `web/<name>.mp4 exists`. It builds the argv from the spec's "Encode settings": even-width
 scale capped at Max width, the zscale + `tonemap=hable` chain when `vc_probe_is_hdr()` (`bt2020` fallback for missing
@@ -374,20 +374,20 @@ progress. `vc_mode_steps()` dispatches to it. `make-fixtures.sh` adds `odd-853x4
 (using `setparams`, as for HLG).
 
 **Acceptance criteria:**
-- [ ] Every test in the spec's unit list passes
-- [ ] The fixture script creates both new files, and ffprobe shows 853×479 and `smpte2084`
+- [x] Every test in the spec's unit list passes
+- [x] The fixture script creates both new files, and ffprobe shows 853×479 and `smpte2084`
 
 **Verification:**
-- [ ] Unit (`tests/test_web_video.c`): 8-bit 1080p at 1920 / 1280 / Original (each element), Remove audio on/off, HLG
+- [x] Unit (`tests/test_web_video.c`): 8-bit 1080p at 1920 / 1280 / Original (each element), Remove audio on/off, HLG
       and PQ tone-map with the right `tin`, no tone-map for 10-bit SDR and 8-bit, `bt2020` fallback, path naming,
       existing-output skip, special-character filename
-- [ ] Headless: run the argv on the HLG and PQ fixtures through a throwaway driver, and check `yuv420p`/`bt709`
+- [x] Headless: run the argv on the HLG and PQ fixtures through a throwaway driver, and check `yuv420p`/`bt709`
 
 **Dependencies:** T16
 **Files:** `src/web_video.c`, `src/modes.c/.h`, `tests/test_web_video.c`, `tests/make-fixtures.sh`, `CMakeLists.txt`
 **Scope:** M
 
-### - [ ] T20: Mode dropdown, options bar, tool check, web mode UI
+### - [x] T20: Mode dropdown, options bar, tool check, web mode UI
 **Description:**
 - A **Mode** dropdown in the header lists only the modes that exist: `Compress video` (default) and `Web video (Safari)`.
 - The options bar under the header shows only the current mode's controls. Compress video: Speed + ⓘ, Keep subtitles,
@@ -402,24 +402,24 @@ progress. `vc_mode_steps()` dispatches to it. `make-fixtures.sh` adds `odd-853x4
   rule, and a finished row shows `4.1 MB · −63%` or `+12%`.
 
 **Acceptance criteria:**
-- [ ] Web-video criteria 1–4 and 7 pass on the fixtures
-- [ ] The mode is locked during a job (app-shell criterion 4)
-- [ ] Without `libx264` (a fake `ffmpeg` wrapper that filters `-encoders`), Web video shows the banner and Compress video
+- [x] Web-video criteria 1–4 and 7 pass on the fixtures
+- [x] The mode is locked during a job (app-shell criterion 4)
+- [x] Without `libx264` (a fake `ffmpeg` wrapper that filters `-encoders`), Web video shows the banner and Compress video
       still works
 
 **Verification:**
-- [ ] Manual (Xvfb): run Web video on the fixture folder, then ffprobe each output (h264, High, yuv420p, avc1, even
+- [x] Manual (Xvfb): run Web video on the fixture folder, then ffprobe each output (h264, High, yuv420p, avc1, even
       dimensions, aac or none) and do the `moov`-before-`mdat` check
-- [ ] Manual: Max width 1280 on 1080p / 720p / portrait; `odd-853x479.mp4` at Original → 852×478
-- [ ] Manual: HLG and PQ outputs are `bt709`, plus a screenshot next to the source
-- [ ] Manual: stop mid-file, re-run skip, close mid-encode (no `.part`, exit 0)
+- [x] Manual: Max width 1280 on 1080p / 720p / portrait; `odd-853x479.mp4` at Original → 852×478
+- [x] Manual: HLG and PQ outputs are `bt709`, plus a screenshot next to the source
+- [x] Manual: stop mid-file, re-run skip, close mid-encode (no `.part`, exit 0)
 
 **Dependencies:** T18, T19
 **Files:** `src/main.c`
 **Scope:** M
 
 ### Checkpoint 8
-- [ ] Web-video criteria 1–4 and 7 and app-shell criterion 4 pass, ctest green
+- [x] Web-video criteria 1–4 and 7 and app-shell criterion 4 pass, ctest green
 - [ ] You check web-video 5 (no GPS tag on a real phone clip's output) and 6 (plays in Safari on iOS before fully downloaded)
 - [ ] Review with you, then commit
 

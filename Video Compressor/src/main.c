@@ -52,7 +52,8 @@ typedef struct {
     GtkWidget *summary, *sum_title, *sum_sub, *sum_before, *sum_after, *sum_pct;
     GtkWidget *bottom, *bottom_stack, *controls, *start_btn, *pause_btn, *stop_btn;
     GtkWidget *speed_btns[8], *speed_caption, *guide_rows, *subs, *trash, *total, *total_sub;
-    GtkWidget *fps30, *max_size, *choose_empty, *files_empty;
+    GtkWidget *fps30, *max_size, *choose_empty, *files_empty, *empty_sub;
+    GtkWidget *mode_dd, *banner, *size_head, *compress_opts, *web_opts, *web_width, *no_audio;
     GtkWidget *run_title, *run_eta, *run_bar, *run_sub;
     GtkWidget *selbar, *sel_label, *sel_start, *sel_pause, *sel_stop, *sel_trash;
     GtkWidget *toast, *toast_label;
@@ -91,6 +92,7 @@ typedef struct {
     char *last_err;
     guint pulse_id;      /* pulses the bar during a step without progress output */
     VcMode mode;
+    guint have;          /* VC_HAVE_* bits from the startup tool check */
 } App;
 
 static App app;
@@ -138,17 +140,56 @@ current_preset (void)
     return VC_PRESETS[app.preset];
 }
 
+/* The Mode dropdown, in order; only modes that exist are listed. */
+static const VcMode MODES[] = { VC_MODE_COMPRESS, VC_MODE_WEB_VIDEO };
+static const char *const MODE_NAMES[] = { "Compress video", "Web video (Safari)", NULL };
+/* The web Max width dropdown, in order; 0 is Original */
+static const int WEB_WIDTHS[] = { 0, 3840, 2560, 1920, 1280, 960, 640 };
+#define WEB_DEFAULT_WIDTH 3   /* 1920 */
+G_STATIC_ASSERT (G_N_ELEMENTS (MODES) + 1 == G_N_ELEMENTS (MODE_NAMES));
+/* The empty page's line, per Mode dropdown entry */
+static const char *const EMPTY_SUB[] = {
+    "Every video inside is compressed to H.265, keeping its quality and resolution.",
+    "Every video inside becomes an MP4 that plays in every browser, Safari and iOS included.",
+};
+G_STATIC_ASSERT (G_N_ELEMENTS (EMPTY_SUB) == G_N_ELEMENTS (MODES));
+
+
+/* Only Compress video moves originals to Trash among the modes listed. */
+static gboolean
+trash_on (void)
+{
+    return vc_mode_can_trash (app.mode) && gtk_switch_get_active (GTK_SWITCH (app.trash));
+}
+
+static int
+percent_smaller (guint64 before, guint64 after)
+{
+    return (int) (100 - after * 100.0 / before + 0.5);
+}
+
+/* "−63%" or, for a web copy that came out bigger, "+12%" */
+static char *
+change_text (guint64 before, guint64 after)
+{
+    return after <= before ? g_strdup_printf ("−%d%%", percent_smaller (before, after))
+                           : g_strdup_printf ("+%d%%", (int) (after * 100.0 / before - 100 + 0.5));
+}
+
 /* The encode settings chosen in the bottom bar. */
 static VcOptions
 current_options (void)
 {
     static const int sizes[] = { 0, 1080, 720 };   /* the Max size dropdown, in order */
     guint size = gtk_drop_down_get_selected (GTK_DROP_DOWN (app.max_size));
+    guint width = gtk_drop_down_get_selected (GTK_DROP_DOWN (app.web_width));
     return (VcOptions) {
         .preset = current_preset (),
         .keep_subs = gtk_switch_get_active (GTK_SWITCH (app.subs)),
         .max_short_side = size < G_N_ELEMENTS (sizes) ? sizes[size] : 0,
         .max_fps = gtk_switch_get_active (GTK_SWITCH (app.fps30)) ? 30 : 0,
+        .max_width = width < G_N_ELEMENTS (WEB_WIDTHS) ? WEB_WIDTHS[width] : 0,
+        .no_audio = gtk_switch_get_active (GTK_SWITCH (app.no_audio)),
     };
 }
 
@@ -160,12 +201,6 @@ preset_title (guint i)
     char *s = g_strdup (VC_PRESETS[i]);
     s[0] = g_ascii_toupper (s[0]);
     return s;
-}
-
-static int
-percent_smaller (guint64 before, guint64 after)
-{
-    return (int) (100 - after * 100.0 / before + 0.5);
 }
 
 static char *
@@ -231,7 +266,7 @@ static gboolean
 skip_in_bulk (Item *it)
 {
     VcOptions o = current_options ();
-    return it->state == ST_NEW && it->probe != NULL
+    return app.mode == VC_MODE_COMPRESS && it->state == ST_NEW && it->probe != NULL
            && !vc_worth_encoding (it->size, item_estimate (it, &o, NULL));
 }
 
@@ -251,7 +286,7 @@ can_stop (Item *it)
 static gboolean
 can_trash (Item *it)
 {
-    return it->state == ST_DONE && it->out != NULL;
+    return it->state == ST_DONE && it->out != NULL && vc_mode_can_trash (app.mode);
 }
 
 static gboolean
@@ -357,7 +392,8 @@ render_row (Item *it)
             g_autofree char *out = g_format_size (it->out_size);
             size_text = g_markup_printf_escaped ("<span alpha=\"60%%\">%s →</span> <b>%s</b>",
                                                  size, out);
-            pill = g_strdup_printf ("✓ −%d%%", percent_smaller (it->size, it->out_size));
+            g_autofree char *change = change_text (it->size, it->out_size);
+            pill = g_strdup_printf ("✓ %s", change);
             style = "done";
         }
         break;
@@ -372,7 +408,7 @@ render_row (Item *it)
         } else {
             VcOptions o = current_options ();
             gboolean measured;
-            guint64 est = item_estimate (it, &o, &measured);
+            guint64 est = app.mode == VC_MODE_COMPRESS ? item_estimate (it, &o, &measured) : 0;
             if (est == 0) {
                 size_text = g_strdup (size);
                 break;
@@ -573,7 +609,7 @@ update_progress (void)
             done++;
             finished += it->size;
         }
-        if (it->out != NULL)
+        if (it->out != NULL && it->out_size < it->size)   /* a web copy can be bigger */
             saved += it->size - it->out_size;
     }
     Item *job = app.job;
@@ -588,7 +624,8 @@ update_progress (void)
     if (job != NULL) {
         g_autofree char *name = basename_display (job->path);
         title = g_markup_printf_escaped ("<b>%s %u of %u</b> · %s",
-                                         app.paused ? "Paused ·" : "Compressing",
+                                         app.paused ? "Paused ·"
+                                         : app.mode == VC_MODE_COMPRESS ? "Compressing" : "Converting",
                                          MIN (done + 1, total), total, name);
         double active = (g_get_monotonic_time () - app.job_t0 - app.paused_total) / 1e6;
         double rate = active > 0 ? job->fraction * job->size / active : 0;   /* source bytes/s */
@@ -604,8 +641,7 @@ update_progress (void)
     gtk_label_set_text (GTK_LABEL (app.run_eta), eta);
 
     g_autofree char *saved_text = g_format_size (saved);
-    const char *originals = gtk_switch_get_active (GTK_SWITCH (app.trash))
-                                ? "riginals go to Trash after a check" : "riginals are untouched";
+    const char *originals = trash_on () ? "riginals go to Trash after a check" : "riginals are untouched";
     g_autofree char *sub = saved == 0 ? g_strdup_printf ("O%s", originals)
                            : g_strdup_printf ("Saved %s so far · o%s", saved_text, originals);
     gtk_label_set_text (GTK_LABEL (app.run_sub), sub);
@@ -628,13 +664,17 @@ update_summary (void)
             unreadable++;
         }
     }
-    g_autofree char *saved = g_format_size (before - after);
-    g_autofree char *title = compressed > 0 ? g_strdup_printf ("You saved %s", saved)
-                                            : g_strdup ("Nothing to compress");
+    gboolean web = app.mode == VC_MODE_WEB_VIDEO;
+    g_autofree char *saved = g_format_size (before > after ? before - after : 0);
+    g_autofree char *title = web ? g_strdup_printf ("%u web video%s ready", compressed,
+                                                    compressed == 1 ? "" : "s")
+                             : compressed > 0 ? g_strdup_printf ("You saved %s", saved)
+                             : g_strdup ("Nothing to compress");
     gtk_label_set_text (GTK_LABEL (app.sum_title), title);
 
     GString *s = g_string_new (NULL);
-    g_string_printf (s, "%u video%s compressed", compressed, compressed == 1 ? "" : "s");
+    g_string_printf (s, "%u video%s %s", compressed, compressed == 1 ? "" : "s",
+                     web ? "converted" : "compressed");
     if (app.batch_t0 > 0 && app.batch_end > app.batch_t0) {
         guint min = (guint) ((app.batch_end - app.batch_t0) / G_USEC_PER_SEC / 60);
         if (min == 0)
@@ -652,8 +692,7 @@ update_summary (void)
     g_string_free (s, TRUE);
 
     g_autofree char *b = g_format_size (before), *a = g_format_size (after);
-    g_autofree char *pct = before > 0 ? g_strdup_printf ("−%d%%", percent_smaller (before, after))
-                                      : g_strdup ("–");
+    g_autofree char *pct = before > 0 ? change_text (before, after) : g_strdup ("–");
     gtk_label_set_text (GTK_LABEL (app.sum_before), b);
     gtk_label_set_text (GTK_LABEL (app.sum_after), a);
     gtk_label_set_text (GTK_LABEL (app.sum_pct), pct);
@@ -747,8 +786,21 @@ update_controls (void)
     gtk_widget_set_sensitive (app.files_btn, app.tools_ok && !busy);
     gtk_widget_set_sensitive (app.choose_empty, app.tools_ok);
     gtk_widget_set_sensitive (app.files_empty, app.tools_ok);
+    gtk_widget_set_sensitive (app.mode_dd, !busy);
 
-    gtk_widget_set_sensitive (app.start_btn, app.tools_ok && !probing && start
+    /* Shown once the tool check is done; this mode can't start without the tool. */
+    const char *missing = app.tools_ok ? vc_mode_missing_tool (app.mode, app.have) : NULL;
+    gtk_widget_set_visible (app.banner, missing != NULL);
+    if (missing != NULL) {
+        g_autofree char *b = g_strdup_printf ("%s needs ffmpeg with %s, which this ffmpeg doesn't "
+                                              "have. Install the full ffmpeg build from RPM Fusion.",
+                                              MODE_NAMES[gtk_drop_down_get_selected (GTK_DROP_DOWN (app.mode_dd))],
+                                              missing);
+        gtk_label_set_text (GTK_LABEL (app.banner), b);
+    }
+    gboolean can_run = app.tools_ok && missing == NULL && !probing;
+
+    gtk_widget_set_sensitive (app.start_btn, can_run && start
                                              && (!busy || app.paused));
     gtk_widget_set_sensitive (app.pause_btn, app.job != NULL && !app.paused);
     gtk_widget_set_sensitive (app.stop_btn, stop);
@@ -766,9 +818,12 @@ update_controls (void)
     gtk_widget_set_sensitive (app.trash, !busy);
     gtk_widget_set_sensitive (app.fps30, !busy);
     gtk_widget_set_sensitive (app.max_size, !busy);
+    gtk_widget_set_sensitive (app.web_width, !busy);
+    gtk_widget_set_sensitive (app.no_audio, !busy);
 
     g_autofree char *src_text = g_format_size (src), *est_text = g_format_size (est);
-    g_autofree char *total = ready == 0 ? g_strdup ("")
+    gboolean est_shown = app.mode == VC_MODE_COMPRESS;
+    g_autofree char *total = ready == 0 || !est_shown ? g_strdup ("")
                              : g_strdup_printf ("%s → ≈ %s", src_text, est_text);
     g_autofree char *preset = preset_title (app.preset);
     g_autofree char *total_sub = probing ? g_strdup ("Reading videos…")
@@ -777,6 +832,8 @@ update_controls (void)
                                                         "select to compress anyway", skipped,
                                                         skipped == 1 ? "" : "s")
                                  : ready == 0 ? g_strdup ("Nothing waiting to compress")
+                                 : !est_shown ? g_strdup_printf ("%u video%s ready", ready,
+                                                                 ready == 1 ? "" : "s")
                                  : g_strdup_printf ("%u video%s ready · estimated for %s", ready,
                                                     ready == 1 ? "" : "s", preset);
     gtk_label_set_text (GTK_LABEL (app.total), total);
@@ -785,7 +842,7 @@ update_controls (void)
     gtk_widget_set_visible (app.selbar, nsel > 0);
     g_autofree char *sel = g_strdup_printf ("%u selected", nsel);
     gtk_label_set_text (GTK_LABEL (app.sel_label), sel);
-    gtk_widget_set_sensitive (app.sel_start, app.tools_ok && !probing && s_start);
+    gtk_widget_set_sensitive (app.sel_start, can_run && s_start);
     gtk_widget_set_sensitive (app.sel_pause, s_pause);
     gtk_widget_set_sensitive (app.sel_stop, s_stop);
     gtk_widget_set_sensitive (app.sel_trash, s_trash);
@@ -974,7 +1031,7 @@ act_start (Item *one, gboolean sel)
 {
     guint n = 0;
     gboolean keep_subs = gtk_switch_get_active (GTK_SWITCH (app.subs));
-    for (guint i = 0; i < app.items->len; i++) {
+    for (guint i = 0; trash_on () && i < app.items->len; i++) {
         Item *it = app.items->pdata[i];
         if (!in_scope (it, one, sel) || !can_start (it) || it == app.job
             || (one == NULL && !sel && skip_in_bulk (it)))
@@ -982,7 +1039,7 @@ act_start (Item *one, gboolean sel)
         g_autofree char *out = vc_output_path (it->path, keep_subs, NULL);
         n += !g_file_test (out, G_FILE_TEST_EXISTS);
     }
-    if (!gtk_switch_get_active (GTK_SWITCH (app.trash)) || n == 0) {
+    if (n == 0) {
         do_start (one, sel);
         return;
     }
@@ -1172,10 +1229,11 @@ finish_job (gboolean ok)
     for (guint i = 0; ok && !it->stop && error == NULL && i < steps->len; i++) {
         VcStep *s = steps->pdata[i];
         GStatBuf st;
-        /* An output that isn't at least 5% smaller is dropped with the other parts below.
-         * shortcut: the compress rule for every output; images (T23) bring their own rules. */
+        /* A compressed output that isn't at least 5% smaller is dropped with the other parts below;
+         * web video keeps every output (its point is compatibility, SPEC-web-video.md D2).
+         * shortcut: images (T23) bring their own rules. */
         if (s->output == NULL || g_stat (s->part, &st) != 0
-            || !vc_output_is_worth_keeping (it->size, st.st_size))
+            || (app.mode == VC_MODE_COMPRESS && !vc_output_is_worth_keeping (it->size, st.st_size)))
             continue;
         g_autoptr (GFile) src = g_file_new_for_path (s->part);
         g_autoptr (GFile) dst = g_file_new_for_path (s->output);
@@ -1205,7 +1263,7 @@ finish_job (gboolean ok)
         it->out = g_steal_pointer (&kept);
         it->out_size = kept_size;
         set_status (it, NULL, it->out);
-        if (gtk_switch_get_active (GTK_SWITCH (app.trash)) && vc_mode_can_trash (app.mode))
+        if (trash_on ())
             check_then_trash (it);   /* runs alongside the next encode */
     }
 }
@@ -1427,7 +1485,8 @@ sample_done (GObject *source, GAsyncResult *res, gpointer user_data)
 static void
 sample_next (void)
 {
-    if (!app.gpu_ok || app.closing || app.items == NULL || app.sample_proc != NULL
+    if (!app.gpu_ok || app.closing || app.mode != VC_MODE_COMPRESS || app.items == NULL
+        || app.sample_proc != NULL
         || app.probes_done < app.items->len || app.job != NULL || is_busy ())
         return;
     VcOptions o = current_options ();
@@ -1491,10 +1550,11 @@ encode_next (void)
             it->state = ST_DONE;
             g_free (it->out);
             /* an earlier finished output, so its original can be trashed */
-            it->out = vc_output_path (it->path, o.keep_subs, NULL);
+            it->out = app.mode == VC_MODE_WEB_VIDEO ? vc_web_video_output (it->path, NULL)
+                                                    : vc_output_path (it->path, o.keep_subs, NULL);
             GStatBuf st;
             it->out_size = g_stat (it->out, &st) == 0 ? st.st_size : 0;
-            it->extra = "Already compressed";
+            it->extra = app.mode == VC_MODE_WEB_VIDEO ? "Already converted" : "Already compressed";
             set_status (it, NULL, reason);
             continue;
         }
@@ -1893,6 +1953,7 @@ load_source (const char *folder, char *const *files)
     g_strfreev (app.files);
     app.folder = new_folder;
     app.files = new_files;
+    folder = app.folder;   /* the argument may be the old app.folder, freed just above */
 
     if (app.files != NULL) {
         guint hidden = 0;
@@ -2039,6 +2100,26 @@ on_speed (GtkToggleButton *b, gpointer user_data)
     on_estimate_input ();
 }
 
+/* Locked while busy (update_controls). Rows start fresh: the list is rebuilt from the same
+ * source with the new mode's filter (SPEC-app-shell.md D3). */
+static void
+on_mode (void)
+{
+    guint i = gtk_drop_down_get_selected (GTK_DROP_DOWN (app.mode_dd));
+    if (i >= G_N_ELEMENTS (MODES) || app.mode == MODES[i])
+        return;
+    app.mode = MODES[i];
+    gtk_widget_set_visible (app.compress_opts, app.mode == VC_MODE_COMPRESS);
+    gtk_widget_set_visible (app.web_opts, app.mode == VC_MODE_WEB_VIDEO);
+    gtk_label_set_text (GTK_LABEL (app.empty_sub), EMPTY_SUB[i]);
+    gtk_label_set_text (GTK_LABEL (app.size_head),
+                        app.mode == VC_MODE_COMPRESS ? "SIZE → ESTIMATED" : "SIZE");
+    if (app.items != NULL)
+        load_source (app.folder, app.files);
+    else
+        update_controls ();
+}
+
 /* ---- keyboard ---- */
 
 static gboolean
@@ -2152,37 +2233,73 @@ gpu_test_done (GObject *source, GAsyncResult *res, gpointer user_data)
 }
 
 static void
-encoders_listed (GObject *source, GAsyncResult *res, gpointer user_data)
+filters_listed (GObject *source, GAsyncResult *res, gpointer user_data)
 {
     (void) user_data;
     g_autoptr (GSubprocess) proc = G_SUBPROCESS (source);
     g_autofree char *out = NULL;
     if (!g_subprocess_communicate_utf8_finish (proc, res, &out, NULL, NULL)
-        || !g_subprocess_get_successful (proc) || strstr (out, " libx265 ") == NULL) {
-        tools_failed ("This ffmpeg has no libx265 (H.265) encoder.\n"
-                      "Install the full ffmpeg build from RPM Fusion.");
+        || !g_subprocess_get_successful (proc)) {
+        tools_failed ("ffmpeg -filters failed. Reinstall ffmpeg.");
         return;
     }
     if (app.closing)
         return;
+    if (strstr (out, " zscale ") != NULL)
+        app.have |= VC_HAVE_ZSCALE;
     app.tools_ok = TRUE;
     update_controls ();
+}
+
+/* Each mode's own tool is checked here (SPEC-app-shell.md D6): a missing one shows the banner in
+ * that mode only. */
+static void
+encoders_listed (GObject *source, GAsyncResult *res, gpointer user_data)
+{
+    const char *ffmpeg = user_data;
+    g_autoptr (GSubprocess) proc = G_SUBPROCESS (source);
+    g_autofree char *out = NULL;
+    if (!g_subprocess_communicate_utf8_finish (proc, res, &out, NULL, NULL)
+        || !g_subprocess_get_successful (proc)) {
+        tools_failed ("ffmpeg -encoders failed. Reinstall ffmpeg.");
+        return;
+    }
+    if (app.closing)
+        return;
+    static const struct { const char *name; guint bit; } encoders[] = {
+        { " libx265 ", VC_HAVE_X265 }, { " libx264 ", VC_HAVE_X264 }, { " libwebp ", VC_HAVE_LIBWEBP },
+    };
+    for (gsize i = 0; i < G_N_ELEMENTS (encoders); i++)
+        if (strstr (out, encoders[i].name) != NULL)
+            app.have |= encoders[i].bit;
+    const char *argv[] = { ffmpeg, "-hide_banner", "-filters", NULL };
+    g_autoptr (GError) error = NULL;
+    GSubprocess *filters = g_subprocess_newv (argv, G_SUBPROCESS_FLAGS_STDOUT_PIPE
+                                                    | G_SUBPROCESS_FLAGS_STDERR_SILENCE, &error);
+    if (filters == NULL) {
+        tools_failed (error->message);
+        return;
+    }
+    g_subprocess_communicate_utf8_async (filters, NULL, NULL, filters_listed, NULL);
+
     /* The list shows hardware encoders even when they can't run, so try one frame. */
     if (strstr (out, " hevc_vaapi ") == NULL)
         return;
-    g_auto (GStrv) argv = vc_build_gpu_test_argv ();
-    GSubprocess *test = g_subprocess_newv ((const char *const *) argv,
+    g_auto (GStrv) test_argv = vc_build_gpu_test_argv ();
+    GSubprocess *test = g_subprocess_newv ((const char *const *) test_argv,
                                            G_SUBPROCESS_FLAGS_STDOUT_SILENCE
                                            | G_SUBPROCESS_FLAGS_STDERR_SILENCE, NULL);
     if (test != NULL)
         g_subprocess_wait_check_async (test, NULL, gpu_test_done, NULL);
 }
 
-/* Asynchronous so the window paints at once; Choose Folder stays off until it passes. */
+/* Asynchronous so the window paints at once; Choose Folder stays off until it passes. Only ffmpeg
+ * and ffprobe are needed to start: every mode reads files with ffprobe. */
 static void
 check_tools (void)
 {
-    g_autofree char *ffmpeg = g_find_program_in_path ("ffmpeg");
+    static char *ffmpeg;   /* kept for encoders_listed */
+    ffmpeg = g_find_program_in_path ("ffmpeg");
     g_autofree char *ffprobe = g_find_program_in_path ("ffprobe");
     if (ffmpeg == NULL || ffprobe == NULL) {
         tools_failed ("ffmpeg and ffprobe must be installed and on PATH.\n"
@@ -2196,7 +2313,7 @@ check_tools (void)
     if (proc == NULL)
         tools_failed (error->message);
     else
-        g_subprocess_communicate_utf8_async (proc, NULL, NULL, encoders_listed, NULL);
+        g_subprocess_communicate_utf8_async (proc, NULL, NULL, encoders_listed, ffmpeg);
 }
 
 static const char CSS[] =
@@ -2272,7 +2389,8 @@ static const char CSS[] =
     ".guide { padding: 8px; }"
     ".guide-row { padding: 8px 10px; border-radius: 8px; }"
     ".guide-row.current { background: alpha(@theme_selected_bg_color, 0.14); }"
-    ".guide-row.current > label:first-child { color: @accent_color; font-weight: 600; }";
+    ".guide-row.current > label:first-child { color: @accent_color; font-weight: 600; }"
+    ".banner { background: alpha(#f5a623, 0.2); padding: 10px 20px; font-weight: 600; }";
 
 static GtkWidget *
 label_button (const char *icon, const char *mnemonic, GCallback clicked)
@@ -2352,8 +2470,7 @@ build_empty_page (void)
     gtk_widget_set_vexpand (inner, TRUE);
     gtk_box_append (GTK_BOX (inner), icon);
     gtk_box_append (GTK_BOX (inner), styled_label ("Drop a folder of videos here", "hero", 0.5));
-    GtkWidget *sub = styled_label ("Every video inside is compressed to H.265, keeping its "
-                                   "quality and resolution.", "dim-label", 0.5);
+    GtkWidget *sub = app.empty_sub = styled_label (EMPTY_SUB[0], "dim-label", 0.5);
     gtk_label_set_wrap (GTK_LABEL (sub), TRUE);
     gtk_box_append (GTK_BOX (inner), sub);
     gtk_widget_set_margin_bottom (sub, 8);
@@ -2425,7 +2542,7 @@ build_list_page (void)
     GtkWidget *quality = styled_label ("QUALITY", "colhead", 0);
     gtk_widget_set_size_request (quality, 150, -1);
     gtk_size_group_add_widget (app.col_quality, quality);
-    GtkWidget *size = styled_label ("SIZE → ESTIMATED", "colhead", 1);
+    GtkWidget *size = app.size_head = styled_label ("SIZE → ESTIMATED", "colhead", 1);
     gtk_widget_set_size_request (size, 290, -1);
     gtk_size_group_add_widget (app.col_status, size);
     GtkWidget *actions_space = hbox (0);
@@ -2633,9 +2750,40 @@ build_bottom_bar (void)
     gtk_box_append (GTK_BOX (totals), app.total);
     gtk_box_append (GTK_BOX (totals), app.total_sub);
 
+    app.compress_opts = hbox (28);
+    gtk_box_append (GTK_BOX (app.compress_opts), speed);
+    gtk_box_append (GTK_BOX (app.compress_opts), switches);
+
+    /* Web video: Max width and Remove audio */
+    const char *widths[] = { "Original width", "Max 3840 px", "Max 2560 px", "Max 1920 px",
+                             "Max 1280 px", "Max 960 px", "Max 640 px", NULL };
+    G_STATIC_ASSERT (G_N_ELEMENTS (widths) == G_N_ELEMENTS (WEB_WIDTHS) + 1);
+    app.web_width = gtk_drop_down_new_from_strings (widths);
+    gtk_drop_down_set_selected (GTK_DROP_DOWN (app.web_width), WEB_DEFAULT_WIDTH);
+    gtk_accessible_update_property (GTK_ACCESSIBLE (app.web_width), GTK_ACCESSIBLE_PROPERTY_LABEL,
+                                    "Max width", -1);
+    gtk_widget_set_tooltip_text (app.web_width, "Scale wider videos down to this width, keeping "
+                                                "the aspect ratio. Narrower videos are never "
+                                                "enlarged.");
+    gtk_widget_set_valign (app.web_width, GTK_ALIGN_CENTER);
+    app.no_audio = gtk_switch_new ();
+    gtk_widget_set_valign (app.no_audio, GTK_ALIGN_CENTER);
+    GtkWidget *na_label = gtk_label_new_with_mnemonic ("Remove _audio");
+    gtk_label_set_mnemonic_widget (GTK_LABEL (na_label), app.no_audio);
+    gtk_accessible_update_relation (GTK_ACCESSIBLE (app.no_audio), GTK_ACCESSIBLE_RELATION_LABELLED_BY,
+                                    na_label, NULL, -1);
+    GtkWidget *na_row = hbox (10);
+    gtk_widget_set_tooltip_text (na_row, "No audio track, for muted autoplay backgrounds.");
+    gtk_box_append (GTK_BOX (na_row), app.no_audio);
+    gtk_box_append (GTK_BOX (na_row), na_label);
+    app.web_opts = hbox (28);
+    gtk_box_append (GTK_BOX (app.web_opts), app.web_width);
+    gtk_box_append (GTK_BOX (app.web_opts), na_row);
+    gtk_widget_set_visible (app.web_opts, FALSE);
+
     GtkWidget *ready = hbox (28);
-    gtk_box_append (GTK_BOX (ready), speed);
-    gtk_box_append (GTK_BOX (ready), switches);
+    gtk_box_append (GTK_BOX (ready), app.compress_opts);
+    gtk_box_append (GTK_BOX (ready), app.web_opts);
     gtk_box_append (GTK_BOX (ready), totals);
 
     /* running: overall progress */
@@ -2747,6 +2895,12 @@ activate (GtkApplication *gapp, gpointer user_data)
     app.files_btn = label_button ("document-open-symbolic", "Choose _Files…",
                                   G_CALLBACK (on_choose_files));
     gtk_header_bar_pack_end (GTK_HEADER_BAR (header), app.files_btn);
+    app.mode_dd = gtk_drop_down_new_from_strings (MODE_NAMES);
+    gtk_accessible_update_property (GTK_ACCESSIBLE (app.mode_dd), GTK_ACCESSIBLE_PROPERTY_LABEL,
+                                    "Mode", -1);
+    gtk_widget_set_tooltip_text (app.mode_dd, "What to make from your videos");
+    g_signal_connect (app.mode_dd, "notify::selected", G_CALLBACK (on_mode), NULL);
+    gtk_header_bar_pack_start (GTK_HEADER_BAR (header), app.mode_dd);
     gtk_window_set_titlebar (app.win, header);
 
     app.pages = gtk_stack_new ();
@@ -2754,6 +2908,10 @@ activate (GtkApplication *gapp, gpointer user_data)
     gtk_stack_add_named (GTK_STACK (app.pages), build_empty_page (), "empty");
     gtk_stack_add_named (GTK_STACK (app.pages), build_list_page (), "list");
     GtkWidget *content_box = vbox (0);
+    app.banner = styled_label ("", "banner", 0);
+    gtk_label_set_wrap (GTK_LABEL (app.banner), TRUE);
+    gtk_widget_set_visible (app.banner, FALSE);
+    gtk_box_append (GTK_BOX (content_box), app.banner);
     gtk_box_append (GTK_BOX (content_box), app.pages);
     gtk_box_append (GTK_BOX (content_box), build_bottom_bar ());
     gtk_window_set_child (app.win, content_box);
