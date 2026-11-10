@@ -1,6 +1,6 @@
 # Handoff: Video Compressor
 
-Last updated 2026-11-08 (Phase 6). Read [SPEC.md](SPEC.md) (source of truth), then [tasks/plan.md](tasks/plan.md)
+Last updated 2026-11-10 (Phase 7). Read [SPEC.md](SPEC.md) (source of truth), then [tasks/plan.md](tasks/plan.md)
 and [tasks/todo.md](tasks/todo.md). Checkboxes in `todo.md` are ticked only for things actually verified.
 
 ## Where things stand
@@ -11,20 +11,25 @@ and [tasks/todo.md](tasks/todo.md). Checkboxes in `todo.md` are ticked only for 
 | 2. See your videos | T2, T3 | **Done, all checks verified** (GUI on Xvfb, 2026-11-08) |
 | 3. Compress (MVP) | T4–T8 | **Done, all checks verified** (GUI on Xvfb, 2026-11-08) |
 | 4. Delete originals | T9, T10 | **Done, all checks verified** (GUI on Xvfb, 2026-11-08). Committed `e0a1656` |
-| 5. Harden | T11 | **Done except Criterion 4 and 12's iPhone half (the user's eyes).** ASan/UBSan clean. Close-mid-encode crash fixed. Uncommitted |
-| 6. Controls + estimates | T12–T15 | **Done, verified on Xvfb with ASan.** Icon buttons, pause, per-item/multi-select actions, size estimate, speed guide. Uncommitted; awaiting review |
-| 7. App shell | T16–T18 | **Built 2026-11-10, verified on Xvfb with ASan** (`modes.c`, step runner, Choose Files, title `Media Tools`). Uncommitted; awaiting review |
-| 6b. v2 UI (Figma) | – | **Built 2026-11-08, screenshotted on Xvfb** (empty, ready, guide, selection, running, paused, finished, dark). Not yet re-run under ASan. Uncommitted; awaiting review |
+| 5. Harden | T11 | **Done except Criterion 4 and 12's iPhone half (the user's eyes).** ASan/UBSan clean. Close-mid-encode crash fixed. Committed |
+| 6. Controls + estimates | T12–T15 | **Done, verified on Xvfb with ASan.** Icon buttons, pause, per-item/multi-select actions, size estimate, speed guide. Committed; review with the user still open |
+| 6b. v2 UI (Figma) | – | **Built 2026-11-08**, screenshotted on Xvfb. The Phase 7 ASan run (2026-11-10) went through it. Committed |
+| Performance | R1–R12 | GPU encoder, size samples, x265 tuning, nice/idle I/O, mtime copy. See [tasks/plan-performance.md](tasks/plan-performance.md) and [tasks/todo-performance.md](tasks/todo-performance.md). Committed |
+| 7. App shell | T16–T18 | **Done, verified on Xvfb with ASan (2026-11-10)**: `modes.c`, multi-step runner, Choose Files, title `Media Tools`. Committed `7541405`. Checkpoint 7 still open (see below) |
 
-Pushed to `origin/main` (Phase 2 checks: `026de4e`).
+Everything up to `7541405` is pushed to `origin/main`.
 
-**New work (specced 2026-11-08):** the app grows into **Media Tools**, with four modules mapped in
-[CAPABILITIES.md](CAPABILITIES.md): `app-shell` → `web-video` → `video-frames` → `image-compress`, each with a `SPEC-<id>.md`.
-State: the specs are written and **awaiting the user's approval**. After that, write the plan and tasks (extend
-`tasks/plan.md`/`todo.md` with Phase 7+). Commit Phases 5–6 before `app-shell` starts refactoring `main.c`.
-`image-compress` needs `sudo dnf install pngquant` (approved).
+**Media Tools (Phases 7–10):** the app grows into four modules mapped in [CAPABILITIES.md](CAPABILITIES.md):
+`app-shell` → `web-video` → `video-frames` → `image-compress`, each with a `SPEC-<id>.md` and tasks T16–T27 in `todo.md`.
+`app-shell` (Phase 7) is built. `image-compress` needs `sudo dnf install pngquant` (approved).
 
-**Next step:** review Phase 6 with the user, then commit (ask for the date). Still only the user can do:
+**Next step:** close Checkpoint 7, then start Phase 8 (T19, `web_video.c`).
+1. Checkpoint 7 still needs: a one-by-one re-run of SPEC.md criteria 1–3 and 5–13 (the read-only-folder and failed-output-check
+   cases weren't repeated), Choose Folder → Choose Files clicked through (only Files → Folder was), and a review with the user.
+2. T20 owns what Phase 7 left out on purpose: the Mode dropdown, the options bar, the split startup tool check (the app still
+   refuses to start without libx265) and the missing-tool banner.
+
+Still only the user can do:
 1. Supply a real 200 MB+ phone clip and judge it at `slow` and `faster` (Criterion 4). Fill the empty row in `plan.md`, and use it
    to recalibrate `EST_VIDEO_KBPS` (the size estimate) in `compress.c`.
 2. Judge a real iPhone HDR clip for washed-out colour (Criterion 12).
@@ -102,7 +107,20 @@ cmake -S "Video Compressor" -B "Video Compressor/build/san" -DCMAKE_BUILD_TYPE=D
   - `subs-srt.mkv`, `subs-movtext.mp4`
   - decoys: `notes.txt` and `fake.mp4` (a text file)
 
-## Verified so far (2026-11-08)
+## Verified so far
+
+Phase 7, on Xvfb, `build/asan` (ASan + UBSan), run copies under `build/asan/p7/`. Every session exited 0 with no sanitizer report:
+- Choose Files with `two/a/clip-720.mp4` and `two/b/clip-240.avi`: only those two listed, header `Chosen files · 2 files`, outputs
+  in `two/a/compressed/` and `two/b/compressed/`. Both header buttons hidden while running. Choose Folder afterwards replaced the list.
+- Full fixture run at `faster` with subtitles and auto-trash: pause gave ffmpeg state `T`, resume `S` (same PID); batch Stop
+  mid-file killed ffmpeg within 1 s with no `.part`; a restart finished the rest. ffmpeg ran at nice 10 and outputs got the
+  source mtime. 10 originals trashed, all 13 files restored byte-identical (`sha256sum -c`). Subtitle outputs are `subrip`.
+- A second Start with every output present: all rows `Already compressed` (through `vc_mode_steps()`). `lowbitrate.mp4` was
+  encoded, rejected and its part removed.
+- Close mid-encode at `slower` → Stop and Quit: exit 0, no ffmpeg, empty `compressed/`.
+- Not exercised in the GUI: a job with more than one step (no mode has one until images), and the pulsing bar.
+
+Earlier phases (2026-11-08):
 
 Phase 6, on Xvfb, `build/asan` (ASan + UBSan), run copies under `build/asan/run*`: all T14/T15 checks in `todo.md`, plus
 the full run at `faster` with subtitles and auto-trash (9 trashed and restored byte-identical, subtitle outputs `subrip`). Every
@@ -221,6 +239,18 @@ Gotchas:
 - The chooser's location entry auto-completes to the common prefix of the folder's files (`w3` became
   `w3/subs-`), and selecting a folder name that doesn't exist **creates it**. Make sure the folder
   has files without a shared prefix.
+- Choose Files across folders: GTK's own chooser can't browse two folders at once, and its fallback search finds nothing in
+  `build/`. Use **Recent** instead: write a `recently-used.xbel` listing the files into a scratch dir, launch with
+  `XDG_DATA_HOME=<that dir>` (inside `dbus-run-session`, next to `GDK_DEBUG`), open Choose Files, click Recent (64,22), click the
+  first row, `ctrlclick` the second, Open (826,302). Don't run Trash tests in that session: Trash moves with `XDG_DATA_HOME`.
+- Phase 7 coordinates (1280×800 screen, maximised window): empty page Choose Folder (558,436), Choose Files (706,436); header
+  close (1235,27); bottom bar Faster (122,664), Slower (403,664), Keep subtitles (494,642), Move to Trash (494,680), Start
+  (1109,664), Pause (1164,664), Stop (1215,664); start confirm "Compress and Move to Trash" (400,175); close dialog "Stop and
+  Quit" (269,103); finished bar "Choose Another Folder…" (1001,685). Rows start at y=130, every 57 px; the row stop button is at x=1173.
+- `faster` finishes each fixture in a few seconds, faster than one shell round trip. To catch a file mid-encode, read
+  `pgrep -x ffmpeg` and click in the same command, or use `slower` on `720p.mp4`.
+- If a click closes the window while a dialog is still open, the app keeps running. Check `ps` before the next launch, or two
+  windows overlap at (0,0).
 - Header coordinates (800 px window, Phase 6): Start (519,26), Pause (554,26), Stop (589,26), Trash button (631,26),
   close (774,26). Speed dropdown (257,75), whose first item is `faster` at (258,125); ⓘ (309,75); Keep subtitles (337,75);
   Move to Trash checkbox (503,75). The start confirm dialog has Cancel at (163,130) and "Compress and Move to Trash" at (491,130);
@@ -241,7 +271,7 @@ Gotchas:
 ## Open issues and limits
 
 - An empty folder (or one with no videos) shows a blank list, not the "No videos" placeholder.
-  `gtk_list_box_remove_all()` in `load_folder` appears to drop the placeholder. Minor; not fixed.
+  `gtk_list_box_remove_all()` in `load_source` appears to drop the placeholder. Minor; not fixed.
 - `subs-srt.mkv` has `default=0` on its subtitle track, and the output copies that, so players don't
   show it until it's picked. That matches the source. Forcing `-disposition:s:0 default` is an option
   to raise at review.
@@ -255,6 +285,11 @@ Gotchas:
 
 - The size estimate overshoots badly on `testsrc` fixtures (240p: ≈ 3.1 MB vs 770 kB actual), because synthetic video is unusually
   easy to compress. It is meant for real footage and is uncalibrated until a phone clip is measured.
+- Since Phase 7 the tooltip on an `Already compressed` row is `compressed/<name> exists`, not the full output path.
+- `finish_job()` applies the compress keep rule (at least 5% smaller) to every output. Images (T23) need their own rules there
+  (marked `shortcut:` in the code).
+- Drag and drop still takes folders only; Choose Files is the only way to list single files. The finished bar still offers
+  only "Choose Another Folder…".
 - The "N left" counter doesn't include held (paused-while-queued) items.
 - Name collision: `clip.mov` and `clip.mp4` both map to `compressed/clip.mp4`. The second is
   skipped with "compressed/clip.mp4 exists" (honest, but it isn't encoded).
@@ -265,7 +300,7 @@ Gotchas:
 
 ## Working with this user
 
-- Commits so far are **backdated on purpose**, with author and committer dates both at noon +0530:
+- Commits from 2026-11-08 on carry their real dates. Earlier commits were **backdated on purpose**, with author and committer dates both at noon +0530:
   `47a9757` is 2026-03-17 and `d32fd96` is 2026-03-27. Ask the user which date to use for the next
   commit. Don't assume today's date.
 - Commits go straight to `main` and are pushed to `origin`, but only when the user asks.
