@@ -18,7 +18,7 @@ A small Linux desktop app, written in C with GTK4. You pick a folder, it finds e
 - I can **Cancel** at any time. No half-written files are left behind.
 - I can tick **Delete originals after compressing** (off by default). With it on, each original is moved to the Trash, but only after its compressed copy has been checked and is confirmed smaller.
 - I can tick **Keep subtitles** (off by default). With it on, the output is `.mkv` and keeps the subtitle tracks.
-- I can change the **Speed** (default `slow`) to trade file size for encode time.
+- I can change the **Speed** (default `medium` since the v3 design, 2026-11-11; was `slow`) to trade file size for encode time.
 
 **Why ffmpeg and not HandBrake:** HandBrake is installed here only as the Flatpak GUI (`fr.handbrake.ghb`), with no `HandBrakeCLI`. System `/usr/bin/ffmpeg` already has `libx265`, the same encoder HandBrake uses for H.265, so the output quality is the same.
 

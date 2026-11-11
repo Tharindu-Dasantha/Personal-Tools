@@ -31,7 +31,7 @@ GQuark vc_error_quark (void);
 /* NULL-terminated. VC_PRESET_GPU (first) is the Intel GPU encoder; the rest are x265 presets. */
 extern const char *const VC_PRESETS[];
 #define VC_PRESET_GPU "gpu"
-#define VC_DEFAULT_PRESET "slow"
+#define VC_DEFAULT_PRESET "medium"
 
 typedef struct {
     const char *preset;   /* a VC_PRESETS name */
@@ -80,6 +80,13 @@ guint64 vc_estimate_from_sample (const VcProbe *probe, guint64 src_bytes, const 
                                  double gpu_video_kbps);
 /* FALSE only when the estimate is known (not 0) and says the output would not be kept. */
 gboolean vc_worth_encoding (guint64 src_bytes, guint64 estimate);
+/* Output pixels × frames, after Max size and Max fps: what encode time scales with. 0 when the
+ * duration is unknown. */
+double vc_output_pixel_frames (const VcProbe *probe, const VcOptions *opt);
+/* Rough encode seconds at `opt`, from this machine's measured speeds in output pixel-frames per
+ * second: x265 at medium, and the GPU (0 = not measured yet: x265's speed × the GPU time factor).
+ * 0 when the duration is unknown. */
+double vc_estimate_seconds (const VcProbe *probe, const VcOptions *opt, double medium_pps, double gpu_pps);
 /* "h264" → "H.264", "hevc" → "HEVC"; unknown names are upper-cased. */
 char *vc_codec_label (const char *codec);
 /* "Less than a minute left", "About 9 min left", "About 1 h left", "About 1 h 20 min left". */

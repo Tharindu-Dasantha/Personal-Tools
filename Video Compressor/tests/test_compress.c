@@ -230,7 +230,7 @@ static void
 test_ffmpeg_argv_presets (void)
 {
     g_autoptr (VcProbe) p = vc_parse_probe (PROBE_HLG, NULL);
-    g_assert_cmpstr (VC_DEFAULT_PRESET, ==, "slow");
+    g_assert_cmpstr (VC_DEFAULT_PRESET, ==, "medium");   /* the v3 design's default (2026-11-11) */
     g_assert_cmpstr (VC_PRESETS[0], ==, VC_PRESET_GPU);
     for (int i = 1; VC_PRESETS[i] != NULL; i++) {
         g_auto (GStrv) argv = vc_build_ffmpeg_argv ("/a.mp4", "/b.mp4", p,
@@ -729,6 +729,35 @@ test_labels (void)
     }
 }
 
+static void
+test_estimate_seconds (void)
+{
+    /* 1080p30 for 10 s = 1920 × 1080 × 300 pixel-frames */
+    VcProbe p = { .width = 1920, .height = 1080, .fps = 30, .duration = 10.0 };
+    VcOptions o = { .preset = "medium" };
+    g_assert_cmpfloat_with_epsilon (vc_output_pixel_frames (&p, &o), 1920.0 * 1080 * 300, 1);
+    /* Max size scales both sides by the short side; Max fps caps the rate; portrait uses the short side */
+    o.max_short_side = 720;
+    g_assert_cmpfloat_with_epsilon (vc_output_pixel_frames (&p, &o), 1280.0 * 720 * 300, 1);
+    VcProbe tall = { .width = 1080, .height = 1920, .fps = 60, .duration = 10.0 };
+    o.max_fps = 30;
+    g_assert_cmpfloat_with_epsilon (vc_output_pixel_frames (&tall, &o), 720.0 * 1280 * 300, 1);
+    o = (VcOptions) { .preset = "medium" };
+    /* medium at 1e7 pixel-frames/s; slow takes its time factor longer; unknown duration gives 0 */
+    double pf = 1920.0 * 1080 * 300, t, sz;
+    g_assert_cmpfloat_with_epsilon (vc_estimate_seconds (&p, &o, 1e7, 0), pf / 1e7, 1e-6);
+    vc_preset_factors ("slow", &t, &sz);
+    o.preset = "slow";
+    g_assert_cmpfloat_with_epsilon (vc_estimate_seconds (&p, &o, 1e7, 0), pf / 1e7 * t, 1e-6);
+    /* GPU: its own measured speed when there is one, else x265's speed × its time factor */
+    o.preset = VC_PRESET_GPU;
+    g_assert_cmpfloat_with_epsilon (vc_estimate_seconds (&p, &o, 1e7, 2e8), pf / 2e8, 1e-6);
+    vc_preset_factors (VC_PRESET_GPU, &t, &sz);
+    g_assert_cmpfloat_with_epsilon (vc_estimate_seconds (&p, &o, 1e7, 0), pf / 1e7 * t, 1e-6);
+    VcProbe unknown = { .width = 1920, .height = 1080, .fps = 30 };
+    g_assert_cmpfloat (vc_estimate_seconds (&unknown, &o, 1e7, 2e8), ==, 0);
+}
+
 int
 main (int argc, char **argv)
 {
@@ -760,5 +789,6 @@ main (int argc, char **argv)
     g_test_add_func ("/format/labels", test_labels);
     g_test_add_func ("/estimate/preset-factors", test_preset_factors);
     g_test_add_func ("/estimate/size", test_estimate_size);
+    g_test_add_func ("/estimate/seconds", test_estimate_seconds);
     return g_test_run ();
 }

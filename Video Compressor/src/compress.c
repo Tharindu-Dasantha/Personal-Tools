@@ -538,6 +538,28 @@ vc_preset_factors (const char *preset, double *time_vs_medium, double *size_vs_m
         }
 }
 
+double
+vc_output_pixel_frames (const VcProbe *probe, const VcOptions *opt)
+{
+    if (probe->duration <= 0 || probe->width <= 0 || probe->height <= 0)
+        return 0;
+    double scale = (double) out_short_side (probe, opt) / MIN (probe->width, probe->height);
+    double fps = probe->fps > 0 ? probe->fps : 30;   /* shortcut: unknown rate guessed as 30 */
+    if (opt->max_fps > 0 && fps > opt->max_fps + 0.5)
+        fps = opt->max_fps;
+    return probe->width * scale * probe->height * scale * fps * probe->duration;
+}
+
+double
+vc_estimate_seconds (const VcProbe *probe, const VcOptions *opt, double medium_pps, double gpu_pps)
+{
+    double time, size, pf = vc_output_pixel_frames (probe, opt);
+    vc_preset_factors (opt->preset, &time, &size);
+    if (g_strcmp0 (opt->preset, VC_PRESET_GPU) == 0 && gpu_pps > 0)
+        return pf / gpu_pps;
+    return medium_pps > 0 ? pf / medium_pps * time : 0;
+}
+
 guint64
 vc_estimate_size (const VcProbe *probe, guint64 src_bytes, const VcOptions *opt)
 {

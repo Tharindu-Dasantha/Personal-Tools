@@ -8,4 +8,12 @@
     <file alias="mt-sliders-symbolic.svg">icons/scalable/actions/mt-sliders-symbolic.svg</file>
     <file alias="mt-wrench-symbolic.svg">icons/scalable/actions/mt-wrench-symbolic.svg</file>
   </gresource>
+  <!-- Inter 4.1 (SIL OFL 1.1, fonts/Inter-LICENSE.txt), so the design's font works offline everywhere: load_fonts() -->
+  <gresource prefix="/io/github/dasantha/VideoCompressor/fonts">
+    <file alias="Inter-Regular.ttf">fonts/Inter-Regular.ttf</file>
+    <file alias="Inter-Medium.ttf">fonts/Inter-Medium.ttf</file>
+    <file alias="Inter-SemiBold.ttf">fonts/Inter-SemiBold.ttf</file>
+    <file alias="Inter-Bold.ttf">fonts/Inter-Bold.ttf</file>
+    <file alias="Inter-LICENSE.txt">fonts/Inter-LICENSE.txt</file>
+  </gresource>
 </gresources>

@@ -14,9 +14,10 @@ add_library(vc_core STATIC src/compress.c src/modes.c src/web_video.c src/frames
 target_include_directories(vc_core PUBLIC src)
 target_link_libraries(vc_core PUBLIC PkgConfig::GLIB m)
 
-# The UI's own icons (globe, bolt, …), which Adwaita lacks; GtkApplication finds them by name.
+# The UI's own icons (globe, bolt, …), which Adwaita lacks, and the Inter font, built into the binary so
+# the app runs offline on any machine. GtkApplication finds the icons by name; load_fonts() loads the font.
 find_program(GLIB_COMPILE_RESOURCES glib-compile-resources REQUIRED)
-file(GLOB VC_ICONS ${CMAKE_CURRENT_SOURCE_DIR}/data/icons/scalable/actions/*.svg)
+file(GLOB VC_ICONS ${CMAKE_CURRENT_SOURCE_DIR}/data/icons/scalable/actions/*.svg ${CMAKE_CURRENT_SOURCE_DIR}/data/fonts/*)
 add_custom_command(
   OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/resources.c
   COMMAND ${GLIB_COMPILE_RESOURCES} --generate-source --target=${CMAKE_CURRENT_BINARY_DIR}/resources.c

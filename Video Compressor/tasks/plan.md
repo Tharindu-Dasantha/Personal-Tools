@@ -6,7 +6,7 @@ Phases 7–10 (Media Tools) follow [../CAPABILITIES.md](../CAPABILITIES.md) and 
 ## Overview
 This plan builds the GTK4 C app that compresses every video in a folder with ffmpeg/x265, choosing settings from each file's resolution class. Results go to `compressed/`, and there is an option to move the originals to the Trash. The work is ordered so that each phase ends with something runnable. The riskiest parts (calling ffmpeg asynchronously from GTK, and cancelling it) come early.
 
-Confirmed decisions: no recursive scan, no downscaling, subtitles dropped by default (opt-in **Keep subtitles** writes `.mkv`), x265 preset `slow` by default (a **Speed** dropdown changes it), Linux only.
+Confirmed decisions: no recursive scan, no downscaling, subtitles dropped by default (opt-in **Keep subtitles** writes `.mkv`), x265 preset `slow` by default (a **Speed** dropdown changes it; changed to `medium` with the v3 design on 2026-11-11, at the user's request), Linux only.
 
 ## Architecture Decisions
 - **Two source files.** `compress.c` holds all the decisions and has no GTK code, so it can be unit-tested headless. `main.c` holds the UI and the async process wiring. Nothing more until something needs it.

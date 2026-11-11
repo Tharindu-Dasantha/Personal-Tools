@@ -3,6 +3,7 @@
 #include <errno.h>
 #include <glib/gstdio.h>
 #include <gtk/gtk.h>
+#include <pango/pangocairo.h>
 #include <math.h>
 #include <signal.h>
 #include <stdlib.h>
@@ -60,7 +61,7 @@ typedef struct {
     GtkWidget *title, *title_badge, *subtitle, *choose_btn, *files_btn, *pages, *list, *select_all;
     GtkWidget *summary, *sum_icon, *sum_title, *sum_sub, *sum_before, *sum_after, *sum_pct;
     GtkWidget *start_btn, *pause_btn, *stop_btn, *show_btn, *tool_sep;
-    GtkWidget *speed_btns[8], *guide_rows, *subs, *trash;
+    GtkWidget *speed_btns[8], *guide_rows, *subs, *trash, *gpu;   /* speed_btns[0] (GPU) is the gpu switch */
     GtkWidget *fps30, *max_size, *empty_icon, *hero, *empty_sub;
     GtkWidget *mode_list, *mode_row[4], *mode_count[4], *mode_lock[4], *mode_dot[4], *tool_state[4];
     GtkWidget *banner, *banner_title, *banner_sub, *banner_code, *size_head;
@@ -73,6 +74,8 @@ typedef struct {
     GtkWidget *toast, *toast_label, *close_dialog;
     GtkSizeGroup *col_status, *col_actions, *guide_cols[3];
     guint fps_idx;       /* index into FRAME_RATES */
+    guint speed;         /* the x265 speed button's VC_PRESETS index; app.preset is 0 while Use GPU is on */
+    double medium_pps, gpu_pps;   /* this machine's encode speed: learn_speed() */
     gboolean webp;       /* frames format */
     GPtrArray *hidden;   /* names in the source that don't fit this mode */
     guint n_dirs;        /* chosen files: how many folders they come from */
@@ -118,6 +121,7 @@ static App app;
 static void update_controls (void);
 static void sample_next (void);
 static void render_row (Item *it);
+static void learn_speed (Item *it);
 
 static void
 item_free (Item *it)
@@ -847,7 +851,8 @@ update_speed_guide (void)
 
         g_autofree char *body = smaller < 0 ? g_strdup_printf ("%s Medium time", ft)
                                 : g_strdup_printf ("%s Medium time · %s", ft, size_text);
-        set_tip (app.speed_btns[p], name, NULL, body);
+        if (app.speed_btns[p] != NULL)
+            set_tip (app.speed_btns[p], name, NULL, body);
     }
 }
 
@@ -1033,6 +1038,7 @@ update_controls (void)
     gboolean s_start = FALSE, s_pause = FALSE, s_stop = FALSE, s_trash = FALSE;
     guint nsel = 0, ready = 0, skipped = 0, frames = 0;
     guint64 src = 0, est = 0;
+    double secs = 0;
     VcOptions o = current_options ();
     for (guint i = 0; i < n; i++) {
         Item *it = app.items->pdata[i];
@@ -1057,6 +1063,7 @@ update_controls (void)
             est += e > 0 ? e : it->size;
             if (app.mode == VC_MODE_FRAMES)
                 frames += vc_frames_estimate (it->probe->duration, it->probe->fps, &o);
+            secs += vc_estimate_seconds (it->probe, &o, app.medium_pps, app.gpu_pps);
         }
     }
     gboolean finished = n > 0 && !busy && !start && any_done;
@@ -1127,8 +1134,10 @@ update_controls (void)
         g_autofree char *key = g_strdup_printf ("Space · one %s at a time", noun ());
         set_tip (app.start_btn, "Start", key, body);
     }
-    for (guint p = 0; VC_PRESETS[p] != NULL && p < G_N_ELEMENTS (app.speed_btns); p++)
-        gtk_widget_set_sensitive (app.speed_btns[p], !busy);
+    gboolean gpu_on = gtk_switch_get_active (GTK_SWITCH (app.gpu));
+    for (guint p = 1; VC_PRESETS[p] != NULL && p < G_N_ELEMENTS (app.speed_btns); p++)
+        gtk_widget_set_sensitive (app.speed_btns[p], !busy && !gpu_on);   /* the GPU has no speeds */
+    gtk_widget_set_sensitive (app.gpu, !busy);
     gtk_widget_set_sensitive (app.subs, !busy);
     gtk_widget_set_sensitive (app.trash, !busy);
     gtk_widget_set_sensitive (app.fps30, !busy);
@@ -1184,8 +1193,13 @@ update_controls (void)
             g_string_free (h, TRUE);
         } else if (app.mode == VC_MODE_FRAMES && ready > 0) {
             right = g_strdup_printf ("%s · ≈ %u frames", things, frames);
-        } else if (app.mode == VC_MODE_COMPRESS && ready > 0 && missing == NULL) {
-            right = g_strdup_printf ("estimated for %s", preset);
+        } else if (app.mode == VC_MODE_COMPRESS && ready > 0 && missing == NULL && secs > 0) {
+            guint min = MAX (1, (guint) lround (secs / 60));
+            g_autofree char *t = min < 60 ? g_strdup_printf ("%u min", min)
+                                 : min % 60 == 0 ? g_strdup_printf ("%u h", min / 60)
+                                 : g_strdup_printf ("%u h %u min", min / 60, min % 60);
+            right = app.preset == 0 ? g_strdup_printf ("≈ %s on the GPU", t)
+                                    : g_strdup_printf ("≈ %s at %s", t, preset);
         }
         if (err)
             gtk_widget_add_css_class (app.foot_left, "error");
@@ -1671,6 +1685,8 @@ static void
 finish_job (gboolean ok)
 {
     Item *it = g_steal_pointer (&app.job);
+    if (ok && !it->stop && app.mode == VC_MODE_COMPRESS)
+        learn_speed (it);
     g_autoptr (GPtrArray) steps = g_steal_pointer (&it->steps);
     g_autofree char *last_err = g_steal_pointer (&app.last_err);
     g_clear_handle_id (&app.pulse_id, g_source_remove);
@@ -2658,7 +2674,9 @@ on_speed (GtkToggleButton *b, gpointer user_data)
 {
     if (!gtk_toggle_button_get_active (b))
         return;
-    app.preset = GPOINTER_TO_UINT (user_data);
+    app.speed = GPOINTER_TO_UINT (user_data) + 1;   /* the buttons start after GPU */
+    if (!gtk_switch_get_active (GTK_SWITCH (app.gpu)))
+        app.preset = app.speed;
     on_estimate_input ();
 }
 
@@ -2690,6 +2708,13 @@ apply_mode_ui (void)
     gtk_label_set_text (GTK_LABEL (app.empty_sub), MODE_INFO[app.mode].empty);
     g_autofree char *hero = g_strdup_printf ("Drop %ss or a folder", noun ());
     gtk_label_set_text (GTK_LABEL (app.hero), hero);
+}
+
+static void
+on_gpu (void)
+{
+    app.preset = gtk_switch_get_active (GTK_SWITCH (app.gpu)) ? 0 : app.speed;
+    on_estimate_input ();
 }
 
 /* Locked while busy (update_controls). Rows start fresh: the list is rebuilt from the same
@@ -2918,7 +2943,7 @@ gpu_test_done (GObject *source, GAsyncResult *res, gpointer user_data)
     if (!g_subprocess_wait_check_finish (proc, res, NULL) || app.closing)
         return;   /* no working GPU encoder: the GPU speed stays hidden */
     app.gpu_ok = TRUE;
-    gtk_widget_set_visible (app.speed_btns[0], TRUE);
+    gtk_widget_set_visible (gtk_widget_get_parent (app.gpu), TRUE);
     update_speed_guide ();
     update_controls ();   /* starts size samples if a folder is already loaded */
 }
@@ -3025,7 +3050,8 @@ static const char CSS[] =
     "  --card: #ffffff; --sel: #ffffff; --seg-on: #ffffff; --shadow: rgba(0,0,0,0.08);"
     "  --green: #1f8f4e; --green-bg: #e6f6ec; --amber: #b25e00; --amber-bg: #fff3e0;"
     "  --red: #d70015; --red-bg: #ffe9eb; --teal: #0f7f91; --teal-bg: #e3f6f9;"
-    "  color: var(--text); background: var(--bg); font-size: 13px; }"
+    "  color: var(--text); background: var(--bg); font-size: 13px; font-family: Inter, sans-serif; }"
+    "tooltip { font-family: Inter, sans-serif; }"
     "@media (prefers-color-scheme: dark) { window.mt, window.close-dialog {" DARK_VARS "} }"
     /* a dark theme chosen the older way (prefer-dark-theme) doesn't set the media query: sync_dark */
     "window.mt.dark, window.close-dialog.dark {" DARK_VARS "}"
@@ -3188,6 +3214,7 @@ static const char CSS[] =
     "  border-radius: 6px; font-size: 12px; color: var(--text2); }"
     ".seg button:checked { background: var(--seg-on); color: var(--text); font-weight: 600;"
     "  box-shadow: 0 1px 2px var(--shadow); }"
+    ".seg button:disabled { opacity: 0.45; }"
     "menubutton.link > button { color: var(--accent); background: none; box-shadow: none; border: none;"
     "  padding: 0; min-height: 0; font-size: 12px; font-weight: 500; }"
     "menubutton.link image { -gtk-icon-size: 12px; }"
@@ -3786,19 +3813,19 @@ build_compress_opts (void)
 {
     GtkWidget *box = vbox (0);
     section (box, "SPEED");
+    /* the x265 speeds, as in the design; the GPU (VC_PRESETS[0]) is the Use GPU switch below */
     const char *titles[G_N_ELEMENTS (app.speed_btns)];
-    guint np = 0, active = 0;
+    guint np = 1;
     g_autoptr (GPtrArray) names = g_ptr_array_new_with_free_func (g_free);
     for (; VC_PRESETS[np] != NULL && np < G_N_ELEMENTS (app.speed_btns); np++) {
         g_ptr_array_add (names, preset_title (np));
-        titles[np] = names->pdata[np];
+        titles[np - 1] = names->pdata[np - 1];
         if (strcmp (VC_PRESETS[np], VC_DEFAULT_PRESET) == 0)
-            active = np;
+            app.speed = np;
     }
-    app.preset = active;
-    gtk_box_append (GTK_BOX (box), segmented (titles, np, active, app.speed_btns, G_CALLBACK (on_speed)));
-    for (guint p = 0; p < np; p++)
-        gtk_widget_set_visible (app.speed_btns[p], strcmp (VC_PRESETS[p], VC_PRESET_GPU) != 0);   /* gpu_test_done */
+    app.preset = app.speed;
+    gtk_box_append (GTK_BOX (box), segmented (titles, np - 1, app.speed - 1, &app.speed_btns[1],
+                                              G_CALLBACK (on_speed)));
     gtk_box_append (GTK_BOX (box), build_speed_guide ());
 
     section (box, "MAX SIZE");
@@ -3812,6 +3839,11 @@ build_compress_opts (void)
     gtk_box_append (GTK_BOX (box), app.max_size);
 
     section (box, "OPTIONS");
+    app.gpu = option_row (box, "Use _GPU", "Many times faster; files a little bigger.",
+                          "Encode on the graphics chip instead of x265. Much faster, the files come out a little "
+                          "bigger. Shown only when this computer's GPU encoder works.");
+    gtk_widget_set_visible (gtk_widget_get_parent (app.gpu), FALSE);   /* gpu_test_done shows it */
+    g_signal_connect (app.gpu, "notify::active", G_CALLBACK (on_gpu), NULL);
     app.subs = option_row (box, "Keep _subtitles", "Copies subtitle tracks. Output becomes .mkv.",
                            "Copy subtitle tracks too. The output becomes .mkv.");
     app.fps30 = option_row (box, "Max _30 fps", "60 fps phone clips saved at 30 fps.",
@@ -4004,7 +4036,89 @@ build_inspector (void)
     gtk_scrolled_window_set_child (GTK_SCROLLED_WINDOW (scroll), box);
     gtk_widget_add_css_class (scroll, "inspector");
     gtk_widget_set_size_request (scroll, 262, -1);
+    gtk_widget_set_hexpand (scroll, FALSE);   /* its growing children must not make it take the list's space */
     return scroll;
+}
+
+/* The design's font, inside the binary so the app needs no install or internet. Pango loads fonts
+ * from files, so each one is copied once into the user's cache. Any failure leaves the system font. */
+static void
+load_fonts (void)
+{
+    static const char *const names[] = { "Inter-Regular.ttf", "Inter-Medium.ttf", "Inter-SemiBold.ttf",
+                                         "Inter-Bold.ttf" };
+    g_autofree char *dir = g_build_filename (g_get_user_cache_dir (), "media-tools", "fonts", NULL);
+    if (g_mkdir_with_parents (dir, 0755) != 0)
+        return;
+    for (gsize i = 0; i < G_N_ELEMENTS (names); i++) {
+        g_autofree char *res = g_strconcat ("/io/github/dasantha/VideoCompressor/fonts/", names[i], NULL);
+        g_autoptr (GBytes) data = g_resources_lookup_data (res, G_RESOURCE_LOOKUP_FLAGS_NONE, NULL);
+        g_autofree char *path = g_build_filename (dir, names[i], NULL);
+        GStatBuf st;
+        if (data == NULL)
+            continue;
+        gsize n = g_bytes_get_size (data);
+        /* g_file_set_contents writes a temp file and renames it: safe with two instances starting */
+        if ((g_stat (path, &st) != 0 || (gsize) st.st_size != n)
+            && !g_file_set_contents (path, g_bytes_get_data (data, NULL), n, NULL))
+            continue;
+        pango_font_map_add_font_file (pango_cairo_font_map_get_default (), path, NULL);
+    }
+}
+
+/* Encode speed, in output pixel-frames per second, learned from finished encodes on this machine
+ * and kept in ~/.config/media-tools/speed.ini. Seeded from this laptop's benchmark (i5-1240P,
+ * research/handbrake/adopt/16-encode-speed.md), so a new machine's first estimate is rough until
+ * one video has finished. */
+#define SEED_MEDIUM_PPS 2.8e7
+
+static char *
+speed_file (void)
+{
+    return g_build_filename (g_get_user_config_dir (), "media-tools", "speed.ini", NULL);
+}
+
+static void
+load_speeds (void)
+{
+    app.medium_pps = SEED_MEDIUM_PPS;
+    app.gpu_pps = 0;   /* vc_estimate_seconds then uses the GPU's time factor */
+    g_autoptr (GKeyFile) k = g_key_file_new ();
+    g_autofree char *f = speed_file ();
+    if (!g_key_file_load_from_file (k, f, G_KEY_FILE_NONE, NULL))
+        return;
+    double x = g_key_file_get_double (k, "speed", "x265-medium", NULL);
+    double g = g_key_file_get_double (k, "speed", "gpu", NULL);
+    if (x > 0 && isfinite (x))
+        app.medium_pps = x;
+    if (g > 0 && isfinite (g))
+        app.gpu_pps = g;
+}
+
+/* After a compress encode ended well: how fast it really went, averaged into what is stored. */
+static void
+learn_speed (Item *it)
+{
+    VcOptions o = current_options ();   /* settings are locked while busy: these encoded it */
+    double secs = (g_get_monotonic_time () - app.job_t0 - app.paused_total) / 1e6;
+    double pf = vc_output_pixel_frames (it->probe, &o);
+    if (secs < 3 || pf <= 0)
+        return;   /* too short to time well */
+    double t, sz;
+    vc_preset_factors (o.preset, &t, &sz);
+    gboolean gpu = strcmp (o.preset, VC_PRESET_GPU) == 0;
+    double measured = gpu ? pf / secs : pf / secs * t;   /* x265 as its medium-speed equivalent */
+    const char *key = gpu ? "gpu" : "x265-medium";
+    double *slot = gpu ? &app.gpu_pps : &app.medium_pps;
+    g_autoptr (GKeyFile) k = g_key_file_new ();
+    g_autofree char *f = speed_file ();
+    g_key_file_load_from_file (k, f, G_KEY_FILE_KEEP_COMMENTS, NULL);
+    /* the first real encode replaces the seed; later ones average in */
+    *slot = g_key_file_has_key (k, "speed", key, NULL) ? (*slot + measured) / 2 : measured;
+    g_key_file_set_double (k, "speed", key, *slot);
+    g_autofree char *dir = g_path_get_dirname (f);
+    if (g_mkdir_with_parents (dir, 0755) == 0)
+        g_key_file_save_to_file (k, f, NULL);   /* best effort: only estimates depend on it */
 }
 
 /* Follows the theme: dark when the colour scheme is dark or the app is asked for a dark theme. */
@@ -4041,6 +4155,8 @@ activate (GtkApplication *gapp, gpointer user_data)
         gtk_window_present (app.win);
         return;
     }
+    load_fonts ();
+    load_speeds ();
     g_autoptr (GtkCssProvider) css = gtk_css_provider_new ();
     gtk_css_provider_load_from_string (css, CSS);
     gtk_style_context_add_provider_for_display (gdk_display_get_default (),
