@@ -1,6 +1,7 @@
 # Performance and install size: planned improvements
 
-Written 2026-11-11. Nothing here is built yet. The two goals:
+Written 2026-11-11. Items 1, 2, 4 and 6 were built the same day; 7 and 8 were measured and rejected (numbers in
+[LOG.md](LOG.md#performancemd-items-1-2-4-6-7-8-2026-11-11)). Items 3 and 5 are still open. The two goals:
 - **Faster:** batches finish sooner and the window stays responsive with big folders.
 - **Smaller to install:** the Flatpak, the AppImage and the plain folder build all bundle ffmpeg, ffprobe, ImageMagick and
   pngquant so nothing has to be installed. Those tools, not the app, are almost all of the install size.
@@ -18,30 +19,32 @@ SPEC.md Decision 6 still says Slow and must be updated to match whichever is cho
 
 ## Suggested order
 
-| # | Change | Goal | Gain | Effort | Risk |
-|---|---|---|---|---|---|
-| 1 | Release build | speed | snappier window; also hardening | XS | none |
-| 2 | Several images at once | speed | image batches several times faster | M | medium |
-| 3 | Trimmed ffmpeg for the bundles | size | biggest install-size cut | M | low |
-| 4 | Review fixes #8, #10, #12 (+ #9) | speed | no freezes on huge folders | S each | low |
-| 5 | libvips instead of ImageMagick | size + speed | smaller bundle, faster images | M | medium (outputs change) |
-| 6 | Subset the Inter font | size | app binary 2 MB → under 1 MB | XS | none |
-| 7 | Two GPU encodes at once | speed | ~1.3–1.8× on the GPU path | M | medium |
-| 8 | Decoder thread budget | speed | a few % on the x265 path | XS | low |
+| # | Change | Goal | Gain | Effort | Risk | State |
+|---|---|---|---|---|---|---|
+| 1 | Release build | speed | snappier window; also hardening | XS | none | **Done** |
+| 2 | Several images at once | speed | image batches several times faster | M | medium | **Done**: 3.1× |
+| 3 | Trimmed ffmpeg for the bundles | size | biggest install-size cut | M | low | Open: needs the packages first |
+| 4 | Review fixes #8, #10, #12 (+ #9) | speed | no freezes on huge folders | S each | low | **Done** |
+| 5 | libvips instead of ImageMagick | size + speed | smaller bundle, faster images | M | medium (outputs change) | Open: ask first, with T27 |
+| 6 | Subset the Inter font | size | app binary 2 MB → under 1 MB | XS | none | **Done**: fonts 1.6 MB → 312 kB |
+| 7 | Two GPU encodes at once | speed | ~1.3–1.8× on the GPU path | M | medium | **Rejected**: under 1.1× |
+| 8 | Decoder thread budget | speed | a few % on the x265 path | XS | low | **Rejected**: slower |
 
 Effort: XS < 1 h · S ≈ half a day · M ≈ 1–2 days, including tests.
 
-## 1. Release build
+## 1. Release build (done)
 
-**Now:** the installed app is a Debug build (`-O0`, no hardening), see review finding #7 and question Q4.
+**Was:** the installed app is a Debug build (`-O0`, no hardening), see review finding #7 and question Q4.
 **Change:** default `CMAKE_BUILD_TYPE` to `RelWithDebInfo`, add `-fstack-protector-strong` everywhere and
 `-D_FORTIFY_SOURCE=3` outside Debug, and strip on install (`cmake --install --strip`). Install from `build/release/`;
 `build/` stays the Debug test build. All three packages are built from the release build.
 **Verify:** `ctest` green on both builds; `file` shows the installed binary stripped.
 
-## 2. Several images at once
+## 2. Several images at once (done)
 
-**Now:** one job at a time in every mode (SPEC-app-shell.md Decision 4). magick and pngquant mostly use one core, so
+Built as below, plus: while any job is paused no new one starts (the old "rest of the queue waits" rule).
+
+**Was:** one job at a time in every mode (SPEC-app-shell.md Decision 4). magick and pngquant mostly use one core, so
 14 of this laptop's 16 threads sit idle during an image batch.
 **Change:** for Compress images only, run up to `MIN (8, cores / 2)` jobs at once. Videos stay one at a time, because x265
 already uses every core. Needs: `app.job` becomes a small set; Pause and Stop act on every running job; the footer counts
@@ -50,6 +53,9 @@ running jobs; the per-row bar already works per item. Update SPEC-app-shell.md D
 mid-batch; no `.part` files left; every output identical to a one-at-a-time run (`sha256sum`).
 
 ## 3. Trimmed ffmpeg for the bundles
+
+**Open.** There are no Flatpak/AppImage/folder packaging files in the repo yet, so there is nothing to ship this build
+in. Do it together with the packaging.
 
 **Now:** prebuilt static ffmpeg builds carry hundreds of codecs, formats and filters the app never uses (roughly
 100 MB+ for ffmpeg and ffprobe; to be measured).
@@ -65,7 +71,7 @@ mid-batch; no `.part` files left; every output identical to a one-at-a-time run 
 **Verify:** all 5 test suites, then the full fixture run in every mode with the bundled tools first on `PATH`; outputs
 match those from the system ffmpeg (same argv, same version). Record the before/after size here.
 
-## 4. Fixes the review already worked out
+## 4. Fixes the review already worked out (done: #8, #9, #10, #12)
 
 From [review/findings.md](review/findings.md), with code-level fixes in [review/fixes.md](review/fixes.md):
 - **#8:** image output planning scans the folder once per image (`has_twin()`), so time grows with the square of the
@@ -77,6 +83,8 @@ From [review/findings.md](review/findings.md), with code-level fixes in [review/
 
 ## 5. libvips instead of ImageMagick
 
+**Open.** Changes what Compress images writes (ask first), and `vips` isn't installed yet (`sudo dnf install vips-tools`).
+
 **Now:** ImageMagick does auto-orient, resize, metadata strip and the JPEG/WebP encodes. A portable ImageMagick adds tens
 of MB to each bundle.
 **Change:** use the `vips` command-line tool for the same steps. It is smaller, much faster and uses far less memory.
@@ -86,21 +94,27 @@ image quality numbers are tuned once, on the new tool. Ask before changing what 
 **Verify:** the image unit tests (argv changes), the image fixture run (alpha kept, EXIF orientation applied, GPS
 removed, colour profile kept, twins), and the T27 comparison.
 
-## 6. Subset the Inter font
+## 6. Subset the Inter font (done)
 
-**Now:** four full Inter weights (about 1.6 MB) are embedded in the binary (`data/fonts`).
+The command is in `data/resources.gresource.xml`; the full fonts are in git history before this change.
+
+**Was:** four full Inter weights (about 1.6 MB) are embedded in the binary (`data/fonts`).
 **Change:** subset each to Latin plus the symbols the UI uses (→ ≈ … ✓ · ⚠ ∞ ×) with `pyftsubset`, keeping the OFL
 licence file. Keep the originals' names so `load_fonts()` needs no change.
 **Verify:** screenshot every screen; no missing-glyph boxes, including non-Latin file names (those fall back to the system
 font, which is fine).
 
-## 7. Two GPU encodes at once
+## 7. Two GPU encodes at once (rejected)
+
+Measured 2026-11-11: under 1.1× on 6 long clips and on 11 short ones, below the 1.3× bar. Not built.
 
 See [research/handbrake/adopt/08-parallel-gpu-encodes.md](research/handbrake/adopt/08-parallel-gpu-encodes.md). The
 GPU encoder block is not saturated by one stream. Same runner change as item 2, limited to 2 jobs and to the GPU path.
 **Verify:** batch time on the `build/perf` corpus; VMAF unchanged.
 
-## 8. Decoder thread budget
+## 8. Decoder thread budget (rejected)
+
+Measured 2026-11-11: `-threads 9` made x265 `faster` 3–6% slower. Not built.
 
 See [research/handbrake/adopt/09-decoder-thread-budget.md](research/handbrake/adopt/09-decoder-thread-budget.md).
 Limit ffmpeg's decoder threads so they don't compete with x265's. Measure on the corpus; keep only if it helps.

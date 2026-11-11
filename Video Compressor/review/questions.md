@@ -33,6 +33,8 @@ The installed `~/.local/bin/video-compressor` is a Debug build (`-O0`, no harden
 
 HANDOFF.md would get one extra line with the install command. OK?
 
+**Done 2026-11-11** (asked for as PERFORMANCE.md item 1).
+
 ## Q5. How many files are in your biggest folders? (#11)
 
 The list builds every row up front. A few thousand rows are fine once fixes 8 and 10 are in. If you often open folders with **10,000+ images**, the list should move to `GtkListView`, which is a large rewrite. Otherwise, leave it.

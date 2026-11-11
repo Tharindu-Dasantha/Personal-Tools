@@ -16,7 +16,7 @@ typedef enum {
     ST_NEW,        /* listed (and probed, unless unreadable); Start queues it */
     ST_QUEUED,     /* waiting for the encoder */
     ST_HELD,       /* paused while queued; Start queues it again */
-    ST_ACTIVE,     /* the one encode (app.job), possibly paused */
+    ST_ACTIVE,     /* a running job (max_jobs at once), possibly paused */
     ST_CHECKING,   /* output being verified, then the original trashed */
     ST_DONE,       /* finished; `out` is set when a smaller output was kept */
     ST_TRASHED,
@@ -47,6 +47,11 @@ typedef struct {
     double fraction;     /* encode progress while active, over all steps */
     GPtrArray *steps;    /* VcStep list while active (from vc_mode_steps), else NULL */
     guint step;          /* the step running now */
+    GSubprocess *proc;   /* while active: the current step's process */
+    int pending;         /* the current step's stdout EOF + stderr EOF + process exit */
+    char *last_err;      /* the current step's last stderr line */
+    gboolean paused;
+    gint64 t0, paused_at, paused_total;
     /* GPU sample: tried at these Max size / Max fps settings; kbps is 0 when it failed */
     gboolean sampled;
     int sample_side, sample_fps;
@@ -104,14 +109,9 @@ typedef struct {
     gboolean was_busy;   /* a batch was running at the last update_controls */
     guint inhibit;       /* suspend inhibitor held while a batch runs, or 0 */
 
-    /* the one encode allowed at a time (SPEC); a paused one still counts */
-    Item *job;
-    gboolean paused;
-    gint64 job_t0, paused_at, paused_total;
-    GSubprocess *proc;
-    int pending;         /* the current step's stdout EOF + stderr EOF + process exit */
-    char *last_err;
-    guint pulse_id;      /* pulses the bar during a step without progress output */
+    /* running jobs (ST_ACTIVE items), at most max_jobs(); a paused one still counts */
+    guint n_jobs;
+    guint pulse_id;      /* pulses the bars of steps without progress output */
     VcMode mode;
     guint have;          /* VC_HAVE_* bits from the startup tool check */
 } App;
@@ -131,6 +131,7 @@ item_free (Item *it)
     g_free (it->note);
     g_free (it->tip);
     g_free (it->twin_out);
+    g_free (it->last_err);
     vc_probe_free (it->probe);
     g_clear_pointer (&it->steps, g_ptr_array_unref);
     g_free (it);
@@ -359,7 +360,7 @@ static gboolean
 can_start (Item *it)
 {
     return (it->state == ST_NEW && it->probe != NULL) || it->state == ST_HELD
-           || (it == app.job && app.paused);
+           || (it->state == ST_ACTIVE && it->paused);
 }
 
 static gboolean
@@ -395,7 +396,7 @@ skip_in_bulk (Item *it)
 static gboolean
 can_pause (Item *it)
 {
-    return it->state == ST_QUEUED || (it == app.job && !app.paused);
+    return it->state == ST_QUEUED || (it->state == ST_ACTIVE && !it->paused);
 }
 
 static gboolean
@@ -409,6 +410,27 @@ static gboolean
 can_trash (Item *it)
 {
     return it->state == ST_DONE && it->out != NULL && !it->webp_only && vc_mode_can_trash (app.mode);
+}
+
+/* One video at a time: x265 and the GPU path already use the whole machine. Images run several at
+ * once, since magick and pngquant use about one core each (SPEC-app-shell.md Decision 4). */
+static guint
+max_jobs (void)
+{
+    return app.mode == VC_MODE_IMAGES ? CLAMP (g_get_num_processors () / 2, 1, 8) : 1;
+}
+
+/* How many running jobs are paused; `first` (may be NULL) gets the first one. */
+static guint
+paused_jobs (Item **first)
+{
+    guint n = 0;
+    for (guint i = 0; app.n_jobs > 0 && i < app.items->len; i++) {
+        Item *it = app.items->pdata[i];
+        if (it->state == ST_ACTIVE && it->paused && n++ == 0 && first != NULL)
+            *first = it;
+    }
+    return n;
 }
 
 static gboolean
@@ -457,7 +479,7 @@ set_line (Item *it, guint i, const char *tag, const char *val, const char *pill,
 static void
 render_actions (Item *it)
 {
-    gboolean job = it == app.job;
+    gboolean job = it->state == ST_ACTIVE;
     gboolean run = it->hover || job || it->state == ST_HELD;
     gtk_widget_set_visible (it->b_play, run && (can_start (it) || it->state == ST_QUEUED));
     gtk_widget_set_visible (it->b_pause, run && can_pause (it));
@@ -465,10 +487,10 @@ render_actions (Item *it)
     gtk_widget_set_visible (it->b_show, it->hover && it->out != NULL);
     gtk_widget_set_visible (it->b_trash, it->hover && can_trash (it));
 
-    if (job && app.paused) {
+    if (job && it->paused) {
         g_autofree char *body = g_strdup_printf ("Continue from %d%%.", (int) (it->fraction * 100));
         set_tip (it->b_play, "Resume", NULL, body);
-    } else if (app.job != NULL || is_busy ()) {
+    } else if (app.n_jobs > 0) {   /* queued items only wait while jobs run */
         g_autofree char *t = g_strdup_printf ("%s next", verb ());
         g_autofree char *b = g_strdup_printf ("Move this %s to the front of the queue.", noun ());
         set_tip (it->b_play, t, NULL, b);
@@ -488,7 +510,7 @@ render_actions (Item *it)
                  it->state == ST_CHECKING ? "Keep the original instead of moving it to Trash."
                                           : "Take it out of this batch.");
     }
-    if (job && !app.paused)
+    if (job && !it->paused)
         gtk_widget_add_css_class (it->b_pause, "suggested-action");
     else
         gtk_widget_remove_css_class (it->b_pause, "suggested-action");
@@ -516,8 +538,8 @@ active_detail (Item *it, const VcOptions *o)
     }
     const char *cls = app.mode == VC_MODE_COMPRESS ? vc_output_class (it->probe, o)->label
                                                    : vc_class_for (w, h)->label;
-    double active = (g_get_monotonic_time () - app.job_t0 - app.paused_total) / 1e6;
-    if (app.paused)
+    double active = (g_get_monotonic_time () - it->t0 - it->paused_total) / 1e6;
+    if (it->paused)
         return g_strdup_printf ("%s · paused", cls);
     if (it->fraction < 0.02 || active < 5)
         return g_strdup_printf ("%s · estimating time left", cls);
@@ -773,6 +795,8 @@ refresh_chips (Item *it)
 static void
 update_speed_guide (void)
 {
+    if (app.mode != VC_MODE_COMPRESS)
+        return;   /* the guide lives in the compress options; load_source rebuilds it on the way back */
     guint64 src = 0, est[8] = { 0 };
     guint np = 0;
     while (VC_PRESETS[np] != NULL && np < G_N_ELEMENTS (est))
@@ -862,10 +886,19 @@ update_progress (void)
 {
     if (app.items == NULL || app.closing)
         return;
-    guint total = 0, done = 0;
+    guint total = 0, done = 0, paused = 0;
     guint64 all = 0, finished = 0, held = 0;
+    double progressed = 0, rate = 0;   /* source bytes, and bytes/s summed over the running jobs */
+    gboolean early = FALSE;            /* a job too new to time */
     for (guint i = 0; i < app.items->len; i++) {
         Item *it = app.items->pdata[i];
+        if (it->state == ST_ACTIVE) {
+            double active = (g_get_monotonic_time () - it->t0 - it->paused_total) / 1e6;
+            progressed += it->fraction * it->size;
+            rate += active > 0 ? it->fraction * it->size / active : 0;
+            early |= it->fraction < 0.02 || active < 5;
+            paused += it->paused;
+        }
         if (!it->in_batch)
             continue;
         total++;
@@ -877,23 +910,21 @@ update_progress (void)
             finished += it->size;
         }
     }
-    Item *job = app.job;
-    double progressed = finished + (job != NULL ? job->fraction * job->size : 0);
+    progressed += finished;
+    gboolean all_paused = app.n_jobs > 0 && paused == app.n_jobs;
     gtk_progress_bar_set_fraction (GTK_PROGRESS_BAR (app.foot_bar), all > 0 ? progressed / all : 0);
     gtk_widget_set_visible (app.foot_bar, TRUE);
 
     g_autofree char *title = NULL, *eta = NULL;
-    if (job != NULL) {
+    if (app.n_jobs > 0) {
         title = g_markup_printf_escaped ("<b>%s %u of %u</b>",
-                                         app.paused ? "Paused ·"
+                                         all_paused ? "Paused ·"
                                          : app.mode == VC_MODE_COMPRESS || app.mode == VC_MODE_IMAGES
                                              ? "Compressing"
                                          : app.mode == VC_MODE_FRAMES ? "Extracting" : "Converting",
-                                         MIN (done + 1, total), total);
-        double active = (g_get_monotonic_time () - app.job_t0 - app.paused_total) / 1e6;
-        double rate = active > 0 ? job->fraction * job->size / active : 0;   /* source bytes/s */
-        eta = app.paused ? g_strdup ("Press play to resume")
-              : job->fraction < 0.02 || active < 5 || rate <= 0
+                                         MIN (done + app.n_jobs, total), total);   /* the last running one */
+        eta = all_paused ? g_strdup ("Press play to resume")
+              : early || rate <= 0
                   ? g_strdup ("Estimating time left…")
                   : vc_format_time_left ((all - held - progressed) / rate);
     } else {
@@ -1067,6 +1098,9 @@ update_controls (void)
         }
     }
     gboolean finished = n > 0 && !busy && !start && any_done;
+    Item *first_paused = NULL;
+    guint n_paused = paused_jobs (&first_paused);
+    gboolean paused = app.n_jobs > 0 && n_paused == app.n_jobs;   /* the header offers Resume */
     if (busy != app.was_busy)
         on_busy_changed (busy);
 
@@ -1078,10 +1112,10 @@ update_controls (void)
     gtk_widget_set_sensitive (app.choose_btn, app.tools_ok && !busy);
     gtk_widget_set_sensitive (app.files_btn, app.tools_ok && !busy);
     gtk_widget_set_visible (app.show_btn, finished);
-    gtk_widget_set_visible (app.start_btn, !finished && (!busy || app.paused));
-    gtk_widget_set_visible (app.pause_btn, !finished && (!busy || !app.paused));
+    gtk_widget_set_visible (app.start_btn, !finished && (!busy || paused));
+    gtk_widget_set_visible (app.pause_btn, !finished && (!busy || !paused));
     gtk_widget_set_visible (app.stop_btn, !finished);
-    if (busy && !app.paused)
+    if (busy && !paused)
         gtk_widget_add_css_class (app.pause_btn, "suggested-action");
     else
         gtk_widget_remove_css_class (app.pause_btn, "suggested-action");
@@ -1121,17 +1155,19 @@ update_controls (void)
         bad_field = NULL;
     gboolean can_run = app.tools_ok && missing == NULL && !probing && bad_field == NULL;
 
-    gtk_widget_set_sensitive (app.start_btn, can_run && start && (!busy || app.paused));
-    gtk_widget_set_sensitive (app.pause_btn, app.job != NULL && !app.paused);
+    gtk_widget_set_sensitive (app.start_btn, can_run && start && (!busy || paused));
+    gtk_widget_set_sensitive (app.pause_btn, app.n_jobs > n_paused);
     gtk_widget_set_sensitive (app.stop_btn, stop);
-    if (app.job != NULL && app.paused) {
-        g_autofree char *name = basename_display (app.job->path);
-        g_autofree char *body = g_strdup_printf ("Continue %s from %d%%.", name,
-                                                 (int) (app.job->fraction * 100));
+    if (paused) {
+        g_autofree char *name = basename_display (first_paused->path);
+        g_autofree char *body = n_paused > 1 ? g_strdup_printf ("Continue the %u paused %ss.", n_paused, noun ())
+                                : g_strdup_printf ("Continue %s from %d%%.", name,
+                                                   (int) (first_paused->fraction * 100));
         set_tip (app.start_btn, "Resume", "Space", body);
     } else {
         g_autofree char *body = g_strdup_printf ("%s every waiting %s.", verb (), noun ());
-        g_autofree char *key = g_strdup_printf ("Space · one %s at a time", noun ());
+        g_autofree char *key = max_jobs () > 1 ? g_strdup_printf ("Space · up to %u at once", max_jobs ())
+                                               : g_strdup_printf ("Space · one %s at a time", noun ());
         set_tip (app.start_btn, "Start", key, body);
     }
     gboolean gpu_on = gtk_switch_get_active (GTK_SWITCH (app.gpu));
@@ -1295,9 +1331,12 @@ probe_done (GObject *source, GAsyncResult *res, gpointer user_data)
     g_autoptr (GError) error = NULL;
 
     if (!g_subprocess_communicate_utf8_finish (proc, res, &out, &err_text, &error)) {
-        /* A newer folder replaced this one (or the window closed); its items are gone. */
-        if (g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED))
+        /* A newer folder replaced this one (or the window closed); its items are gone. Cancelling
+         * only stops the reading, so end the ffprobe too (slow on network drives). */
+        if (g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED)) {
+            g_subprocess_force_exit (proc);
             return;
+        }
     }
     Item *it = user_data;
     if (error == NULL && g_subprocess_get_successful (proc))
@@ -1344,22 +1383,35 @@ compare_items (gconstpointer a, gconstpointer b)
 static void encode_next (void);
 
 static void
-pause_job (void)
+pause_job (Item *it)
 {
     /* SIGSTOP freezes ffmpeg in place; SIGCONT (Start) resumes it. */
-    g_subprocess_send_signal (app.proc, SIGSTOP);
-    app.paused = TRUE;
-    app.paused_at = g_get_monotonic_time ();
-    render_row (app.job);
+    g_subprocess_send_signal (it->proc, SIGSTOP);
+    it->paused = TRUE;
+    it->paused_at = g_get_monotonic_time ();
+    render_row (it);
 }
 
 static void
-resume_job (void)
+resume_job (Item *it)
 {
-    g_subprocess_send_signal (app.proc, SIGCONT);
-    app.paused = FALSE;
-    app.paused_total += g_get_monotonic_time () - app.paused_at;
-    render_row (app.job);
+    g_subprocess_send_signal (it->proc, SIGCONT);
+    it->paused = FALSE;
+    it->paused_total += g_get_monotonic_time () - it->paused_at;
+    render_row (it);
+}
+
+/* Every running job, paused (TRUE) or resumed. */
+static void
+pause_all (gboolean pause)
+{
+    for (guint i = 0; app.n_jobs > 0 && i < app.items->len; i++) {
+        Item *it = app.items->pdata[i];
+        if (it->state == ST_ACTIVE && it->paused != pause)
+            pause ? pause_job (it) : resume_job (it);
+    }
+    if (!pause && app.items != NULL)
+        encode_next ();   /* slots that freed while paused */
 }
 
 static void
@@ -1386,8 +1438,8 @@ do_start (Item *one, gboolean sel)
                         "Likely no saving. Select it and press Start to compress it anyway.");
             continue;
         }
-        if (it == app.job) {
-            resume_job ();
+        if (it->state == ST_ACTIVE) {
+            resume_job (it);
             continue;
         }
         g_autofree char *dir = g_path_get_dirname (it->path);
@@ -1439,7 +1491,7 @@ act_start (Item *one, gboolean sel)
     VcOptions o = current_options ();
     for (guint i = 0; trash_on () && i < app.items->len; i++) {
         Item *it = app.items->pdata[i];
-        if (!in_scope (it, one, sel) || !can_start (it) || it == app.job
+        if (!in_scope (it, one, sel) || !can_start (it) || it->state == ST_ACTIVE
             || (one == NULL && !sel && skip_in_bulk (it)))
             continue;
         g_autofree char *out = main_output (it, &o);
@@ -1466,8 +1518,8 @@ act_pause (Item *one, gboolean sel)
         Item *it = app.items->pdata[i];
         if (!in_scope (it, one, sel) || !can_pause (it))
             continue;
-        if (it == app.job) {
-            pause_job ();
+        if (it->state == ST_ACTIVE) {
+            pause_job (it);
         } else {
             it->state = ST_HELD;
             set_status (it, NULL, NULL);
@@ -1489,10 +1541,10 @@ act_stop (Item *one, gboolean sel)
             set_status (it, NULL, NULL);
         } else {
             it->stop = TRUE;   /* checking: verify_done keeps the original */
-            if (it == app.job) {
+            if (it->state == ST_ACTIVE) {
                 /* SIGKILL also ends a paused (stopped) ffmpeg. finish_job removes the .part
                  * once ffmpeg is gone and has closed it, then starts the next queued item. */
-                g_subprocess_force_exit (app.proc);
+                g_subprocess_force_exit (it->proc);
                 render_row (it);
             }
         }
@@ -1682,15 +1734,14 @@ image_result (Item *it, GPtrArray *steps)
 /* Runs when the job's last step has ended (or one failed, or it was stopped): moves the outputs
  * into place, removes every other part, and sets the row. The caller starts the next item. */
 static void
-finish_job (gboolean ok)
+finish_job (Item *it, gboolean ok)
 {
-    Item *it = g_steal_pointer (&app.job);
     if (ok && !it->stop && app.mode == VC_MODE_COMPRESS)
         learn_speed (it);
     g_autoptr (GPtrArray) steps = g_steal_pointer (&it->steps);
-    g_autofree char *last_err = g_steal_pointer (&app.last_err);
-    g_clear_handle_id (&app.pulse_id, g_source_remove);
-    app.paused = FALSE;
+    g_autofree char *last_err = g_steal_pointer (&it->last_err);
+    it->paused = FALSE;
+    app.n_jobs--;
     app.batch_end = g_get_monotonic_time ();
     it->state = ST_NEW;
 
@@ -1753,15 +1804,14 @@ finish_job (gboolean ok)
     }
 }
 
-static gboolean spawn_step (void);
+static gboolean spawn_step (Item *it);
 
 /* All three events of the current step are in: start the next step, or finish the job. */
 static void
-step_ended (void)
+step_ended (Item *it)
 {
-    Item *it = app.job;
     VcStep *s = it->steps->pdata[it->step];
-    g_autoptr (GSubprocess) proc = g_steal_pointer (&app.proc);
+    g_autoptr (GSubprocess) proc = g_steal_pointer (&it->proc);
     int code = g_subprocess_get_if_exited (proc) ? g_subprocess_get_exit_status (proc) : -1;
     /* Exit 0 must leave the part behind; a soft exit means "no output" and is fine. */
     gboolean ok = (code == 0 && g_file_test (s->part, G_FILE_TEST_EXISTS))
@@ -1770,19 +1820,19 @@ step_ended (void)
         it->step++;
         it->fraction = (double) it->step / it->steps->len;   /* steps without progress output */
         update_progress ();
-        if (spawn_step ())
+        if (spawn_step (it))
             return;
         ok = FALSE;
     }
-    finish_job (ok);
+    finish_job (it, ok);
     encode_next ();
 }
 
 static void
-job_step_done (void)
+job_step_done (Item *it)
 {
-    if (--app.pending == 0 && !app.closing)   /* on_close already removed the parts */
-        step_ended ();
+    if (--it->pending == 0 && !app.closing)   /* on_close already removed the parts */
+        step_ended (it);
 }
 
 static void
@@ -1792,11 +1842,11 @@ on_progress_line (GObject *source, GAsyncResult *res, gpointer user_data)
     g_autofree char *line = g_data_input_stream_read_line_finish (ds, res, NULL, NULL);
     if (line == NULL) {
         g_object_unref (ds);
-        job_step_done ();
+        job_step_done (user_data);
         return;
     }
     if (!app.closing) {   /* after close, keep draining to EOF but leave the widgets alone */
-        Item *it = app.job;
+        Item *it = user_data;
         VcStep *s = it->steps->pdata[it->step];
         double fraction, dur = s->duration > 0 ? s->duration : it->probe->duration;
         if (s->progress && vc_parse_progress_line (line, dur, &fraction)) {
@@ -1817,14 +1867,15 @@ on_stderr_line (GObject *source, GAsyncResult *res, gpointer user_data)
 {
     GDataInputStream *ds = G_DATA_INPUT_STREAM (source);
     g_autofree char *line = g_data_input_stream_read_line_finish (ds, res, NULL, NULL);
+    Item *it = user_data;
     if (line == NULL) {
         g_object_unref (ds);
-        job_step_done ();
+        job_step_done (it);
         return;
     }
     if (*g_strstrip (line) != '\0') {
-        g_free (app.last_err);
-        app.last_err = g_utf8_make_valid (line, -1);
+        g_free (it->last_err);
+        it->last_err = g_utf8_make_valid (line, -1);
     }
     g_data_input_stream_read_line_async (ds, G_PRIORITY_DEFAULT, NULL, on_stderr_line,
                                          user_data);
@@ -1833,19 +1884,27 @@ on_stderr_line (GObject *source, GAsyncResult *res, gpointer user_data)
 static void
 on_ffmpeg_exit (GObject *source, GAsyncResult *res, gpointer user_data)
 {
-    (void) user_data;
     g_subprocess_wait_finish (G_SUBPROCESS (source), res, NULL);
-    job_step_done ();
+    job_step_done (user_data);
 }
 
+/* Pulses the running steps that have no progress output; ends when there are none. */
 static gboolean
 pulse_bar (gpointer data)
 {
     (void) data;
-    if (app.closing || app.job == NULL || app.paused)
-        return G_SOURCE_CONTINUE;   /* finish_job and stop_for_quit remove it */
-    gtk_progress_bar_pulse (GTK_PROGRESS_BAR (app.job->bar));
-    return G_SOURCE_CONTINUE;
+    gboolean any = FALSE;
+    for (guint i = 0; !app.closing && app.n_jobs > 0 && i < app.items->len; i++) {
+        Item *it = app.items->pdata[i];
+        if (it->state != ST_ACTIVE || ((VcStep *) it->steps->pdata[it->step])->progress)
+            continue;
+        any = TRUE;
+        if (!it->paused)
+            gtk_progress_bar_pulse (GTK_PROGRESS_BAR (it->bar));
+    }
+    if (!any)
+        app.pulse_id = 0;
+    return any ? G_SOURCE_CONTINUE : G_SOURCE_REMOVE;
 }
 
 /* Runs in the child before exec: low CPU and idle disk priority, so the desktop wins while you
@@ -1858,42 +1917,39 @@ lower_priority (gpointer data)
     syscall (SYS_ioprio_set, 1 /* IOPRIO_WHO_PROCESS */, 0, 3 << 13 /* IOPRIO_CLASS_IDLE */);
 }
 
-/* Starts app.job's current step. FALSE (with app.last_err set) when it can't be started. */
+/* Starts the job's current step. FALSE (with it->last_err set) when it can't be started. */
 static gboolean
-spawn_step (void)
+spawn_step (Item *it)
 {
-    Item *it = app.job;
     VcStep *s = it->steps->pdata[it->step];
     g_autoptr (GError) error = NULL;
     g_autoptr (GSubprocessLauncher) launcher = g_subprocess_launcher_new (
         G_SUBPROCESS_FLAGS_STDOUT_PIPE | G_SUBPROCESS_FLAGS_STDERR_PIPE);
     g_subprocess_launcher_set_child_setup (launcher, lower_priority, NULL, NULL);
-    g_clear_pointer (&app.last_err, g_free);
+    g_clear_pointer (&it->last_err, g_free);
     /* A killed run may have left the part (pngquant won't overwrite one). ffmpeg writes frames
      * into the folder but doesn't create it. */
     if (!vc_remove_part (s->part) || (s->part_is_dir && g_mkdir (s->part, 0755) != 0)) {
         g_autofree char *display = g_filename_display_name (s->part);
-        app.last_err = g_strdup_printf ("Cannot create %s", display);
+        it->last_err = g_strdup_printf ("Cannot create %s", display);
         return FALSE;
     }
-    app.proc = g_subprocess_launcher_spawnv (launcher, (const char *const *) s->argv, &error);
-    if (app.proc == NULL) {
-        app.last_err = g_strdup (error->message);
+    it->proc = g_subprocess_launcher_spawnv (launcher, (const char *const *) s->argv, &error);
+    if (it->proc == NULL) {
+        it->last_err = g_strdup (error->message);
         return FALSE;
     }
-    if (app.paused)   /* paused just as the previous step ended */
-        g_subprocess_send_signal (app.proc, SIGSTOP);
-    app.pending = 3;
+    if (it->paused)   /* paused just as the previous step ended */
+        g_subprocess_send_signal (it->proc, SIGSTOP);
+    it->pending = 3;
     if (!s->progress && app.pulse_id == 0)
         app.pulse_id = g_timeout_add (100, pulse_bar, NULL);
-    else if (s->progress)
-        g_clear_handle_id (&app.pulse_id, g_source_remove);
 
-    GDataInputStream *so = g_data_input_stream_new (g_subprocess_get_stdout_pipe (app.proc));
-    GDataInputStream *se = g_data_input_stream_new (g_subprocess_get_stderr_pipe (app.proc));
-    g_data_input_stream_read_line_async (so, G_PRIORITY_DEFAULT, NULL, on_progress_line, NULL);
-    g_data_input_stream_read_line_async (se, G_PRIORITY_DEFAULT, NULL, on_stderr_line, NULL);
-    g_subprocess_wait_async (app.proc, NULL, on_ffmpeg_exit, NULL);
+    GDataInputStream *so = g_data_input_stream_new (g_subprocess_get_stdout_pipe (it->proc));
+    GDataInputStream *se = g_data_input_stream_new (g_subprocess_get_stderr_pipe (it->proc));
+    g_data_input_stream_read_line_async (so, G_PRIORITY_DEFAULT, NULL, on_progress_line, it);
+    g_data_input_stream_read_line_async (se, G_PRIORITY_DEFAULT, NULL, on_stderr_line, it);
+    g_subprocess_wait_async (it->proc, NULL, on_ffmpeg_exit, it);
     return TRUE;
 }
 
@@ -1901,9 +1957,10 @@ spawn_step (void)
 static void
 start_job (Item *it, GPtrArray *steps)
 {
-    app.job = it;
-    app.job_t0 = g_get_monotonic_time ();
-    app.paused_total = 0;
+    app.n_jobs++;
+    it->t0 = g_get_monotonic_time ();
+    it->paused = FALSE;
+    it->paused_total = 0;
     it->steps = steps;
     it->step = 0;
     it->state = ST_ACTIVE;
@@ -1913,8 +1970,8 @@ start_job (Item *it, GPtrArray *steps)
     it->webp_only = FALSE;
     gtk_progress_bar_set_fraction (GTK_PROGRESS_BAR (it->bar), 0);
     set_status (it, NULL, NULL);
-    if (!spawn_step ())
-        finish_job (FALSE);
+    if (!spawn_step (it))
+        finish_job (it, FALSE);
 }
 
 /* ---- GPU size samples ---- */
@@ -1949,18 +2006,19 @@ sample_timed_out (gpointer data)
         g_subprocess_force_exit (app.sample_proc);   /* sample_done counts it as a failure */
 }
 
+static guint64 sample_bytes;   /* the sample's output so far: only its size matters */
+
 static void
 sample_done (GObject *source, GAsyncResult *res, gpointer user_data)
 {
     (void) user_data;
-    g_autoptr (GBytes) out = NULL;
     g_autoptr (GError) error = NULL;
-    gboolean ok = g_subprocess_communicate_finish (G_SUBPROCESS (source), res, &out, NULL, &error);
+    gboolean ok = g_subprocess_wait_finish (G_SUBPROCESS (source), res, &error);
     if (g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED))
         return;   /* sample_stop ran: the folder changed or the window closed */
     g_clear_handle_id (&app.sample_timer, g_source_remove);
     Item *it = g_steal_pointer (&app.sample_item);
-    gsize n = out != NULL ? g_bytes_get_size (out) : 0;
+    guint64 n = sample_bytes;
     ok = ok && g_subprocess_get_successful (G_SUBPROCESS (source)) && n > 0;
     g_clear_object (&app.sample_proc);
 
@@ -1974,12 +2032,31 @@ sample_done (GObject *source, GAsyncResult *res, gpointer user_data)
     update_controls ();   /* which starts the next one */
 }
 
+/* Reads and discards the sample's stdout in 1 MiB chunks, counting bytes; at the end, waits for
+ * the exit status. */
+static void
+sample_read (GObject *source, GAsyncResult *res, gpointer user_data)
+{
+    (void) user_data;
+    g_autoptr (GError) error = NULL;
+    gssize n = g_input_stream_skip_finish (G_INPUT_STREAM (source), res, &error);
+    if (g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED))
+        return;
+    if (n > 0) {
+        sample_bytes += n;
+        g_input_stream_skip_async (G_INPUT_STREAM (source), 1 << 20, G_PRIORITY_LOW, app.sample_cancel,
+                                   sample_read, NULL);
+    } else {
+        g_subprocess_wait_async (app.sample_proc, app.sample_cancel, sample_done, NULL);
+    }
+}
+
 static void
 sample_next (void)
 {
     if (!app.gpu_ok || app.closing || app.mode != VC_MODE_COMPRESS || app.items == NULL
         || app.sample_proc != NULL
-        || app.probes_done < app.items->len || app.job != NULL || is_busy ())
+        || app.probes_done < app.items->len || is_busy ())
         return;
     VcOptions o = current_options ();
     if (o.max_short_side != app.sample_side || o.max_fps != app.sample_fps) {
@@ -2017,16 +2094,19 @@ sample_next (void)
     if (app.sample_cancel == NULL)
         app.sample_cancel = g_cancellable_new ();
     app.sample_timer = g_timeout_add_seconds_once (SAMPLE_TIMEOUT, sample_timed_out, NULL);
-    g_subprocess_communicate_async (app.sample_proc, NULL, app.sample_cancel, sample_done, NULL);
+    sample_bytes = 0;
+    g_input_stream_skip_async (g_subprocess_get_stdout_pipe (app.sample_proc), 1 << 20, G_PRIORITY_LOW,
+                               app.sample_cancel, sample_read, NULL);
 }
 
-/* Starts the next queued item unless an encode (even a paused one) is running: the one with
- * the highest "Compress next" priority, otherwise the first in list order. */
+/* Starts queued items while fewer than max_jobs() run and none is paused (the rest of the queue
+ * waits for a paused one): the one with the highest "Compress next" priority, otherwise the first
+ * in list order. */
 static void
 encode_next (void)
 {
     VcOptions o = current_options ();
-    while (app.job == NULL) {
+    while (app.n_jobs < max_jobs () && paused_jobs (NULL) == 0) {
         Item *it = NULL;
         for (guint i = 0; i < app.items->len; i++) {
             Item *c = app.items->pdata[i];
@@ -2085,8 +2165,8 @@ show_in_files (const char *path, gboolean containing)
 static void
 on_start_all (void)
 {
-    if (app.job != NULL && app.paused) {   /* Resume: continue the paused video only */
-        resume_job ();
+    if (paused_jobs (NULL) > 0) {   /* Resume: continue the paused jobs only */
+        pause_all (FALSE);
         update_controls ();
     } else {
         act_start (NULL, FALSE);
@@ -2096,8 +2176,7 @@ on_start_all (void)
 static void
 on_pause_all (void)
 {
-    if (app.job != NULL && !app.paused)
-        pause_job ();
+    pause_all (TRUE);
     update_controls ();
 }
 
@@ -2244,9 +2323,9 @@ static void
 show_menu (Item *it, double x, double y)
 {
     GtkWidget *box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
-    gboolean job = it == app.job;
+    gboolean job = it->state == ST_ACTIVE;
     menu_item (box, it, "media-playback-start-symbolic",
-               job && app.paused ? "Resume" : verb (), on_row_play,
+               job && it->paused ? "Resume" : verb (), on_row_play,
                can_start (it) || it->state == ST_QUEUED);
     menu_item (box, it, "media-playback-pause-symbolic", job ? "Pause" : "Hold", on_row_pause,
                can_pause (it));
@@ -2778,7 +2857,7 @@ static gboolean
 on_space (GtkWidget *w, GVariant *args, gpointer user_data)
 {
     (void) w; (void) args; (void) user_data;
-    if (app.job != NULL && !app.paused)
+    if (app.n_jobs > paused_jobs (NULL))
         on_pause_all ();
     else if (gtk_widget_get_sensitive (app.start_btn) && gtk_widget_get_visible (app.start_btn))
         on_start_all ();
@@ -2803,13 +2882,13 @@ static void stop_for_quit (void);
 static void
 close_chosen (int choice)
 {
-    g_clear_pointer ((GtkWindow **) &app.close_dialog, gtk_window_destroy);
+    if (app.close_dialog != NULL)
+        gtk_window_destroy (GTK_WINDOW (g_steal_pointer (&app.close_dialog)));
     if (choice == 1) {
         stop_for_quit ();
         gtk_window_destroy (app.win);
     } else if (choice == 2 && is_busy ()) {
-        if (app.paused)
-            resume_job ();
+        pause_all (FALSE);
         /* A hidden window still holds the GtkApplication, so the process and its encodes go on;
          * launching the app again or clicking a notification shows the window. */
         gtk_widget_set_visible (GTK_WIDGET (app.win), FALSE);
@@ -2906,11 +2985,14 @@ stop_for_quit (void)
 {
     app.closing = TRUE;
     g_clear_handle_id (&app.pulse_id, g_source_remove);
-    if (app.proc != NULL) {
-        g_subprocess_force_exit (app.proc);   /* SIGKILL works on a paused ffmpeg too */
-        g_subprocess_wait (app.proc, NULL, NULL);
-        for (guint i = 0; i < app.job->steps->len; i++)
-            vc_remove_part (((VcStep *) app.job->steps->pdata[i])->part);
+    for (guint i = 0; app.n_jobs > 0 && i < app.items->len; i++) {
+        Item *it = app.items->pdata[i];
+        if (it->state != ST_ACTIVE || it->proc == NULL)
+            continue;
+        g_subprocess_force_exit (it->proc);   /* SIGKILL works on a paused ffmpeg too */
+        g_subprocess_wait (it->proc, NULL, NULL);
+        for (guint s = 0; s < it->steps->len; s++)
+            vc_remove_part (((VcStep *) it->steps->pdata[s])->part);
     }
     g_cancellable_cancel (app.probe_cancel);
     sample_stop ();
@@ -4100,7 +4182,7 @@ static void
 learn_speed (Item *it)
 {
     VcOptions o = current_options ();   /* settings are locked while busy: these encoded it */
-    double secs = (g_get_monotonic_time () - app.job_t0 - app.paused_total) / 1e6;
+    double secs = (g_get_monotonic_time () - it->t0 - it->paused_total) / 1e6;
     double pf = vc_output_pixel_frames (it->probe, &o);
     if (secs < 3 || pf <= 0)
         return;   /* too short to time well */

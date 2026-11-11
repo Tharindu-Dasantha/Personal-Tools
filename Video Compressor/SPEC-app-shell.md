@@ -29,7 +29,7 @@ does. After this module the app looks and behaves as it does today, plus:
 2. **Mode is locked while anything is queued, encoding or being checked**, like Speed today.
 3. **Switching mode resets row state.** The list is rebuilt from the same source (folder or file list) with the new filter, and
    results from the previous mode aren't kept. Existing outputs on disk are still detected and skipped, as today.
-4. **One job at a time across all modes.** No change.
+4. **One job at a time in the video modes; Compress images runs up to `MIN (8, cores / 2)` at once** (2026-11-11, PERFORMANCE.md item 2). magick and pngquant use about one core each, so 100 images took 71 s one at a time and 23 s eight at once, byte-identical outputs. Pause and Stop act on every running job; while any job is paused no new one starts (the rest of the queue waits, as before). Two GPU encodes at once were measured too and gave under 1.1×, so videos stay at one.
 5. **Only `video-compress` and `image-compress` can trash originals.** In `web-video` and `video-frames` the Trash button and
    checkbox are hidden: those outputs are lossy derivatives, not replacements.
 6. **The startup check is split.** `ffmpeg` and `ffprobe` are required to start, since every mode uses ffprobe to read files.
@@ -118,7 +118,7 @@ tests/test_modes.c      → unit tests for modes.c
   missing-tool banner (`PATH` without pngquant).
 
 ## Boundaries
-- **Always:** keep every SPEC.md rule for every mode: argv only, `.part` then rename, never overwrite, one job at a time,
+- **Always:** keep every SPEC.md rule for every mode: argv only, `.part` then rename, never overwrite, one job at a time (images: Decision 4),
   async I/O, an `app.closing` check in every new callback, tests before every commit.
 - **Ask first:** renaming the folder or binary · letting web/frames modes trash originals · running jobs in parallel.
 - **Never:** change what `Compress video` encodes or decides · delete anything that isn't a step's `part` · use

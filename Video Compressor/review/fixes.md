@@ -1,7 +1,8 @@
 # Performance and security review: recommended fixes
 
 Numbers match [findings.md](findings.md). Decisions that need you first are in [questions.md](questions.md).
-Nothing here is applied yet. Per the SPEC rule, run the tests before every commit:
+Applied on 2026-11-11 (PERFORMANCE.md items 1 and 4): the release build half of 7, and 8, 9, 10, 12 (12 more
+simply than below: `probe_done` force-exits the ffprobe when its read is cancelled). The rest is not applied yet. Per the SPEC rule, run the tests before every commit:
 `ctest --test-dir "Video Compressor/build" --output-on-failure`.
 
 ## Suggested order

@@ -16,12 +16,12 @@ Fixes for each finding are in [fixes.md](fixes.md), and open decisions are in [q
 | 4 | The check before trashing reads headers only | Data safety | Low | Read |
 | 5 | No size cap on images before `magick` / `pngquant` | Security | Medium | Read |
 | 6 | ImageMagick policy is fully open, and inputs don't name their format | Security | Low | Verified |
-| 7 | ffmpeg has no protocol whitelist, and the installed binary is a Debug build | Security | Low | Read |
-| 8 | Image output paths: planning time grows with the square of folder size | Performance | Medium | Verified |
-| 9 | The GPU size sample keeps its whole output in RAM | Performance | Low | Read |
-| 10 | Each keystroke or setting change redraws every row, at a cost that grows with the square of the row count | Performance | Low | Read |
+| 7 | ffmpeg has no protocol whitelist, and the installed binary is a Debug build (**release build fixed 2026-11-11**; whitelist open) | Security | Low | Read |
+| 8 | Image output paths: planning time grows with the square of folder size (**fixed 2026-11-11**: 4,000 images 7.56 s → 0.009 s) | Performance | Medium | Verified |
+| 9 | The GPU size sample keeps its whole output in RAM (**fixed 2026-11-11**) | Performance | Low | Read |
+| 10 | Each keystroke or setting change redraws every row, at a cost that grows with the square of the row count (**fixed 2026-11-11**) | Performance | Low | Read |
 | 11 | Every row's widgets are created up front (`GtkListBox`) | Performance | Low | Read |
-| 12 | Switching folders doesn't stop ffprobes already running | Performance | Low | Read |
+| 12 | Switching folders doesn't stop ffprobes already running (**fixed 2026-11-11**: one `force_exit` on cancel) | Performance | Low | Read |
 | 13 | A pointer to an old row survives a list reload while the Start dialog is open | Memory | Low | Read |
 
 No memory leaks were found (see "Memory" at the end).

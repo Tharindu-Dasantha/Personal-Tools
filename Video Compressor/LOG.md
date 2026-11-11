@@ -180,6 +180,22 @@ ran at about 2.4e7, and the 1080p and 720p clips at slow + `rect=0:rskip=2` at 1
 real encode the app replaces the seed with its own measurement (`~/.config/media-tools/speed.ini`). The first measured
 run on the fixtures gave 7.7e7, because synthetic clips encode fast.
 
+### PERFORMANCE.md items 1, 2, 4, 6, 7, 8 (2026-11-11)
+
+- **Several images at once (item 2):** 100 images (60 JPEG 2400×1600, 40 PNG 1600×1000), Original width, ASan build on
+  Xvfb: one at a time 71.5 s, eight at once 22.5–23.2 s (3.1×). All 200 outputs byte-identical (`sha256sum`). Pause froze
+  all 8 processes (state `T` in `/proc`), resume finished the batch; Stop all and Stop and Quit mid-batch left no `.part`
+  and no magick/pngquant running; every session exit 0, no sanitizer report. Compress video still ran 1 job.
+- **Two GPU encodes at once (item 7), rejected:** the app's GPU argv at nice 10 / idle I/O, one at a time vs two at once.
+  6 perf clips: 23.2 / 27.4 s vs 28.0 / 25.4 s. 11 short fixtures: 19.0 / 16.9 s vs 17.2 / 16.3 s. Under 1.1×, below the 1.3×
+  bar in research note 08.
+- **Decoder thread budget (item 8), rejected:** `-threads 9` before `-i`, x265 `faster`, 3 clips (h264 1080p, hevc
+  portrait, iPhone HLG), two A/B rounds: 82.6 / 87.5 s without, 84.7 / 92.6 s with. Slower, so `medium` wasn't run.
+- **Image output planning (item 4, review #8):** 4,000 images 7.56 s → 0.009 s.
+- **Release build (item 1):** `-O2`, `_FORTIFY_SOURCE=3`, `-fstack-protector-strong`, stripped install: 485 kB vs the
+  Debug binary's 714 kB.
+- **Inter subset (item 6):** four weights 1.6 MB → 312 kB.
+
 ## HandBrake research (summary)
 
 Sixteen notes (2026-11-09) read HandBrake's source to learn how it scans, decodes, filters, encodes and muxes, and why it

@@ -2,6 +2,7 @@
 
 #include <glib/gstdio.h>
 #include <string.h>
+#include <utime.h>
 
 /* Captured with vc_build_ffprobe_argv() (ffmpeg 8.1): a JPEG, an RGBA PNG and a palette PNG. Still
  * images have no duration (or a 1-frame one). */
@@ -271,6 +272,9 @@ test_twins (void)
     g_autofree char *webp = touch (dir, "photo.webp");
     g_autofree char *upper = touch (dir, "photo.JPG");
     g_autofree char *bmp = touch (dir, "photo.bmp");
+    /* the first call cached the folder's scan; a coarse clock may not have moved its mtime yet */
+    struct utimbuf old = { 1, 1 };
+    g_assert_cmpint (g_utime (dir, &old), ==, 0);
     struct { const char *in; const char *same; const char *webp; } cases[] = {
         { jpg, "photo.jpg.jpg", "photo.jpg.webp" }, { png, "photo.png.png", "photo.png.webp" },
         { webp, "photo.webp.webp", NULL },          { upper, "photo.JPG.jpg", "photo.JPG.webp" },

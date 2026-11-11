@@ -60,6 +60,12 @@ ctest --test-dir "Video Compressor/build" --output-on-failure
 
 Debug builds use `-Werror`. Run the tests before every commit (SPEC rule).
 
+Install from the release build (RelWithDebInfo, hardened, stripped); `build/` stays the Debug test build:
+```
+cmake -S "Video Compressor" -B "Video Compressor/build/release" --install-prefix ~/.local
+cmake --build "Video Compressor/build/release" -j && cmake --install "Video Compressor/build/release" --strip
+```
+
 Sanitizer builds go under `build/` so they stay gitignored:
 ```
 # ASan + UBSan (needs libasan libubsan):

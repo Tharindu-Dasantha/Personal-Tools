@@ -1,5 +1,6 @@
 #include "modes.h"
 
+#include <glib/gstdio.h>
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -29,17 +30,36 @@ vc_probe_has_alpha (const VcProbe *probe)
 }
 
 /* TRUE when another image in the input's folder has the same stem (photo.jpg + photo.png/.webp/.JPG).
- * Read from the folder, not the list, so the answer never depends on which files were chosen. */
+ * Read from the folder, not the list, so the answer never depends on which files were chosen.
+ * One scan per folder, counting images per stem, redone when the folder's mtime changes (creating
+ * or removing a file changes it; outputs go into a subfolder, which doesn't). Main thread only. */
 static gboolean
-has_twin (const char *dir, const char *name, const char *stem)
+has_twin (const char *dir, const char *stem)
 {
-    g_autoptr (GDir) d = g_dir_open (dir, 0, NULL);
-    gsize n = strlen (stem);
-    for (const char *e; d != NULL && (e = g_dir_read_name (d)) != NULL;)
-        if (strcmp (e, name) != 0 && strncmp (e, stem, n) == 0 && e[n] == '.' && strchr (e + n + 1, '.') == NULL
-            && vc_mode_accepts (VC_MODE_IMAGES, e))
-            return TRUE;
-    return FALSE;
+    static GHashTable *stems;   /* stem -> number of images with it */
+    static char *stems_dir;
+    static struct timespec stems_mtime;
+    GStatBuf st;
+    if (g_stat (dir, &st) != 0)
+        return FALSE;
+    if (stems == NULL || g_strcmp0 (dir, stems_dir) != 0 || st.st_mtim.tv_sec != stems_mtime.tv_sec
+        || st.st_mtim.tv_nsec != stems_mtime.tv_nsec) {
+        g_clear_pointer (&stems, g_hash_table_unref);
+        stems = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, NULL);
+        g_autoptr (GDir) d = g_dir_open (dir, 0, NULL);
+        for (const char *e; d != NULL && (e = g_dir_read_name (d)) != NULL;) {
+            const char *dot = strrchr (e, '.');
+            if (dot == NULL || dot == e || !vc_mode_accepts (VC_MODE_IMAGES, e))
+                continue;
+            char *s = g_strndup (e, dot - e);
+            guint n = GPOINTER_TO_UINT (g_hash_table_lookup (stems, s));
+            g_hash_table_replace (stems, s, GUINT_TO_POINTER (n + 1));
+        }
+        g_free (stems_dir);
+        stems_dir = g_strdup (dir);
+        stems_mtime = st.st_mtim;
+    }
+    return GPOINTER_TO_UINT (g_hash_table_lookup (stems, stem)) > 1;   /* the input counts once */
 }
 
 /* compressed/<stem>.<ext> next to the input, or its hidden part .<stem><tag>.part.<ext>. With a twin
@@ -53,7 +73,7 @@ out_path (const char *input, const char *tag, const char *ext)
     char *dot = strrchr (base, '.');
     if (dot != NULL && dot != base) {
         *dot = '\0';
-        if (has_twin (dir, name, base)) {
+        if (has_twin (dir, base)) {
             g_free (base);
             base = g_strdup (name);
         }

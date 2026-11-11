@@ -8,7 +8,12 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(GTK4 REQUIRED IMPORTED_TARGET gtk4)
 pkg_check_modules(GLIB REQUIRED IMPORTED_TARGET glib-2.0)
 
-add_compile_options(-Wall -Wextra $<$<CONFIG:Debug>:-Werror>)
+# The installed app is a release build (cmake --install --strip); Debug is the test build (HANDOFF.md).
+if(NOT CMAKE_BUILD_TYPE)
+  set(CMAKE_BUILD_TYPE RelWithDebInfo)
+endif()
+add_compile_options(-Wall -Wextra $<$<CONFIG:Debug>:-Werror>
+                    -fstack-protector-strong $<$<NOT:$<CONFIG:Debug>>:-D_FORTIFY_SOURCE=3>)
 
 add_library(vc_core STATIC src/compress.c src/modes.c src/web_video.c src/frames.c src/images.c)
 target_include_directories(vc_core PUBLIC src)
