@@ -3216,7 +3216,7 @@ static const char CSS[] =
     "  color: white; border-radius: 18px; min-width: 76px; min-height: 76px; -gtk-icon-size: 34px;"
     "  box-shadow: 0 6px 18px color-mix(in srgb, var(--accent) 35%, transparent); }"
     ".hero { font-size: 22px; font-weight: 700; }"
-    ".empty-sub { color: var(--text2); font-size: 13.5px; }"
+    ".empty-sub { color: var(--text2); font-size: 14px; }"
     ".feature { background: var(--fill); border-radius: 999px; padding: 4px 10px; font-size: 12px;"
     "  color: var(--text2); }"
     ".feature image { -gtk-icon-size: 11px; }"
