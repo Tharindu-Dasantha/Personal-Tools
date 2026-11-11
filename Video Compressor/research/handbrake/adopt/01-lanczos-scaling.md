@@ -1,14 +1,14 @@
 ---
 title: Adopt — lanczos scaler for downscales
 tags: [adopt, quality, scaling, lanczos, swscale, scale_vaapi, max-size]
-source: ../06-filters.md (HandBrake cropscale.c), Video Compressor src/compress.c add_video_output
-related: [00-index, ../06-filters, 02-x265-texture-tuning, 13-auto-crop]
+source: note 06-filters (HandBrake cropscale.c), Video Compressor src/compress.c add_video_output
+related: [00-index, note 06-filters, 02-x265-texture-tuning, 13-auto-crop]
 ---
 
 # 01 · Lanczos scaler for downscales
 
 ## What HandBrake does
-It never uses the default scaler (`libhb/cropscale.c`, see [../06-filters](../06-filters.md)):
+It never uses the default scaler (`libhb/cropscale.c`, see `06-filters`):
 - CPU with AVX2: `zscale` with `filter=lanczos`
 - CPU otherwise: `scale` with `flags=lanczos+accurate_rnd`
 - GPU paths: the vendor scaler in its high-quality mode (`scale_cuda interp_algo=lanczos`, `vpp_qsv scale_mode=hq`)

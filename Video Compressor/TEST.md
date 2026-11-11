@@ -38,7 +38,7 @@ Start the app with `"Video Compressor/build/video-compressor"`.
 Expected:
 - [ ] The `slow` output is **≤ 50 MB**.
 - [ ] You can't tell either output from the original at normal viewing.
-- [ ] Write the size, %, time and how far off the `≈` estimate was into the empty row of `tasks/plan.md` ("real 200 MB+ phone
+- [ ] Write the size, %, time and how far off the `≈` estimate was into the empty row of the T11 table in `LOG.md` ("real 200 MB+ phone
       clip"). If the estimate is far off, `EST_VIDEO_KBPS` in `src/compress.c` needs recalibrating.
 
 ### 1.2 Real iPhone HDR clip (SPEC.md criterion 12)
@@ -103,7 +103,7 @@ Afterwards: stop the server (Ctrl+C), then `sudo firewall-cmd --remove-port=8000
 - [ ] Each `.png` is within about 15% of TinyPNG's size, and you accept the look.
 - [ ] If not, say which way it is off; new values for 82 (JPEG) / 65-90 (pngquant) / 80 (WebP) are proposed and asked first.
 
-Send the table: it goes into `tasks/plan.md`.
+Send the table: it goes into `LOG.md`.
 
 ---
 

@@ -1,8 +1,8 @@
 ---
 title: Adopt — fall back from GPU to CPU instead of failing
 tags: [adopt, reliability, gpu, vaapi, fallback, degrade-gracefully, x265]
-source: ../14-hardware-acceleration.md, ../01-architecture-pipeline.md (filter init failure), Video Compressor src/main.c encode-finished handler
-related: [00-index, ../14-hardware-acceleration, ../01-architecture-pipeline, 05-per-encode-logs, 08-parallel-gpu-encodes]
+source: note 14-hardware-acceleration, note 01-architecture-pipeline (filter init failure), Video Compressor src/main.c encode-finished handler
+related: [00-index, note 14-hardware-acceleration, note 01-architecture-pipeline, 05-per-encode-logs, 08-parallel-gpu-encodes]
 ---
 
 # 04 · GPU → CPU fallback on failure
@@ -10,8 +10,8 @@ related: [00-index, ../14-hardware-acceleration, ../01-architecture-pipeline, 05
 ## What HandBrake does
 HandBrake **degrades instead of failing** at several levels:
 - A hw device that fails to initialise logs "Failure to initialise hwaccel" and the job **continues with software decode** (`work.c` `do_job`).
-- A filter whose `init()` fails is **removed and the encode goes on** (see [../01-architecture-pipeline](../01-architecture-pipeline.md)).
-- A hwaccel that can't handle the filters, rotation, colour range or encoder makes HandBrake **download frames and continue on the CPU** (see [../14-hardware-acceleration](../14-hardware-acceleration.md)).
+- A filter whose `init()` fails is **removed and the encode goes on** (see `01-architecture-pipeline`).
+- A hwaccel that can't handle the filters, rotation, colour range or encoder makes HandBrake **download frames and continue on the CPU** (see `14-hardware-acceleration`).
 - Hardware encoders are **test-opened** before they're offered (`hb_vaapi_encoder_available`).
 
 ## What we do now

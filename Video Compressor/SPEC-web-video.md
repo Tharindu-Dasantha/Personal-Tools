@@ -1,6 +1,6 @@
 # Spec: web-video
 
-Module of [CAPABILITIES.md](CAPABILITIES.md). Depends on `app-shell` ([SPEC-app-shell.md](SPEC-app-shell.md)).
+Module of Media Tools (history in [LOG.md](LOG.md)). Depends on `app-shell` ([SPEC-app-shell.md](SPEC-app-shell.md)).
 
 ## Objective
 

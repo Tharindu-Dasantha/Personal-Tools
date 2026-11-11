@@ -6,7 +6,7 @@ typedef struct {
     const char *label;   /* "720p" */
     int max_short_side;  /* inclusive upper bound */
     int crf;
-    int gpu_qp;          /* hevc_vaapi CQP that matches `crf` (tasks/plan-performance.md, R8) */
+    int gpu_qp;          /* hevc_vaapi CQP that matches `crf` (LOG.md, R8) */
     int audio_kbps;
 } VcClass;
 

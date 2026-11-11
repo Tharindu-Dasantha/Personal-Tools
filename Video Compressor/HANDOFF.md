@@ -1,7 +1,7 @@
 # Handoff: Video Compressor
 
-Last updated 2026-11-10 (Phase 10). Read [SPEC.md](SPEC.md) (source of truth), then [tasks/plan.md](tasks/plan.md)
-and [tasks/todo.md](tasks/todo.md). Checkboxes in `todo.md` are ticked only for things actually verified.
+Last updated 2026-11-11 (v3 UI). Read [SPEC.md](SPEC.md) (source of truth) and the `SPEC-*.md` module specs. History,
+decisions and measurements are in [LOG.md](LOG.md); planned speed and install-size work is in [PERFORMANCE.md](PERFORMANCE.md).
 [TEST.md](TEST.md) lists every test the user still runs by hand, with the expected result of each.
 
 ## Where things stand
@@ -15,17 +15,17 @@ and [tasks/todo.md](tasks/todo.md). Checkboxes in `todo.md` are ticked only for 
 | 5. Harden | T11 | **Done except Criterion 4 and 12's iPhone half (the user's eyes).** ASan/UBSan clean. Close-mid-encode crash fixed. Committed |
 | 6. Controls + estimates | T12–T15 | **Done, verified on Xvfb with ASan.** Icon buttons, pause, per-item/multi-select actions, size estimate, speed guide. Committed; review with the user still open |
 | 6b. v2 UI (Figma) | – | **Built 2026-11-08**, screenshotted on Xvfb. The Phase 7 ASan run (2026-11-10) went through it. Committed |
-| Performance | R1–R12 | GPU encoder, size samples, x265 tuning, nice/idle I/O, mtime copy. See [tasks/plan-performance.md](tasks/plan-performance.md) and [tasks/todo-performance.md](tasks/todo-performance.md). Committed |
+| Performance | R1–R12 | GPU encoder, size samples, x265 tuning, nice/idle I/O, mtime copy. Results in [LOG.md](LOG.md#measurements); next steps in [PERFORMANCE.md](PERFORMANCE.md). Committed |
 | 7. App shell | T16–T18 | **Done, verified on Xvfb with ASan (2026-11-10)**: `modes.c`, multi-step runner, Choose Files, title `Media Tools`. Committed `7541405`. Checkpoint 7 still open (see below) |
 | 8. Web video | T19, T20 | **Done, verified on Xvfb with ASan (2026-11-10)**: `web_video.c`, Mode dropdown, per-mode options, split tool check, banner. Committed `7de014b`. Checkpoint 8 needs the user (web-video 5, 6, review) |
 | 9. Video → frames | T21, T22 | **Done, verified on Xvfb with ASan (2026-11-10)**: `frames.c`, frames options bar, directory parts in the runner. Committed `d785d0a`. Checkpoint 9 needs the review |
-| 11. v3 UI (Figma "v3 – Media Tools") | – | **Built 2026-11-11, verified on Xvfb with ASan**: mode sidebar (accent per mode, lock while busy, missing-tool dot, Tools card), header toolbar (Choose Files/Folder, Start/Pause/Stop, Show in Files when finished), per-mode inspector, footer status, two-line row results, Twin chip, banner with copyable fix, custom close dialog, dark mode. Follow-up the same day: default speed `medium`, GPU moved from the speed buttons to a **Use GPU** switch, footer time estimate (`vc_estimate_seconds`, speed learned per machine in `~/.config/media-tools/speed.ini`), Inter font embedded (copied to `~/.cache/media-tools/fonts` on first run). Not committed yet |
+| 11. v3 UI (Figma "v3 – Media Tools") | – | **Built 2026-11-11, verified on Xvfb with ASan**: mode sidebar (accent per mode, lock while busy, missing-tool dot, Tools card), header toolbar (Choose Files/Folder, Start/Pause/Stop, Show in Files when finished), per-mode inspector, footer status, two-line row results, Twin chip, banner with copyable fix, custom close dialog, dark mode. Follow-up the same day: default speed `medium`, GPU moved from the speed buttons to a **Use GPU** switch, footer time estimate (`vc_estimate_seconds`, speed learned per machine in `~/.config/media-tools/speed.ini`), Inter font embedded (copied to `~/.cache/media-tools/fonts` on first run). Committed `b1f4378` and `84398e5` |
 | 10. Compress images | T23–T27 | **T23–T26 done, verified on Xvfb with ASan (2026-11-10)**: `images.c`, image fixtures, Compress images mode, trash for images. **Not committed yet.** T27 (calibration against TinyJPG/TinyPNG) needs the user's photos and eyes |
 
 Everything up to `caed08a` is pushed to `origin/main`.
 
-**Media Tools (Phases 7–10):** the app grows into four modules mapped in [CAPABILITIES.md](CAPABILITIES.md):
-`app-shell` → `web-video` → `video-frames` → `image-compress`, each with a `SPEC-<id>.md` and tasks T16–T27 in `todo.md`.
+**Media Tools (Phases 7–10):** the app grows into four modules:
+`app-shell` → `web-video` → `video-frames` → `image-compress`, each with a `SPEC-<id>.md` (tasks T16–T27, see [LOG.md](LOG.md)).
 All four are built. pngquant 4.0.3 and ImageMagick 7.1.2 are installed; the image fixtures also need `exiftool`.
 
 **Next step:** the user reviews Phase 10 (and runs [TEST.md](TEST.md) 5c and 2.3 = T27) and says which commit date to use for
@@ -36,7 +36,7 @@ it. Phases 7–9 also still wait on the review and the items below.
    before it has fully downloaded).
 
 Still only the user can do (steps and expected results in [TEST.md](TEST.md), sections 1–2):
-1. Supply a real 200 MB+ phone clip and judge it at `slow` and `faster` (Criterion 4). Fill the empty row in `plan.md`, and use it
+1. Supply a real 200 MB+ phone clip and judge it at `slow` and `faster` (Criterion 4). Fill the empty row of the T11 table in `LOG.md`, and use it
    to recalibrate `EST_VIDEO_KBPS` (the size estimate) in `compress.c`.
 2. Judge a real iPhone HDR clip for washed-out colour (Criterion 12).
 3. Web video: no GPS tag in a real phone clip's output (web-video 5), and the output plays in Safari on iOS before it has
@@ -46,7 +46,7 @@ Still only the user can do (steps and expected results in [TEST.md](TEST.md), se
 
 **Ask the user:** Compress video fails on odd-sized video (see "Open issues"). Fixing it changes what Compress video encodes.
 
-T11 results and the measured preset factors are in `tasks/plan.md`.
+T11 results and the measured preset factors are in [LOG.md](LOG.md#measurements).
 
 ## Build, test, run (from the repo root; the folder name has a space)
 
@@ -79,7 +79,7 @@ cmake -S "Video Compressor" -B "Video Compressor/build/san" -DCMAKE_BUILD_TYPE=D
   - `"N/A"` and `"unknown"` are both treated as missing values.
   - `VC_CLASSES[]` (the CRF/audio table) is **ask-first** to change.
   - `EST_VIDEO_KBPS[]` (parallel to `VC_CLASSES`, static-asserted) and `PRESET_FACTORS[]` only feed the size estimate
-    and the speed guide. They never change what is encoded. The factors were measured (plan.md, "Preset factors"); the kbps values are guesses.
+    and the speed guide. They never change what is encoded. The factors were measured (LOG.md, "Preset factors"); the kbps values are guesses.
 - `src/web_video.c` (Phase 8): `vc_web_video_output()` (`web/<stem>.mp4`, lowercase) and `vc_web_video_steps()`, one libx264 step
   per SPEC-web-video.md. The zscale matrix fallback is `bt2020nc`: zscale rejects `bt2020` as a matrix name (it's a primaries name).
 - `src/frames.c` (Phase 9): `vc_parse_time()`, `vc_frames_jpeg_qscale()`, `vc_frames_estimate()`, `vc_frames_output()`
@@ -144,120 +144,6 @@ cmake -S "Video Compressor" -B "Video Compressor/build/san" -DCMAKE_BUILD_TYPE=D
   - `lowbitrate.mp4` (HEVC, which triggers "already efficient")
   - `subs-srt.mkv`, `subs-movtext.mp4`
   - decoys: `notes.txt` and `fake.mp4` (a text file)
-
-## Verified so far
-
-Phase 10, on Xvfb, `build/asan` (ASan + UBSan, `G_DEBUG=fatal-criticals`), run copies under `build/asan/p10/{a,b,c,d,e}`.
-Five sessions, every one exit 0 with no sanitizer report:
-- Listing: 11 rows (no `anim.gif`), `fake.png` `Unreadable`, rows `JPEG · 2400×1600`; Start pulses the row bar.
-- Original width: every JPEG/PNG/BMP/TIFF gave its same-type (BMP → png with alpha, TIFF → jpg) plus `.webp`, `banner.webp`
-  one `.webp`. Every output decodes (`magick identify`) and Files rendered thumbnails. `rotated.jpg` (stored 1600×1200,
-  EXIF orientation 6 + GPS) → 1200×1600, no orientation, no EXIF at all (exiftool). `alpha.png` and `logo.bmp` outputs keep
-  alpha. `already-tiny.png` → `Skipped – already optimized`, nothing kept. No kept output is bigger than its source.
-- A re-run: every finished row `Already compressed`; `already-tiny.png` is retried and skipped again (see Open issues).
-- Max 1280 + Trash on: `photo.*` 1280×853, `odd-1001x667.*` stay 1001×667, `scan.*` 1280×1656, `screenshot.*` 1280×800. 9
-  originals trashed (`rotated.jpg` passed through the transposed check); `already-tiny.png` and `fake.png` stayed. All 12
-  restored byte-identical (`sha256sum -c`).
-- Wrappers on PATH (slow magick/pngquant, pngquant exit 99 for `alpha`, magick failing on `logo.bmp`, ffprobe sleeping 30 s on
-  `compressed/` paths): `alpha.png` → `png already optimized · webp 8.7 kB −39%`, `Original kept (no png copy)`, not
-  trashed; `logo.bmp` → `Failed`, original kept. One batch Stop during `screenshot.png`'s pngquant step (intermediate present)
-  and `odd-1001x667.jpg`'s output check: no `.part` or `.mid.part` left, row `Stopped`; the checked one `Original kept`.
-  Close mid-job → Stop and Quit: exit 0, no magick/pngquant, no part. 7 trashed originals restored byte-identical.
-- pngquant hidden from PATH: Compress images shows "Compress images needs pngquant: sudo dnf install pngquant" with Start
-  greyed (10 images ready); Compress video has no banner. Two chosen videos then Compress images: `0 files · 2 hidden (not
-  images)`.
-- Compress video, Web video and Video → frames each still finished a 2-file run in the same build.
-- After the twin and wording fixes (a sixth session, exit 0, clean): `twin.jpg` + `twin.png` → `twin.jpg.jpg`, `twin.jpg.webp`,
-  `twin.png.png`, `twin.png.webp`, while `photo.jpg`/`screenshot.png` keep plain names; a re-run shows all four `Already
-  compressed`. Start tooltip "Compress every waiting image", row menu `Compress`, close dialog "Keep working in the
-  background?", web summary `Smaller`, frames summary `vs the videos`.
-- Headless (throwaway driver linked against `vc_core`): the same per-output results on every fixture.
-
-Phase 9, on Xvfb, `build/asan` (ASan + UBSan, `G_DEBUG=fatal-criticals`), run copies under `build/asan/p9/{f,g,h,i,j}`. Every
-session exited 0 with no sanitizer report:
-- Defaults (15 fps, WebP, q80, Max 1920) on 5 fixtures: `720p` → `frame_0001.webp` … `frame_0900.webp`, and every folder's count
-  equals the `≈` hint shown before Start (300/901/900/150/300). Rows end `900 frames · 8.7 MB`. A re-run: all `Already extracted`.
-- 12 fps, Start `10`, End `0:12`, Max 640, JPG: 24 frames each, `1080p` 640×360, portrait 640×1138. `hlg-10bit.mov` (10 s) showed
-  `Starts after the end` before Start and was the only one skipped. Hints update as FPS/Start/End change.
-- Start `abc`: the field turns red and Start greys.
-- Stop mid-extraction (164 frames written): ffmpeg gone, no `.part` folder, no final folder. Start again: extracted (1802 frames).
-- Close mid-extraction → Stop and Quit: exit 0, no ffmpeg, `frames/` empty.
-- Headless (throwaway driver): the same counts; the first trimmed frame matches the source at 10 s (same counter, best SSIM at
-  10.0 s); the tone-mapped HLG JPG looks neither washed out nor dark next to the source (testsrc only).
-- Compress video and Web video each still finished a 2-file run in the same build.
-
-Phase 8, on Xvfb, `build/asan` (ASan + UBSan), run copies under `build/asan/p8/f/`. Every session exited 0 with no sanitizer report:
-- Web video at Max 1280 on the fixture folder: 12 outputs, all `h264`/High/`avc1`/`yuv420p`, even sizes, `aac` LC, `moov` before
-  `mdat`, no subtitle stream, no format tags. 1080p → 1280×720, 720p stays, portrait stays 1080×1920, `odd-853x479` → 852×478.
-  HLG and PQ outputs are `bt709`; a frame next to the source looks neither washed out nor dark (testsrc only).
-  `lowbitrate.mp4` (+178%) and `odd-853x479` (+26%) are kept with a `+N%` pill.
-- Original width + Remove audio: 1080p stays 1920×1080, outputs have no audio stream. Existing outputs show `Already converted`.
-- Stop mid-file: ffmpeg gone in 175 ms, no `.part`; Start again finished the rest. Close mid-encode → Stop and Quit: exit 0, no
-  ffmpeg, no `.part`. While running, the Mode dropdown is greyed and both Choose buttons are hidden (app-shell criterion 4).
-- Mode switch with a folder loaded relists it and resets rows, both ways. This found and fixed a heap-use-after-free in
-  `load_source()` (a reload passed `app.folder`, which it freed and then read).
-- An `ffmpeg` wrapper that drops `libx264` from `-encoders`: Web video shows the banner with Start greyed; Compress video in the
-  same session has no banner and compresses.
-- Headless (throwaway driver linked against `vc_core`): the same results on every fixture.
-
-Phase 7, on Xvfb, `build/asan` (ASan + UBSan), run copies under `build/asan/p7/`. Every session exited 0 with no sanitizer report:
-- Choose Files with `two/a/clip-720.mp4` and `two/b/clip-240.avi`: only those two listed, header `Chosen files · 2 files`, outputs
-  in `two/a/compressed/` and `two/b/compressed/`. Both header buttons hidden while running. Choose Folder afterwards replaced the list.
-- Full fixture run at `faster` with subtitles and auto-trash: pause gave ffmpeg state `T`, resume `S` (same PID); batch Stop
-  mid-file killed ffmpeg within 1 s with no `.part`; a restart finished the rest. ffmpeg ran at nice 10 and outputs got the
-  source mtime. 10 originals trashed, all 13 files restored byte-identical (`sha256sum -c`). Subtitle outputs are `subrip`.
-- A second Start with every output present: all rows `Already compressed` (through `vc_mode_steps()`). `lowbitrate.mp4` was
-  encoded, rejected and its part removed.
-- Close mid-encode at `slower` → Stop and Quit: exit 0, no ffmpeg, empty `compressed/`.
-- Not exercised in the GUI: a job with more than one step (no mode has one until images), and the pulsing bar.
-
-Earlier phases (2026-11-08):
-
-Phase 6, on Xvfb, `build/asan` (ASan + UBSan), run copies under `build/asan/run*`: all T14/T15 checks in `todo.md`, plus
-the full run at `faster` with subtitles and auto-trash (9 trashed and restored byte-identical, subtitle outputs `subrip`). Every
-session exited 0 with no sanitizer report. Use `ASAN_OPTIONS=detect_leaks=0` (GTK noise).
-
-Phase 5, on Xvfb, `build/san` (see Build): the full fixture run at `faster` with subtitles and trash on, a cancel,
-a restart, all 9 originals restored byte-identical, a second Start and a close gave exit 0 with nothing on stderr.
-Closing mid-encode **was** a SIGSEGV (exit 139); now it exits 0 with no `.part`. Closing during the output check
-(slow `ffprobe` wrapper) exits 0, the original is untouched and not trashed, and the output stays. The plain Debug
-build also exits 0 on close mid-encode. Always check the app's exit code: wrap it as
-`/bin/sh -c '"$0"; echo $? > rc' "$APP"` inside `dbus-run-session`.
-
-Phase 2 GUI, on Xvfb: the fixture folder lists exactly the 11 videos (`notes.txt` and `compressed/` are absent).
-The classes match ffprobe dimensions, portrait shows `1080p`, `fake.mp4` shows `Unreadable` and HLG shows
-`10-bit HDR`. Choosing another folder replaces the list, including mid-probe (no stale rows). While
-probes run, rows show `Reading…`, Start is disabled and the Speed dropdown still opens.
-
-Phase 4 GUI, on Xvfb, on copies of the fixtures:
-- The option is on and the dialog says "Up to 10 originals…". Its Cancel starts nothing. Confirming at `faster`
-  takes 60 s: 9 rows show `Done – original trashed`, `lowbitrate.mp4` shows `already efficient` and stays,
-  and `fake.mp4` stays. `gio list trash://` lists all 9. `gio trash --restore` brings them back, with
-  matching checksums.
-- Cancel during 1080p: the original and the pending file are still there, and the Trash is empty.
-- Read-only folder: `Compressed – original kept (trash failed)`.
-- An ffprobe wrapper that fails on `compressed/` paths gives `177.3 kB · −98% – original kept`.
-- With the option off there is no dialog, the checksums are unchanged and the Trash is empty.
-
-Phase 3 GUI, on Xvfb (default `slow`): the full fixture run took 112 s. All 9 outputs decode without
-errors, `ps` showed `-preset slow`, and the bars advance with the header showing `n / 10`. Cancel kills
-ffmpeg in 66 ms and leaves no `.part`. Start works again after a cancel, and closing the window
-mid-encode kills ffmpeg and removes the `.part`. A second Start skips everything. Keep subtitles plus
-`faster` gives `.mkv` files with `subrip` (`mov_text` becomes `-c:s srt`), and both show in VLC.
-
-Phase 3, headless (earlier):
-
-The app's exact argv was run on all fixtures through a throwaway driver linked against `vc_core`:
-
-- All outputs are produced. 8-bit outputs are `hevc`/`hvc1`/`yuv420p`; the HLG output is `Main 10`,
-  `yuv420p10le`, `arib-std-b67`/`bt2020`/`bt2020nc`.
-- 720p: 60.9 MB → 1.64 MB, SSIM 0.9992. `testsrc` compresses far better than real footage, so
-  Criterion 4 (a real 200 MB phone clip) is still the real test.
-- `lowbitrate.mp4` came out at 183% of its source, so it was rejected. `fake.mp4` shows as Unreadable.
-  A re-run skips everything. Original checksums are unchanged.
-- With Keep subtitles on, both subtitle fixtures give `.mkv` files with a `subrip` track (`mov_text`
-  is converted to `srt`). With it off, outputs have no subtitle stream.
-- On 1080p, `faster` takes 10.3 s and `slow` takes 26.9 s.
 
 ## Testing the GUI (no human needed)
 
@@ -385,13 +271,8 @@ Gotchas:
 - `subs-srt.mkv` has `default=0` on its subtitle track, and the output copies that, so players don't
   show it until it's picked. That matches the source. Forcing `-disposition:s:0 default` is an option
   to raise at review.
-- The row text is `Skipped – compressed/<name> exists`, where the plan said `Skipped – already done`.
 - The confirm dialog says "**Up to** N originals…" (the SPEC has no "Up to"). N counts readable files
   with no output yet, but "already efficient" or failed ones won't be trashed, so N is a maximum.
-- `Done – original trashed` replaces the size/percent text in the row (as the SPEC wording says). The new
-  size is no longer visible there. Could be `20 MB · −78% · original trashed` if wanted.
-- If the output check fails, the row shows `<size> · −N% – original kept`, with the reason in the tooltip.
-  The SPEC doesn't name this text.
 
 - The size estimate overshoots badly on `testsrc` fixtures (240p: ≈ 3.1 MB vs 770 kB actual), because synthetic video is unusually
   easy to compress. It is meant for real footage and is uncalibrated until a phone clip is measured.
@@ -402,11 +283,8 @@ Gotchas:
   names change and the next run makes new copies under the new names (the old ones stay). Compress video still has the
   `clip.mov`/`clip.mp4` collision: fixing it changes what that mode writes, which is ask-first.
 - Images: the row meta shows a JPEG's stored size (ffprobe ignores EXIF orientation), e.g. `1600×1200` for a portrait photo.
-  The QUALITY column is empty in images mode (the video classes don't apply).
 - A copy of 320 kB in 1.4 kB showed `−100%`; `percent_smaller()` now caps at 99% for any non-empty output (all modes).
-- Drag and drop still takes folders only; Choose Files is the only way to list single files. The finished bar still offers
-  only "Choose Another Folder…".
-- The "N left" counter doesn't include held (paused-while-queued) items.
+- Drag and drop still takes folders only; Choose Files is the only way to list single files.
 - Name collision: `clip.mov` and `clip.mp4` both map to `compressed/clip.mp4`. The second is
   skipped with "compressed/clip.mp4 exists" (honest, but it isn't encoded).
 - If a file's first video stream is cover art (some MP4s), the cover art gets encoded. Not handled.
@@ -420,7 +298,7 @@ Gotchas:
 - Wording is mode-aware since Phase 10 (`noun()`, `verb()`, `doing()`): tooltips, row menu (`Compress`/`Convert`/`Extract`),
   selection bar, suspend-inhibit reason, background notification. The close dialog is neutral ("Keep working in the
   background?"). The summary caption is `Smaller`, `Bigger` (a web total that grew) or `vs the videos` (frames). Still fixed
-  text: the list placeholder "No videos in this folder." (never shown, see above) and the compress-only tooltips.
+  text: the list placeholder "Nothing here for this mode." (never shown, see above) and the compress-only tooltips.
 
 ## Working with this user
 

@@ -1,7 +1,7 @@
 ---
 title: Adopt — per-encode activity logs
 tags: [adopt, reliability, logging, debugging, observability, tuning-data]
-source: HandBrake gtk/src/callbacks.c (EncodeLogs), libhb/work.c hb_display_job_info, ../01-architecture-pipeline.md
+source: HandBrake gtk/src/callbacks.c (EncodeLogs), libhb/work.c hb_display_job_info, note 01-architecture-pipeline
 related: [00-index, 04-gpu-to-cpu-fallback, 02-x265-texture-tuning, 08-parallel-gpu-encodes, 09-decoder-thread-budget]
 ---
 
@@ -10,7 +10,7 @@ related: [00-index, 04-gpu-to-cpu-fallback, 02-x265-texture-tuning, 08-parallel-
 ## What HandBrake does
 - One **activity log per encode**: `~/.config/ghb/EncodeLogs/<output name> YYYY-MM-DD HH-MM-SS.log` in the GTK GUI (`callbacks.c:4171`). There is an option to put it next to the output instead.
 - The log starts with the **HandBrake version** and a **full summary of the job** (`hb_display_job_info`: source, filters, encoder settings, audio tracks), and ends with **stats**: average fps, drops and dups from the frame-rate shaper, sync gaps, decode errors.
-- These logs are how users report bugs, and how *we* found out what HandBrake really did (`tasks/plan-performance.md` read them from `~/.var/app/fr.handbrake.ghb/config/ghb/EncodeLogs`).
+- These logs are how users report bugs, and how *we* found out what HandBrake really did (the performance work, see `LOG.md`, read them from `~/.var/app/fr.handbrake.ghb/config/ghb/EncodeLogs`).
 
 ## What we do now
 - `-loglevel error -nostats`, and `main.c` (around line 1186) keeps **only the last stderr line**, for the `Failed` tooltip.

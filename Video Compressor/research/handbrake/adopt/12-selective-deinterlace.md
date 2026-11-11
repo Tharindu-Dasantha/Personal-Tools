@@ -1,15 +1,15 @@
 ---
 title: Adopt — selective deinterlacing
 tags: [adopt, quality, deinterlace, comb-detect, decomb, bwdif, camcorder, interlaced]
-source: ../06-filters.md (comb detect + decomb selective mode), ../02-scan-and-probe.md (interlace detection over previews), ../13-presets.md
-related: [00-index, ../06-filters, ../02-scan-and-probe, 13-auto-crop, 11-robust-probing]
+source: note 06-filters (comb detect + decomb selective mode), note 02-scan-and-probe (interlace detection over previews), note 13-presets
+related: [00-index, note 06-filters, note 02-scan-and-probe, 13-auto-crop, 11-robust-probing]
 ---
 
 # 12 · Selective deinterlacing
 
 ## What HandBrake does
-- Every General/Device/Matroska preset enables **Comb Detect + Decomb** (see [../13-presets](../13-presets.md)).
-- With comb detect present, decomb runs in **selective mode** (`MODE_DECOMB_SELECTIVE`): only frames that actually show combing are deinterlaced, and progressive frames pass through untouched (see [../06-filters](../06-filters.md)).
+- Every General/Device/Matroska preset enables **Comb Detect + Decomb** (see `13-presets`).
+- With comb detect present, decomb runs in **selective mode** (`MODE_DECOMB_SELECTIVE`): only frames that actually show combing are deinterlaced, and progressive frames pass through untouched (see `06-filters`).
 - The scan flags a title as interlaced when ≥ half of its previews comb (`scan.c:1552`).
 
 ## What we do now

@@ -1,18 +1,21 @@
 ---
 title: HandBrake techniques to adopt — index
 tags: [handbrake, video-compressor, adopt, roadmap, optimization, index]
-source: ../ (HandBrake research notes 00–15) + Video Compressor src/compress.c and src/main.c as of 2026-11-09
-related: [../00-index, ../15-lessons-for-video-compressor, 14-already-adopted, 15-rejected]
+source: HandBrake research notes 00–15 (removed 2026-11-11, in git history) + Video Compressor src/compress.c and src/main.c as of 2026-11-09
+related: [HandBrake research index, note 15-lessons-for-video-compressor, 14-already-adopted, 15-rejected]
 ---
 
 # HandBrake techniques we can adopt
 
 Each note below is one technique HandBrake uses, written against our code. Every note has the same
 sections: **What HandBrake does → What we do now → Change → Gain → Risk → How to verify → Effort**.
-Background on how HandBrake works is in the parent folder ([../00-index](../00-index.md)).
+Names like `06-filters` or "note 12-hdr-and-color" refer to the HandBrake background notes, removed on 2026-11-11 once
+this list was written. Read one with `git show 84398e5:"Video Compressor/research/handbrake/06-filters.md"`; a summary is
+in [LOG.md](../../../LOG.md#handbrake-research-summary).
 
 Only [16](16-encode-speed.md) is implemented so far. Anything that changes output needs the VMAF/size/time check from
-[`tasks/plan-performance.md`](../../../tasks/plan-performance.md) before it ships.
+[LOG.md](../../../LOG.md#medium-vs-slow-and-the-gpu-on-real-clips-r0-r3-r8) before it ships. Speed items are also planned in
+[PERFORMANCE.md](../../../PERFORMANCE.md).
 
 ## Ranked list
 

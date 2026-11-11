@@ -1,15 +1,15 @@
 ---
 title: Adopt — HandBrake's x265 texture-preserving tuning
 tags: [adopt, quality, speed, x265, psy-rd, psy-rdoq, aq-mode, rskip, tuning]
-source: ../13-presets.md (preset_builtin.json VideoOptionExtra), ../07-video-encoders.md, Video Compressor src/compress.c add_video_output
-related: [00-index, ../13-presets, ../07-video-encoders, 01-lanczos-scaling, 07-10bit-for-8bit-sources, 05-per-encode-logs]
+source: note 13-presets (preset_builtin.json VideoOptionExtra), note 07-video-encoders, Video Compressor src/compress.c add_video_output
+related: [00-index, note 13-presets, note 07-video-encoders, 01-lanczos-scaling, 07-10bit-for-8bit-sources, 05-per-encode-logs]
 ---
 
 # 02 · HandBrake's x265 texture tuning
 
 ## What HandBrake does
 Every x265 preset (H.265 MKV, 4K HEVC, the Apple/Chromecast/Roku HEVC presets) adds this string
-(see [../13-presets](../13-presets.md)):
+(see `13-presets`):
 ```
 strong-intra-smoothing=0:rect=0:aq-mode=1:rd=4:psy-rd=0.75:psy-rdoq=4.0:rdoq-level=1:rskip=2
 ```

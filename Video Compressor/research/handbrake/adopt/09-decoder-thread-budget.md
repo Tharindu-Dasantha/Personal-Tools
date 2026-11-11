@@ -1,14 +1,14 @@
 ---
 title: Adopt — leave CPU headroom by capping decoder threads
 tags: [adopt, speed, optimization, threads, decoder, x265, oversubscription]
-source: ../04-decoding.md (HandBrake hb_avcodec_open: cpu_count/2+1, FF_THREAD_FRAME|SLICE), Video Compressor src/compress.c add_input_options
-related: [00-index, ../04-decoding, 08-parallel-gpu-encodes, 05-per-encode-logs]
+source: note 04-decoding (HandBrake hb_avcodec_open: cpu_count/2+1, FF_THREAD_FRAME|SLICE), Video Compressor src/compress.c add_input_options
+related: [00-index, note 04-decoding, 08-parallel-gpu-encodes, 05-per-encode-logs]
 ---
 
 # 09 · Decoder thread budget
 
 ## What HandBrake does
-The video decoder gets **`cpu_count / 2 + 1` threads** (`hb.c:93`, see [../04-decoding](../04-decoding.md)), with
+The video decoder gets **`cpu_count / 2 + 1` threads** (`hb.c:93`, see `04-decoding`), with
 frame + slice threading, while the encoder (x265) runs its own thread pools on all cores. The decoder is
 deliberately given less, so it doesn't compete with the encoder, which is the real bottleneck. Threading is
 turned off for sources whose resolution changes mid-stream.

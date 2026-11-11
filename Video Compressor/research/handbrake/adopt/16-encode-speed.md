@@ -1,8 +1,8 @@
 ---
 title: Adopted — x265 encode speed (ctu=32 for small video, rect=0:rskip=2 at slow)
 tags: [adopt, adopted, speed, x265, ctu, wpp, rect, rskip, threads, benchmark]
-source: benchmarks on this laptop (i5-1240P, 16 threads) 2026-11-10; HandBrake log of the same file; ../13-presets.md (HandBrake x265 tuning string)
-related: [00-index, 02-x265-texture-tuning, 08-parallel-gpu-encodes, 09-decoder-thread-budget, 14-already-adopted, ../07-video-encoders, ../13-presets]
+source: benchmarks on this laptop (i5-1240P, 16 threads) 2026-11-10; HandBrake log of the same file; note 13-presets (HandBrake x265 tuning string)
+related: [00-index, 02-x265-texture-tuning, 08-parallel-gpu-encodes, 09-decoder-thread-budget, 14-already-adopted, note 07-video-encoders, note 13-presets]
 ---
 
 # 16 · x265 encode speed (adopted 2026-11-10)

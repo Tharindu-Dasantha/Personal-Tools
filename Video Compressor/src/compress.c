@@ -8,7 +8,7 @@ G_DEFINE_QUARK (vc-error-quark, vc_error)
 /* The only place to tune quality against size. Lower CRF on small frames because each
  * pixel covers more of the screen, so artifacts show more. */
 /* gpu_qp: the hevc_vaapi QP whose VMAF matches x265 medium at the class CRF. Measured for 720p and
- * 1080p on real clips (tasks/plan-performance.md, R8); the other classes keep the same offset. */
+ * 1080p on real clips (LOG.md, R8); the other classes keep the same offset. */
 static const VcClass VC_CLASSES[] = {
     { "240p",  300, 24, 26,  64 }, { "360p",   400, 24, 26,  96 },
     { "480p",  576, 25, 27,  96 }, { "720p",   800, 26, 28, 128 },
@@ -27,7 +27,7 @@ static const int EST_VIDEO_KBPS[] = { 350, 600, 900, 1600, 3000, 8000 };
 G_STATIC_ASSERT (G_N_ELEMENTS (EST_VIDEO_KBPS) == G_N_ELEMENTS (VC_CLASSES));
 
 /* Encode time and output size against medium, measured with this app's argv on this laptop
- * (tasks/plan.md, "Preset factors"). At a fixed CRF a slower preset keeps more detail; it does
+ * (LOG.md, "Preset factors"). At a fixed CRF a slower preset keeps more detail; it does
  * not reliably make the file smaller. */
 static const struct { const char *name; double time, size; } PRESET_FACTORS[] = {
     { VC_PRESET_GPU, 0.08, 1.15 },   /* R8 medians over 6 clips (0.06-0.14x time, 1.06-1.41x size) */
@@ -357,7 +357,7 @@ add_video_output (GStrvBuilder *b, const VcProbe *probe, const VcOptions *opt, g
 
     if (gpu) {
         g_snprintf (num, sizeof num, "%d", cls->gpu_qp);
-        /* low_power is the GPU's fixed-function encoder: ~12x x265 medium (plan-performance.md) */
+        /* low_power is the GPU's fixed-function encoder: ~12x x265 medium (LOG.md) */
         g_strv_builder_add_many (b, "-c:v", "hevc_vaapi", "-low_power", "1", "-rc_mode", "CQP",
                                  "-qp", num, NULL);
         if (ten)

@@ -1,6 +1,6 @@
 # Spec: Video Compressor
 
-> Module `video-compress` of [CAPABILITIES.md](CAPABILITIES.md). The app is growing into **Media Tools**, with web video,
+> Module `video-compress` of Media Tools (history in [LOG.md](LOG.md)). The app is growing into **Media Tools**, with web video,
 > video → frames and image compression as further modes (each with its own `SPEC-<id>.md`). This file stays the spec for the
 > `Compress video` mode and the source of the shared rules in **Boundaries**. The host window changes (mode dropdown,
 > Choose Files, multi-step jobs) are in [SPEC-app-shell.md](SPEC-app-shell.md).
@@ -28,7 +28,7 @@ A small Linux desktop app, written in C with GTK4. You pick a folder, it finds e
 3. Encodes run **one at a time**. On 720p and up x265 keeps most of the 16 threads busy. On small video it doesn't (a 576×324 clip used ~4 at `slow`), so outputs with a short side ≤ 576 get `ctu=32`, which roughly doubles the parallel work (2026-11-10, research/handbrake/adopt/16-encode-speed.md). Four small encodes at once gave only 1.5× more throughput, so parallel encoding stays out (Ask first).
 4. Resolution is **kept by default**. Opt-in **Max size** (`Original size` / `Max 1080p` / `Max 720p`, D6 2026-11-08) downscales by the short side; it never upscales.
 5. Subtitles are **dropped by default**. The **Keep subtitles** option keeps them (see below). The first video stream and all audio streams are always kept.
-6. The x265 preset **defaults to `slow`** and can be changed in the UI. (Checked 2026-11-09 on real clips: `medium` takes 46% of the time but scores 1.6–2.7 VMAF lower on most clips, so `slow` stays; see tasks/plan-performance.md.)
+6. The x265 preset **defaults to `medium`** (since 2026-11-11, at the user's request for the v3 design) and can be changed in the UI. Until then it was `slow`: on 2026-11-09 `medium` took 46% of the time but scored 1.6–2.7 VMAF lower on most real clips (see [LOG.md](LOG.md)). Whether to keep `medium` is open in [PERFORMANCE.md](PERFORMANCE.md).
 7. The frame rate is **kept by default**. Opt-in **Max 30 fps** (D5, 2026-11-08) caps sources above 30 fps.
 8. A **GPU** speed (Intel VA-API `hevc_vaapi`, D3 2026-11-08) is offered when a 1-frame test encode works at startup. Same codec (HEVC). Measured on real clips: at the class QP (`gpu_qp`, 28 for 720p/1080p) it matches `medium`'s quality at about 8% of its time and about 1.1× its size (1.06–1.41×). GPU decode is used when possible; other codecs decode on the CPU. Phone videos with a rotation tag are rotated on the GPU (`transpose_vaapi`), because ffmpeg drops the tag on this path.
 9. **Start with nothing selected skips videos predicted to save nothing** (D2, 2026-11-08). Selecting one, or its own play button, still compresses it. Unknown durations are always compressed.
@@ -128,7 +128,8 @@ Debug:     cmake -S "Video Compressor" -B "Video Compressor/build-dbg" -DCMAKE_B
 ## Project Structure
 ```
 Video Compressor/
-  CAPABILITIES.md       → module map for Media Tools (index of the SPEC-*.md files)
+  LOG.md                → history, decisions and measurements
+  PERFORMANCE.md        → planned speed and install-size work
   SPEC.md               → this file (video-compress + shared rules)
   SPEC-*.md             → one spec per further module (app-shell, web-video, video-frames, image-compress)
   CMakeLists.txt        → app target + test target
@@ -139,7 +140,6 @@ Video Compressor/
   tests/test_compress.c → g_test unit tests for compress.c (no video files needed)
   tests/make-fixtures.sh→ generates 240p/480p/720p/1080p/portrait sample videos with
                           ffmpeg testsrc, for manual/integration checks (not committed)
-  tasks/                → plan.md, todo.md
 ```
 The split exists so that all the decisions (which file is a video, what class it is, which arguments go to ffmpeg) can be tested without a display or real video files.
 

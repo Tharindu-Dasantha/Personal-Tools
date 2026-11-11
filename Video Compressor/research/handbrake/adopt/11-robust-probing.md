@@ -1,17 +1,17 @@
 ---
 title: Adopt — robust probing and "sanitize, don't fail"
 tags: [adopt, reliability, ffprobe, probesize, sanitize, validation]
-source: ../02-scan-and-probe.md (probesize 15 MB, geometry check, most-common info), ../09-audio.md (sanitize_audio), Video Compressor src/compress.c vc_build_ffprobe_argv + vc_parse_probe
-related: [00-index, ../02-scan-and-probe, ../09-audio, 03-channel-aware-audio, 06-hdr10-static-metadata, 04-gpu-to-cpu-fallback]
+source: note 02-scan-and-probe (probesize 15 MB, geometry check, most-common info), note 09-audio (sanitize_audio), Video Compressor src/compress.c vc_build_ffprobe_argv + vc_parse_probe
+related: [00-index, note 02-scan-and-probe, note 09-audio, 03-channel-aware-audio, 06-hdr10-static-metadata, 04-gpu-to-cpu-fallback]
 ---
 
 # 11 · Robust probing and "sanitize, don't fail"
 
 ## What HandBrake does
 - **Bigger probe window**: `probesize = 15000000` (15 MB, FFmpeg's default is 5 MB), "to successfully scan some files with large PNGs", meaning cover art or attached pictures (`stream.c:5263`).
-- **Doesn't trust one reading**: it decodes several previews and keeps the **most common** geometry and frame rate, dropping previews whose decoded size doesn't match the reported one (see [../02-scan-and-probe](../02-scan-and-probe.md)).
+- **Doesn't trust one reading**: it decodes several previews and keeps the **most common** geometry and frame rate, dropping previews whose decoded size doesn't match the reported one (see `02-scan-and-probe`).
 - **Skips attached pictures** when choosing the video stream (`AV_DISPOSITION_ATTACHED_PIC`).
-- **Sanitizes instead of failing**: an unsupported sample rate, mixdown or bitrate is clamped to the nearest valid value with a log line, rather than aborting the job (`sanitize_audio`, see [../09-audio](../09-audio.md)).
+- **Sanitizes instead of failing**: an unsupported sample rate, mixdown or bitrate is clamped to the nearest valid value with a log line, rather than aborting the job (`sanitize_audio`, see `09-audio`).
 
 ## What we do now
 - `ffprobe` with default probe limits. Files ffprobe can't read show as `Unreadable`.

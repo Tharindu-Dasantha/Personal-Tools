@@ -1,8 +1,8 @@
 ---
 title: Adopt — run more than one GPU encode at once
 tags: [adopt, speed, optimization, gpu, vaapi, concurrency, queue, worker-process]
-source: HandBrake NEWS 1.4.0 (simultaneous jobs, handbrake.worker.exe), win/CS QueueService.cs SimultaneousEncodes, ../01-architecture-pipeline.md
-related: [00-index, ../01-architecture-pipeline, ../14-hardware-acceleration, 04-gpu-to-cpu-fallback, 05-per-encode-logs, 09-decoder-thread-budget]
+source: HandBrake NEWS 1.4.0 (simultaneous jobs, handbrake.worker.exe), win/CS QueueService.cs SimultaneousEncodes, note 01-architecture-pipeline
+related: [00-index, note 01-architecture-pipeline, note 14-hardware-acceleration, 04-gpu-to-cpu-fallback, 05-per-encode-logs, 09-decoder-thread-budget]
 ---
 
 # 08 · Run two GPU encodes at once
@@ -10,7 +10,7 @@ related: [00-index, ../01-architecture-pipeline, ../14-hardware-acceleration, 04
 ## What HandBrake does
 - Since **1.4.0**, the Windows and macOS GUIs can run **several queue jobs at once** ("Maximum number of simultaneous encodes", `QueueService.cs`, `SimultaneousEncodes`). The release notes give the reason: "to improve CPU utilisation on high core count systems".
 - On Windows each job runs in its own **worker process** (`handbrake.worker.exe`), so a crash in one encode can't take down the GUI or the other jobs.
-- Inside one job, libhb is **pipeline-parallel**: reader, decoder, filters, encoder and muxer each run on their own thread, linked by bounded FIFOs (see [../01-architecture-pipeline](../01-architecture-pipeline.md)), so no single stage idles while another works.
+- Inside one job, libhb is **pipeline-parallel**: reader, decoder, filters, encoder and muxer each run on their own thread, linked by bounded FIFOs (see `01-architecture-pipeline`), so no single stage idles while another works.
 
 ## What we do now
 - One ffmpeg at a time (SPEC decision 3). That is right for x265: it already uses all 16 threads, and two would need more than the 7 GB of RAM.

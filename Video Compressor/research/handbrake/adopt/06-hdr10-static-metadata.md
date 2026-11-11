@@ -1,14 +1,14 @@
 ---
 title: Adopt — HDR10 mastering display and MaxCLL passthrough
 tags: [adopt, hdr, hdr10, pq, mastering-display, maxcll, x265, ffprobe]
-source: ../12-hdr-and-color.md (HandBrake encx265.c master-display / max-cll), Video Compressor SPEC.md Bit depth / HDR
-related: [00-index, ../12-hdr-and-color, ../07-video-encoders, 07-10bit-for-8bit-sources, 11-robust-probing]
+source: note 12-hdr-and-color (HandBrake encx265.c master-display / max-cll), Video Compressor SPEC.md Bit depth / HDR
+related: [00-index, note 12-hdr-and-color, note 07-video-encoders, 07-10bit-for-8bit-sources, 11-robust-probing]
 ---
 
 # 06 · HDR10 mastering display and MaxCLL
 
 ## What HandBrake does
-For PQ (SMPTE 2084) + BT.2020 sources, x265 gets (`encx265.c`, see [../12-hdr-and-color](../12-hdr-and-color.md)):
+For PQ (SMPTE 2084) + BT.2020 sources, x265 gets (`encx265.c`, see `12-hdr-and-color`):
 - `hdr10-opt=1`
 - `master-display=G(gx,gy)B(bx,by)R(rx,ry)WP(wx,wy)L(max,min)`: chromaticities × **50000**, luminance × **10000** (`MASTERING_CHROMA_DEN`/`MASTERING_LUMA_DEN`)
 - `max-cll=MaxCLL,MaxFALL`

@@ -1,14 +1,14 @@
 ---
 title: Adopt — channel-aware audio bitrate
 tags: [adopt, audio, aac, surround, 5.1, mixdown, bitrate, bug]
-source: ../09-audio.md (HandBrake hb_audio_bitrate_get_default, sanitize_audio), Video Compressor src/compress.c copies_audio + vc_build_ffmpeg_argv + vc_build_ffprobe_argv
-related: [00-index, ../09-audio, 11-robust-probing, 05-per-encode-logs]
+source: note 09-audio (HandBrake hb_audio_bitrate_get_default, sanitize_audio), Video Compressor src/compress.c copies_audio + vc_build_ffmpeg_argv + vc_build_ffprobe_argv
+related: [00-index, note 09-audio, 11-robust-probing, 05-per-encode-logs]
 ---
 
 # 03 · Channel-aware audio bitrate
 
 ## What HandBrake does
-- The default bitrate **scales with channel count**: AAC gets `80 kbps × full-bandwidth channels` (LFE not counted), so 160 for stereo and 400 for 5.1 (`common.c:1236`, see [../09-audio](../09-audio.md)).
+- The default bitrate **scales with channel count**: AAC gets `80 kbps × full-bandwidth channels` (LFE not counted), so 160 for stereo and 400 for 5.1 (`common.c:1236`, see `09-audio`).
 - Or the preset **downmixes** on purpose: almost every preset outputs `aac 160 stereo`, and the Surround presets add an AC-3 passthru track for the 5.1.
 - Every audio parameter is **sanitized** against what the codec supports (sample rate, mixdown, bitrate limits), with a log line.
 

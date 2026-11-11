@@ -1,8 +1,8 @@
 ---
 title: Adopt? — auto-crop black bars
 tags: [adopt, size, optimization, autocrop, cropdetect, letterbox, black-bars]
-source: ../02-scan-and-probe.md (HandBrake smooth-border detection, median over previews, loose-crop switch), Video Compressor src/compress.c vc_build_sample_argv
-related: [00-index, ../02-scan-and-probe, ../06-filters, 01-lanczos-scaling, 12-selective-deinterlace]
+source: note 02-scan-and-probe (HandBrake smooth-border detection, median over previews, loose-crop switch), Video Compressor src/compress.c vc_build_sample_argv
+related: [00-index, note 02-scan-and-probe, note 06-filters, 01-lanczos-scaling, 12-selective-deinterlace]
 ---
 
 # 13 · Auto-crop black bars
@@ -11,7 +11,7 @@ related: [00-index, ../02-scan-and-probe, ../06-filters, 01-lanczos-scaling, 12-
 > letterboxed files (screen recordings, movie rips, vertical video with bars) are common in your folders.
 
 ## What HandBrake does
-Its auto-crop is careful (`scan.c:449-570`, `1384-1460`, see [../02-scan-and-probe](../02-scan-and-probe.md)):
+Its auto-crop is careful (`scan.c:449-570`, `1384-1460`, see `02-scan-and-probe`):
 - A row or column counts as border only if its **average luma < 32 and every pixel is within ±16 of that average**: a smooth border, not just a dark scene.
 - It ignores a thin outer line (1 % of the height), searches at most ¼ of the frame per side, and **throws away a preview's result if any side would be ≥ ¼** (black title cards and fades).
 - It takes the **median** over ≥ 3 previews, and **switches to the loosest crop** when many previews disagree (mixed aspect ratio). Values are rounded to even.

@@ -1,8 +1,8 @@
 ---
 title: Adopt? — 10-bit HEVC for 8-bit sources
 tags: [adopt, quality, size, 10-bit, main10, banding, x265, spec-decision]
-source: ../13-presets.md (all HEVC presets use x265_10bit), ../12-hdr-and-color.md, Video Compressor SPEC.md (Criterion 12, "8-bit sources stay 8-bit")
-related: [00-index, ../13-presets, ../12-hdr-and-color, 02-x265-texture-tuning, 06-hdr10-static-metadata]
+source: note 13-presets (all HEVC presets use x265_10bit), note 12-hdr-and-color, Video Compressor SPEC.md (Criterion 12, "8-bit sources stay 8-bit")
+related: [00-index, note 13-presets, note 12-hdr-and-color, 02-x265-texture-tuning, 06-hdr10-static-metadata]
 ---
 
 # 07 · 10-bit HEVC for 8-bit sources
@@ -11,8 +11,8 @@ related: [00-index, ../13-presets, ../12-hdr-and-color, 02-x265-texture-tuning, 
 
 ## What HandBrake does
 **Every** HEVC CPU preset uses `x265_10bit` + `main10`, whatever the source bit depth (see
-[../13-presets](../13-presets.md)). The pipeline stays at the source depth (`hb_get_best_pix_fmt` never goes
-above it), and only the final Format filter converts 8 → 10 bit for the encoder (see [../12-hdr-and-color](../12-hdr-and-color.md)).
+`13-presets`). The pipeline stays at the source depth (`hb_get_best_pix_fmt` never goes
+above it), and only the final Format filter converts 8 → 10 bit for the encoder (see `12-hdr-and-color`).
 
 The reason: x265's internal maths and reference frames are more precise at 10 bits. That reduces **banding in
 gradients** (skies, walls) and often gives **the same quality at a smaller size**, even from 8-bit input.
@@ -34,7 +34,7 @@ Possibly a few % smaller at the same VMAF, plus less banding at our fairly high 
 
 ## How to verify
 On the 8-bit clips in `build/perf/src`: size, VMAF, time and a visual banding check (a sky or gradient clip)
-at `slow`, 8-bit against 10-bit. Write the result into `plan-performance.md`, then decide.
+at `slow`, 8-bit against 10-bit. Write the result into `LOG.md`, then decide.
 
 ## Effort
 XS to try. The argv change is small. The SPEC and test updates come only if adopted.

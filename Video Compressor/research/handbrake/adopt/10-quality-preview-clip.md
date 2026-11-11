@@ -1,8 +1,8 @@
 ---
 title: Adopt — quality preview clip before the batch
 tags: [adopt, ux, preview, live-preview, sample-encode, quality-check]
-source: ../03-demux-and-reader.md (start_at_preview / seek_points, pts_to_stop), ../02-scan-and-probe.md (evenly spaced previews), Video Compressor src/compress.c vc_build_sample_argv
-related: [00-index, ../03-demux-and-reader, ../08-rate-control-and-quality, 02-x265-texture-tuning, 07-10bit-for-8bit-sources]
+source: note 03-demux-and-reader (start_at_preview / seek_points, pts_to_stop), note 02-scan-and-probe (evenly spaced previews), Video Compressor src/compress.c vc_build_sample_argv
+related: [00-index, note 03-demux-and-reader, note 08-rate-control-and-quality, 02-x265-texture-tuning, 07-10bit-for-8bit-sources]
 ---
 
 # 10 · Quality preview clip
@@ -10,9 +10,9 @@ related: [00-index, ../03-demux-and-reader, ../08-rate-control-and-quality, 02-x
 ## What HandBrake does
 **Live Preview**: the user picks one of the evenly spaced preview points (scan default 10; the reader seeks to
 `(k-1)/(seek_points+1)` of the duration) and a length, and HandBrake encodes **just that clip with the real
-settings** (`start_at_preview`, `pts_to_stop`, see [../03-demux-and-reader](../03-demux-and-reader.md)), then plays
+settings** (`start_at_preview`, `pts_to_stop`, see `03-demux-and-reader`), then plays
 it. Since libhb can't predict quality or size in constant-quality mode, this is how users decide on an RF or
-preset before a long encode (see [../08-rate-control-and-quality](../08-rate-control-and-quality.md)).
+preset before a long encode (see `08-rate-control-and-quality`).
 
 ## What we do now
 - Sample encodes already exist, but only for **size** (3 × 4 s, GPU, piped to null, video only).

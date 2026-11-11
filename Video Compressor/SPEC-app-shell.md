@@ -1,6 +1,6 @@
 # Spec: app-shell
 
-Module of [CAPABILITIES.md](CAPABILITIES.md). Depends on `video-compress` ([SPEC.md](SPEC.md)), which it hosts as the first mode.
+Module of Media Tools (history in [LOG.md](LOG.md)). Depends on `video-compress` ([SPEC.md](SPEC.md)), which it hosts as the first mode.
 
 ## Objective
 
