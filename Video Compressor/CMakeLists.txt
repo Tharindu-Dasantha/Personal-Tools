@@ -14,7 +14,15 @@ add_library(vc_core STATIC src/compress.c src/modes.c src/web_video.c src/frames
 target_include_directories(vc_core PUBLIC src)
 target_link_libraries(vc_core PUBLIC PkgConfig::GLIB m)
 
-add_executable(video-compressor src/main.c)
+# The UI's own icons (globe, bolt, …), which Adwaita lacks; GtkApplication finds them by name.
+find_program(GLIB_COMPILE_RESOURCES glib-compile-resources REQUIRED)
+file(GLOB VC_ICONS ${CMAKE_CURRENT_SOURCE_DIR}/data/icons/scalable/actions/*.svg)
+add_custom_command(
+  OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/resources.c
+  COMMAND ${GLIB_COMPILE_RESOURCES} --generate-source --target=${CMAKE_CURRENT_BINARY_DIR}/resources.c
+          --sourcedir=${CMAKE_CURRENT_SOURCE_DIR}/data ${CMAKE_CURRENT_SOURCE_DIR}/data/resources.gresource.xml
+  DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/data/resources.gresource.xml ${VC_ICONS})
+add_executable(video-compressor src/main.c ${CMAKE_CURRENT_BINARY_DIR}/resources.c)
 target_link_libraries(video-compressor PRIVATE vc_core PkgConfig::GTK4)
 
 enable_testing()

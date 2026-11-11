@@ -30,7 +30,11 @@ typedef struct {
     char *out;           /* the kept output, or NULL */
     guint64 out_size;    /* frames: the folder's total */
     guint n_frames;      /* frames: files in `out` */
-    char *detail;        /* images: "jpg 412 kB −58% · webp 288 kB −71%", or NULL */
+    /* images: one line per output (same type, then webp); size 0 = "already optimized", and
+     * `fresh` FALSE = it existed before this run */
+    struct { char ext[8]; guint64 size; gboolean fresh; } res[2];
+    guint n_res;
+    char *twin_out;      /* images: "twin.jpg.jpg" when another image has this stem, else NULL */
     gboolean webp_only;  /* images: `out` is the webp; no same-type copy, so the original stays */
     int max_width;       /* images: the Max width the outputs were made at, for the trash check */
     gboolean stop;       /* Stop pressed while encoding or checking */
@@ -46,24 +50,32 @@ typedef struct {
     gboolean sampled;
     int sample_side, sample_fps;
     double sample_kbps;
-    GtkWidget *row, *box, *check, *meta, *chips, *size_lbl, *pill, *bar, *pct;
+    GtkWidget *row, *box, *check, *name_chip, *meta, *chips, *bar, *pct;
+    GtkWidget *tag[2], *val[2], *pill[2];   /* the status column's two lines */
     GtkWidget *b_play, *b_pause, *b_stop, *b_show, *b_trash;
 } Item;
 
 typedef struct {
     GtkWindow *win;
-    GtkWidget *title, *subtitle, *choose_btn, *files_btn, *pages, *list, *select_all;
-    GtkWidget *summary, *sum_title, *sum_sub, *sum_before, *sum_after, *sum_pct;
-    GtkWidget *bottom, *bottom_stack, *controls, *start_btn, *pause_btn, *stop_btn;
-    GtkWidget *speed_btns[8], *speed_caption, *guide_rows, *subs, *trash, *total, *total_sub;
-    GtkWidget *fps30, *max_size, *choose_empty, *files_empty, *empty_sub;
-    GtkWidget *mode_dd, *banner, *size_head, *compress_opts, *web_opts, *web_width, *no_audio;
-    GtkWidget *frames_opts, *frames_fps, *frames_start, *frames_end, *frames_width, *frames_format;
-    GtkWidget *frames_quality, *images_opts, *images_width, *img_trash, *hero, *sel_clear, *sum_pct_cap;
-    GtkWidget *run_title, *run_eta, *run_bar, *run_sub;
+    GtkWidget *title, *title_badge, *subtitle, *choose_btn, *files_btn, *pages, *list, *select_all;
+    GtkWidget *summary, *sum_icon, *sum_title, *sum_sub, *sum_before, *sum_after, *sum_pct;
+    GtkWidget *start_btn, *pause_btn, *stop_btn, *show_btn, *tool_sep;
+    GtkWidget *speed_btns[8], *guide_rows, *subs, *trash;
+    GtkWidget *fps30, *max_size, *empty_icon, *hero, *empty_sub;
+    GtkWidget *mode_list, *mode_row[4], *mode_count[4], *mode_lock[4], *mode_dot[4], *tool_state[4];
+    GtkWidget *banner, *banner_title, *banner_sub, *banner_code, *size_head;
+    GtkWidget *insp_icon, *insp_title, *insp_sub, *insp_note, *insp_stack;
+    GtkWidget *web_width, *no_audio, *frames_opts, *fps_btns[8], *frames_start, *frames_end;
+    GtkWidget *range_err, *frames_width, *fmt_btns[2], *fmt_caption, *frames_quality, *quality_val;
+    GtkWidget *images_opts, *images_width, *img_trash, *sel_clear, *sum_pct_cap;
+    GtkWidget *footer, *foot_left, *foot_bar, *foot_right;
     GtkWidget *selbar, *sel_label, *sel_start, *sel_pause, *sel_stop, *sel_trash;
-    GtkWidget *toast, *toast_label;
-    GtkSizeGroup *col_quality, *col_status, *col_actions, *guide_cols[3];
+    GtkWidget *toast, *toast_label, *close_dialog;
+    GtkSizeGroup *col_status, *col_actions, *guide_cols[3];
+    guint fps_idx;       /* index into FRAME_RATES */
+    gboolean webp;       /* frames format */
+    GPtrArray *hidden;   /* names in the source that don't fit this mode */
+    guint n_dirs;        /* chosen files: how many folders they come from */
     guint toast_id, preset, prio_seq;
     gboolean syncing, tools_ok, gpu_ok;
     Item *anchor;        /* last checkbox clicked, for Shift-click ranges */
@@ -114,7 +126,7 @@ item_free (Item *it)
     g_free (it->out);
     g_free (it->note);
     g_free (it->tip);
-    g_free (it->detail);
+    g_free (it->twin_out);
     vc_probe_free (it->probe);
     g_clear_pointer (&it->steps, g_ptr_array_unref);
     g_free (it);
@@ -147,25 +159,35 @@ current_preset (void)
     return VC_PRESETS[app.preset];
 }
 
-/* The Mode dropdown, in order; only modes that exist are listed. */
-static const VcMode MODES[] = { VC_MODE_COMPRESS, VC_MODE_WEB_VIDEO, VC_MODE_FRAMES, VC_MODE_IMAGES };
-static const char *const MODE_NAMES[] = { "Compress video", "Web video (Safari)", "Video → frames",
-                                          "Compress images", NULL };
-/* The frames FPS dropdown, in order; 0 is Every frame */
+/* The mode sidebar, in VcMode order: name, subtitle, icon, CSS class (sets the accent), the empty
+ * page's line and the inspector's note. */
+static const struct {
+    const char *name, *sub, *icon, *css, *empty, *note;
+} MODE_INFO[] = {
+    { "Compress video", "H.265, same quality", "camera-video-symbolic", "compress",
+      "Every video is compressed to H.265, keeping its quality and resolution. Pick a mode on the left "
+      "to make web videos, extract frames, or compress images instead.",
+      "Saves to <tt>compressed/</tt> next to each video. Originals are never changed." },
+    { "Web video", "Safari-ready H.264 MP4", "mt-globe-symbolic", "web",
+      "Every video becomes an H.264 MP4 that plays in every browser, Safari and iOS included. Pick a "
+      "mode on the left to compress, extract frames, or compress images instead.",
+      "Saves to <tt>web/</tt> next to each video. Trash isn't offered: web copies are derivatives, "
+      "not replacements." },
+    { "Video → frames", "JPG / WebP sequence", "view-grid-symbolic", "frames",
+      "Every video becomes a folder of numbered WebP or JPG frames, for scroll animations. Pick a "
+      "mode on the left to compress or convert videos, or compress images instead.",
+      NULL /* set by the format: update_frames_note */ },
+    { "Compress images", "Same type + WebP", "image-x-generic-symbolic", "images",
+      "Every image gets a smaller copy in its own format, plus a WebP for the web. Pick a mode on "
+      "the left to work with videos instead.",
+      "Copies under 5% smaller are dropped. Saves to <tt>compressed/</tt>." },
+};
+/* The frames FPS buttons, in order; 0 is All (every frame) */
 static const int FRAME_RATES[] = { 5, 10, 12, 15, 24, 30, 0 };
 #define FRAMES_DEFAULT_RATE 3   /* 15 */
-/* The web Max width dropdown, in order; 0 is Original */
+/* The Max width dropdowns, in order; 0 is Original */
 static const int WEB_WIDTHS[] = { 0, 3840, 2560, 1920, 1280, 960, 640 };
 #define WEB_DEFAULT_WIDTH 3   /* 1920 */
-G_STATIC_ASSERT (G_N_ELEMENTS (MODES) + 1 == G_N_ELEMENTS (MODE_NAMES));
-/* The empty page's line, per Mode dropdown entry */
-static const char *const EMPTY_SUB[] = {
-    "Every video inside is compressed to H.265, keeping its quality and resolution.",
-    "Every video inside becomes an MP4 that plays in every browser, Safari and iOS included.",
-    "Every video inside becomes a folder of numbered WebP or JPG frames, for scroll animations.",
-    "Every image inside gets a smaller copy in its own format, plus a WebP for the web.",
-};
-G_STATIC_ASSERT (G_N_ELEMENTS (EMPTY_SUB) == G_N_ELEMENTS (MODES));
 
 
 /* Compress video and Compress images each have their own Move to Trash switch. */
@@ -223,7 +245,7 @@ current_options (void)
     GtkWidget *width_dd = app.mode == VC_MODE_FRAMES ? app.frames_width
                           : app.mode == VC_MODE_IMAGES ? app.images_width : app.web_width;
     guint width = gtk_drop_down_get_selected (GTK_DROP_DOWN (width_dd));
-    guint rate = gtk_drop_down_get_selected (GTK_DROP_DOWN (app.frames_fps));
+    guint rate = app.fps_idx;
     double start, end;   /* 0 when invalid; check_range() greys Start then */
     vc_parse_time (gtk_editable_get_text (GTK_EDITABLE (app.frames_start)), &start);
     vc_parse_time (gtk_editable_get_text (GTK_EDITABLE (app.frames_end)), &end);
@@ -237,19 +259,20 @@ current_options (void)
         .fps = rate < G_N_ELEMENTS (FRAME_RATES) ? FRAME_RATES[rate] : 0,
         .start = start,
         .end = end,
-        .webp = gtk_drop_down_get_selected (GTK_DROP_DOWN (app.frames_format)) == 0,
-        .quality = gtk_spin_button_get_value_as_int (GTK_SPIN_BUTTON (app.frames_quality)),
+        .webp = app.webp,
+        .quality = (int) gtk_range_get_value (GTK_RANGE (app.frames_quality)),
     };
 }
 
-/* Frames: TRUE when Start and End parse and End (when set) is after Start. Turns a bad field red. */
-static gboolean
+/* Frames: NULL when Start and End parse and End (when set) is after Start, else the field to fix
+ * ("Start" or "End"). Turns a bad field red and shows the hint under the range. */
+static const char *
 check_range (void)
 {
     double start, end;
     gboolean s_ok = vc_parse_time (gtk_editable_get_text (GTK_EDITABLE (app.frames_start)), &start);
-    gboolean e_ok = vc_parse_time (gtk_editable_get_text (GTK_EDITABLE (app.frames_end)), &end)
-                    && (end == 0 || !s_ok || end > start);
+    gboolean e_parsed = vc_parse_time (gtk_editable_get_text (GTK_EDITABLE (app.frames_end)), &end);
+    gboolean e_ok = e_parsed && (end == 0 || !s_ok || end > start);
     GtkWidget *w[] = { app.frames_start, app.frames_end };
     gboolean ok[] = { s_ok, e_ok };
     for (guint i = 0; i < 2; i++) {
@@ -258,7 +281,32 @@ check_range (void)
         else
             gtk_widget_add_css_class (w[i], "error");
     }
-    return s_ok && e_ok;
+    gtk_label_set_text (GTK_LABEL (app.range_err), !s_ok || !e_parsed ? "Use 12, 12.5, 1:05 or 0:01:05"
+                                                   : "End must be after Start");
+    gtk_widget_set_visible (gtk_widget_get_parent (app.range_err), !s_ok || !e_ok);
+    return !s_ok ? "Start" : !e_ok ? "End" : NULL;
+}
+
+/* "0:01.5", "1:05", "1:02:03": a frames range end for the row's second line */
+static char *
+format_clock (double t)
+{
+    guint tenths = (guint) llround (t * 10), s = tenths / 10, frac = tenths % 10;
+    g_autofree char *hm = s >= 3600 ? g_strdup_printf ("%u:%02u:%02u", s / 3600, s / 60 % 60, s % 60)
+                                    : g_strdup_printf ("%u:%02u", s / 60, s % 60);
+    return frac != 0 ? g_strdup_printf ("%s.%u", hm, frac) : g_steal_pointer (&hm);
+}
+
+/* A path for display, with the home folder as ~: "~/Videos/Phone 2026" */
+static char *
+home_relative (const char *path)
+{
+    g_autofree char *display = g_filename_display_name (path);
+    const char *home = g_get_home_dir ();
+    gsize hl = strlen (home);
+    return strncmp (display, home, hl) == 0 && (display[hl] == '/' || !display[hl])
+               ? g_strconcat ("~", display + hl, NULL)
+               : g_steal_pointer (&display);
 }
 
 static char *
@@ -278,12 +326,14 @@ basename_display (const char *path)
     return g_filename_display_name (base);
 }
 
-/* Tooltip copy as in the design: a bold title, an optional shortcut, then one line of help. */
+/* Tooltip copy as in the design: a bold title, one line of help, then an optional dimmed hint
+ * (the shortcut). */
 static void
 set_tip (GtkWidget *w, const char *title, const char *key, const char *body)
 {
-    g_autofree char *m = g_markup_printf_escaped ("<b>%s</b>%s%s\n%s", title, key ? "   " : "",
-                                                  key ? key : "", body);
+    g_autofree char *m = key ? g_markup_printf_escaped ("<b>%s</b>\n%s\n<span alpha=\"60%%\">%s</span>",
+                                                        title, body, key)
+                             : g_markup_printf_escaped ("<b>%s</b>\n%s", title, body);
     gtk_widget_set_tooltip_markup (w, m);
 }
 
@@ -380,15 +430,24 @@ set_status (Item *it, const char *note, const char *tip)
     render_row (it);
 }
 
+/* One line of the status column: a small format tag ("JPG"), a value (markup) and a chip. */
 static void
-set_pill (Item *it, const char *text, const char *style)
+set_line (Item *it, guint i, const char *tag, const char *val, const char *pill, const char *style)
 {
-    gtk_widget_set_visible (it->pill, text != NULL);
-    if (text == NULL)
-        return;
-    gtk_label_set_text (GTK_LABEL (it->pill), text);
-    const char *classes[] = { "pill", style, NULL };
-    gtk_widget_set_css_classes (it->pill, classes);
+    gtk_widget_set_visible (it->tag[i], tag != NULL);
+    if (tag != NULL)
+        gtk_label_set_text (GTK_LABEL (it->tag[i]), tag);
+    gtk_widget_set_visible (it->val[i], val != NULL);
+    if (val != NULL)
+        gtk_label_set_markup (GTK_LABEL (it->val[i]), val);
+    gtk_widget_set_visible (it->pill[i], pill != NULL);
+    if (pill != NULL) {
+        gtk_label_set_text (GTK_LABEL (it->pill[i]), pill);
+        const char *classes[] = { "pill", style, NULL };
+        gtk_widget_set_css_classes (it->pill[i], classes);
+    }
+    if (i == 1)   /* an empty line would still add the column's spacing */
+        gtk_widget_set_visible (gtk_widget_get_parent (it->tag[1]), tag != NULL || val != NULL || pill != NULL);
 }
 
 static void
@@ -431,133 +490,237 @@ render_actions (Item *it)
         gtk_widget_remove_css_class (it->b_pause, "suggested-action");
 }
 
+#define DIM "<span alpha=\"39321\">"   /* 60%, without a % that printf would read */
+
+/* The active row's second line: "1080p · about 40 s left", "47 of 75 frames" or "Step 2 of 2". */
+static char *
+active_detail (Item *it, const VcOptions *o)
+{
+    if (it->stop)
+        return g_strdup ("Stopping…");
+    if (app.mode == VC_MODE_IMAGES)
+        return g_strdup_printf ("Step %u of %u", it->step + 1, it->steps != NULL ? it->steps->len : 1);
+    if (app.mode == VC_MODE_FRAMES) {
+        guint n = vc_frames_estimate (it->probe->duration, it->probe->fps, o);
+        return n > 0 ? g_strdup_printf ("%u of %u frames", (guint) (it->fraction * n), n)
+                     : g_strdup ("Extracting frames");
+    }
+    int w = it->probe->width, h = it->probe->height;
+    if (app.mode == VC_MODE_WEB_VIDEO && o->max_width > 0 && w > o->max_width) {
+        h = (int) ((double) h * o->max_width / w);
+        w = o->max_width;
+    }
+    const char *cls = app.mode == VC_MODE_COMPRESS ? vc_output_class (it->probe, o)->label
+                                                   : vc_class_for (w, h)->label;
+    double active = (g_get_monotonic_time () - app.job_t0 - app.paused_total) / 1e6;
+    if (app.paused)
+        return g_strdup_printf ("%s · paused", cls);
+    if (it->fraction < 0.02 || active < 5)
+        return g_strdup_printf ("%s · estimating time left", cls);
+    g_autofree char *left = vc_format_time_left (active / it->fraction * (1 - it->fraction));
+    left[0] = g_ascii_tolower (left[0]);
+    return g_strdup_printf ("%s · %s", cls, left);
+}
+
+/* "JPG" for photo.jpeg: images show their file type, not the codec */
+static char *
+file_type (const char *path)
+{
+    const char *dot = strrchr (path, '.');
+    char *t = g_ascii_strup (dot != NULL ? dot + 1 : "", -1);
+    const char *alias = strcmp (t, "JPEG") == 0 ? "JPG" : strcmp (t, "TIF") == 0 ? "TIFF" : NULL;
+    if (alias == NULL)
+        return t;
+    g_free (t);
+    return g_strdup (alias);
+}
+
 static void
 render_row (Item *it)
 {
     if (app.closing)
         return;
     g_autofree char *size = g_format_size (it->size);
-    g_autofree char *size_text = NULL, *pill = NULL;
-    const char *style = "neutral", *tip = it->tip;
+    g_autofree char *v0 = NULL, *p0 = NULL, *v1 = NULL;
+    const char *s0 = "neutral", *tip = it->tip;
+    gboolean active = it->state == ST_ACTIVE;
+    gboolean images_done = FALSE;
+    VcOptions o = current_options ();
+    guint frames = app.mode == VC_MODE_FRAMES && it->probe != NULL
+                       ? vc_frames_estimate (it->probe->duration, it->probe->fps, &o) : 0;
 
     switch (it->state) {
     case ST_ACTIVE:
+        v1 = active_detail (it, &o);
         break;
     case ST_QUEUED:
-        pill = g_strdup ("● Waiting");
-        style = "waiting";
+        v0 = frames > 0 ? g_strdup_printf (DIM "Waiting · ≈ %u frames</span>", frames)
+                        : g_strdup (DIM "Waiting</span>");
         break;
     case ST_HELD:
-        pill = g_strdup ("On hold");
-        style = "hold";
+        p0 = g_strdup ("On hold");
+        s0 = "hold";
         break;
     case ST_CHECKING:
-        pill = g_strdup ("Checking copy…");
-        style = "waiting";
+        v0 = g_strdup (DIM "Checking copy…</span>");
         break;
     case ST_DONE:
     case ST_TRASHED:
-        if (it->out == NULL) {
-            pill = g_strdup (it->note != NULL ? it->note : "Already efficient");
-            tip = tip != NULL ? tip : "A compressed copy would not be at least 5% smaller, "
-                                      "so none was kept.";
+        if (it->extra != NULL && g_str_has_prefix (it->extra, "Already")) {
+            p0 = g_strdup (it->extra);
+        } else if (it->out == NULL) {
+            p0 = g_strdup (it->note != NULL ? it->note : "Already efficient");
+            tip = tip != NULL ? tip : "A compressed copy would not be at least 5% smaller, so none was kept.";
+        } else if (app.mode == VC_MODE_IMAGES) {
+            images_done = TRUE;
+        } else if (app.mode == VC_MODE_FRAMES) {
+            g_autofree char *total = g_format_size (it->out_size);
+            v0 = g_strdup_printf ("<b>%u frames</b>", it->n_frames);
+            p0 = g_strdup_printf ("✓ %s", total);
+            s0 = "done";
         } else {
             g_autofree char *out = g_format_size (it->out_size);
-            size_text = g_markup_printf_escaped ("<span alpha=\"60%%\">%s →</span> <b>%s</b>",
-                                                 size, out);
             g_autofree char *change = change_text (it->size, it->out_size);
-            pill = g_strdup_printf ("✓ %s", change);
-            style = "done";
-        }
-        if (it->out != NULL && it->detail != NULL) {   /* images: each output on its own */
-            g_free (size_text);
-            size_text = g_markup_escape_text (it->detail, -1);
-        }
-        if (it->out != NULL && app.mode == VC_MODE_FRAMES) {
-            g_autofree char *total = g_format_size (it->out_size);
-            g_free (size_text);
-            size_text = g_markup_printf_escaped ("%u frames · <b>%s</b>", it->n_frames, total);
-            g_free (pill);
-            pill = g_strdup ("✓ Done");
+            v0 = g_markup_printf_escaped (DIM "%s →</span> <b>%s</b>", size, out);
+            gboolean smaller = it->out_size <= it->size;
+            p0 = smaller ? g_strdup_printf ("✓ %s", change) : g_strdup (change);
+            s0 = smaller ? "done" : "bigger";
+            if (!smaller)
+                tip = "The web copy came out bigger than the original. It's kept anyway: it plays everywhere.";
         }
         break;
     case ST_NEW:
         if (it->probed && it->probe == NULL) {
-            pill = g_strdup ("Unreadable");
-            style = "error";
+            p0 = g_strdup ("Unreadable");
+            s0 = "error";
+        } else if (it->probe == NULL) {
+            break;   /* still reading */
         } else if (it->note != NULL) {
-            size_text = g_strdup (size);
-            pill = g_strdup (it->note);
-            style = strcmp (it->note, "Failed") == 0 ? "error" : "neutral";
-        } else if (app.mode == VC_MODE_FRAMES && it->probe != NULL) {
-            VcOptions o = current_options ();
-            guint n = vc_frames_estimate (it->probe->duration, it->probe->fps, &o);
-            size_text = g_strdup (size);
-            if (it->probe->duration > 0 && o.start >= it->probe->duration)
-                pill = g_strdup ("Starts after the end");
-            else if (n > 0)
-                pill = g_strdup_printf ("≈ %u frame%s", n, n == 1 ? "" : "s");
-            style = "estimate";
-            tip = tip != NULL ? tip : "≈ at the chosen FPS and range.";
+            v0 = g_markup_printf_escaped (DIM "%s</span>", size);
+            p0 = g_strdup (it->note);
+            s0 = strcmp (it->note, "Failed") == 0 ? "error" : "neutral";
+        } else if (app.mode == VC_MODE_IMAGES) {
+            v0 = g_strdup (DIM "Ready</span>");
+        } else if (app.mode == VC_MODE_FRAMES) {
+            if (it->probe->duration > 0 && o.start >= it->probe->duration) {
+                p0 = g_strdup ("Starts after the end");
+                tip = tip != NULL ? tip : "Start is past this video's end, so it will be skipped.";
+            } else if (frames > 0) {
+                g_autofree char *a = format_clock (o.start);
+                g_autofree char *b = format_clock (o.end > 0 ? MIN (o.end, it->probe->duration)
+                                                             : it->probe->duration);
+                g_autofree char *rate = o.fps > 0 ? g_strdup_printf ("%g fps", o.fps) : g_strdup ("every frame");
+                v0 = g_strdup_printf ("≈ <b>%u frame%s</b>", frames, frames == 1 ? "" : "s");
+                v1 = g_strdup_printf ("%s → %s · %s", a, b, rate);
+                tip = tip != NULL ? tip : "≈ at the chosen FPS and range.";
+            }
         } else {
-            VcOptions o = current_options ();
-            gboolean measured;
+            gboolean measured = FALSE;
             guint64 est = app.mode == VC_MODE_COMPRESS ? item_estimate (it, &o, &measured) : 0;
             if (est == 0) {
-                size_text = g_strdup (size);
-                break;
+                v0 = g_strdup (size);
+            } else if (!vc_output_is_worth_keeping (it->size, est)) {
+                p0 = g_strdup ("Likely no saving");
+                tip = tip != NULL ? tip : "A compressed copy would likely not be 5% smaller. Start skips it "
+                                          "unless you select it.";
+            } else {
+                g_autofree char *est_size = g_format_size (est);
+                v0 = g_markup_printf_escaped (DIM "%s → ≈</span> <b>%s</b>", size, est_size);
+                p0 = g_strdup_printf ("−%d%%", percent_smaller (it->size, est));
+                s0 = "estimate";
+                tip = tip != NULL ? tip
+                      : measured ? "≈ measured with a short GPU test encode at these settings. "
+                                   "The whole video can differ a little."
+                                 : "≈ is a rough estimate at the chosen speed. "
+                                   "The real size depends on the footage.";
             }
-            g_autofree char *est_size = g_format_size (est);
-            size_text = g_strdup_printf ("%s  <span alpha=\"60%%\">→ ≈ %s</span>", size, est_size);
-            pill = vc_output_is_worth_keeping (it->size, est)
-                       ? g_strdup_printf ("−%d%%", percent_smaller (it->size, est))
-                       : g_strdup ("no saving");
-            style = "estimate";
-            tip = tip != NULL ? tip
-                  : measured ? "≈ measured with a short GPU test encode at these settings. "
-                               "The whole video can differ a little."
-                  : "≈ is a rough estimate at the chosen speed. "
-                                      "The real size depends on the footage.";
         }
         break;
     }
 
-    gboolean active = it->state == ST_ACTIVE;
-    gtk_widget_set_visible (it->size_lbl, size_text != NULL);
-    if (size_text != NULL)
-        gtk_label_set_markup (GTK_LABEL (it->size_lbl), size_text);
-    set_pill (it, pill, style);
-    gtk_widget_set_tooltip_text (it->size_lbl, tip);
-    gtk_widget_set_tooltip_text (it->pill, tip);
+    if (images_done) {   /* each output on its own line: same type, then webp */
+        for (guint i = 0; i < 2; i++) {
+            if (i >= it->n_res) {
+                set_line (it, i, NULL, NULL, NULL, NULL);
+                continue;
+            }
+            g_autofree char *tag = g_ascii_strup (it->res[i].ext, -1);
+            g_autofree char *rsize = g_format_size (it->res[i].size);
+            g_autofree char *change = change_text (it->size, it->res[i].size);
+            g_autofree char *pill = g_strdup_printf ("✓ %s", change);
+            g_autofree char *val = it->res[i].size == 0 ? g_strdup (DIM "already optimized</span>")
+                                   : !it->res[i].fresh ? g_strdup (DIM "exists</span>")
+                                   : g_strdup_printf ("<b>%s</b>", rsize);
+            set_line (it, i, tag, val, it->res[i].size > 0 && it->res[i].fresh ? pill : NULL, "done");
+        }
+    } else {
+        set_line (it, 0, NULL, v0, p0, s0);
+        g_autofree char *sub = v1 != NULL ? g_markup_printf_escaped (DIM "%s</span>", v1) : NULL;
+        set_line (it, 1, NULL, sub, NULL, NULL);
+    }
+    for (guint i = 0; i < 2; i++) {
+        gtk_widget_set_tooltip_text (it->val[i], tip);
+        gtk_widget_set_tooltip_text (it->pill[i], tip);
+    }
     gtk_widget_set_visible (it->bar, active);
     gtk_widget_set_visible (it->pct, active);
     if (active) {
-        g_autofree char *pct = it->stop ? g_strdup ("Stopping…")
-                               : it->probe->duration <= 0 || app.mode == VC_MODE_IMAGES ? g_strdup ("")
+        g_autofree char *pct = it->probe->duration <= 0 || app.mode == VC_MODE_IMAGES ? g_strdup ("")
                                : g_strdup_printf ("%d%%", (int) (it->fraction * 100));
         gtk_label_set_text (GTK_LABEL (it->pct), pct);
-        if (app.paused)
-            gtk_widget_add_css_class (it->bar, "paused");
-        else
-            gtk_widget_remove_css_class (it->bar, "paused");
+        if (app.mode != VC_MODE_IMAGES && it->probe->duration > 0)   /* else pulse_bar pulses it */
+            gtk_progress_bar_set_fraction (GTK_PROGRESS_BAR (it->bar), it->fraction);
     }
 
+    /* the meta line, per mode as in the design */
     GString *m = g_string_new (NULL);
-    if (it->probe != NULL && app.mode == VC_MODE_IMAGES) {
-        g_autofree char *codec = vc_codec_label (it->probe->codec);
-        g_string_printf (m, "%s · %d×%d", codec, it->probe->width, it->probe->height);
-    } else if (it->probe != NULL) {
-        g_autofree char *codec = vc_codec_label (it->probe->codec);
-        g_autofree char *dur = vc_format_duration (it->probe->duration);
-        g_string_printf (m, "%s · %s · %d×%d", codec, dur, it->probe->width, it->probe->height);
+    VcProbe *p = it->probe;
+    if (p != NULL && app.mode == VC_MODE_IMAGES && it->twin_out != NULL) {
+        g_string_printf (m, "→ %s%s · %s", it->twin_out,
+                         g_str_has_suffix (it->twin_out, ".webp") ? "" : " + .webp", size);
+    } else if (p != NULL && app.mode == VC_MODE_IMAGES) {
+        g_autofree char *type = file_type (it->path);
+        g_string_printf (m, "%d×%d · %s · %s", p->width, p->height, type, size);
+    } else if (p != NULL) {
+        g_autofree char *codec = vc_codec_label (p->codec);
+        g_autofree char *dur = vc_format_duration (p->duration);
+        if (app.mode == VC_MODE_WEB_VIDEO && app.n_dirs > 1) {   /* chosen files from several folders */
+            g_autofree char *dir = g_path_get_dirname (it->path);
+            g_autofree char *where = home_relative (dir);
+            g_string_append_printf (m, "%s · ", where[0] == '~' && where[1] == '/' ? where + 2 : where);
+        }
+        g_string_append_printf (m, "%s · %s · ", codec, dur);
+        if (app.mode == VC_MODE_WEB_VIDEO)
+            g_string_append (m, vc_class_for (p->width, p->height)->label);
+        else
+            g_string_append_printf (m, "%d×%d", p->width, p->height);
+        if (app.mode == VC_MODE_FRAMES && p->fps > 0)
+            g_string_append_printf (m, fabs (p->fps - round (p->fps)) < 0.01 ? " · %.0f fps" : " · %.2f fps",
+                                    p->fps);
     } else {
         g_string_assign (m, it->probed ? "Couldn't read this file" : "Reading…");
     }
-    if (it->extra != NULL)
-        g_string_append_printf (m, "  ·  %s", it->extra);
     gtk_label_set_text (GTK_LABEL (it->meta), m->str);
     g_string_free (m, TRUE);
     gtk_widget_set_tooltip_text (it->meta, it->probe == NULL ? it->tip : NULL);
+
+    /* the chip after the name: what happened to the original, or that it's a twin */
+    const char *extra = it->extra != NULL && !g_str_has_prefix (it->extra, "Already") ? it->extra : NULL;
+    gtk_widget_set_visible (it->name_chip, extra != NULL || it->twin_out != NULL);
+    if (extra != NULL) {
+        const char *cls[] = { "chip", g_str_has_prefix (extra, "Original kept") ? "kept" : "trashed", NULL };
+        gtk_widget_set_css_classes (it->name_chip, cls);
+        gtk_label_set_text (GTK_LABEL (it->name_chip), extra);
+        gtk_widget_set_tooltip_text (it->name_chip, it->tip);
+    } else if (it->twin_out != NULL) {
+        const char *cls[] = { "chip", "twin", NULL };
+        gtk_widget_set_css_classes (it->name_chip, cls);
+        gtk_label_set_text (GTK_LABEL (it->name_chip), "∞ Twin");
+        g_autofree char *base = basename_display (it->path);
+        g_autofree char *body = g_strdup_printf ("%s shares its name with another image, so each copy keeps "
+                                                 "the full source name. Nothing is overwritten.", base);
+        set_tip (it->name_chip, "Twin names", NULL, body);
+    }
 
     if (active)
         gtk_widget_add_css_class (it->row, "active");
@@ -581,18 +744,24 @@ chip (const char *text, const char *style)
     return l;
 }
 
+/* The chip after the meta line: Compress video shows the quality class (or 10-bit), web video and
+ * frames say when HDR is turned into SDR. */
 static void
 refresh_chips (Item *it)
 {
     for (GtkWidget *c; (c = gtk_widget_get_first_child (it->chips)) != NULL;)
         gtk_box_remove (GTK_BOX (it->chips), c);
     VcProbe *p = it->probe;
-    if (p == NULL || app.mode == VC_MODE_IMAGES)   /* video quality classes */
+    if (p == NULL || app.mode == VC_MODE_IMAGES)
         return;
-    gtk_box_append (GTK_BOX (it->chips), chip (vc_class_for (p->width, p->height)->label, NULL));
-    if (vc_probe_is_10bit (p))
-        gtk_box_append (GTK_BOX (it->chips),
-                        chip (vc_probe_is_hdr (p) ? "10-bit HDR" : "10-bit", "hdr"));
+    if (app.mode != VC_MODE_COMPRESS) {
+        if (vc_probe_is_hdr (p))
+            gtk_box_append (GTK_BOX (it->chips), chip ("HDR → SDR", "hdr"));
+    } else if (vc_probe_is_10bit (p)) {
+        gtk_box_append (GTK_BOX (it->chips), chip (vc_probe_is_hdr (p) ? "10-bit HDR" : "10-bit", "hdr"));
+    } else {
+        gtk_box_append (GTK_BOX (it->chips), chip (vc_class_for (p->width, p->height)->label, "res"));
+    }
 }
 
 /* ---- bottom bar, summary, selection bar ---- */
@@ -679,21 +848,17 @@ update_speed_guide (void)
         g_autofree char *body = smaller < 0 ? g_strdup_printf ("%s Medium time", ft)
                                 : g_strdup_printf ("%s Medium time · %s", ft, size_text);
         set_tip (app.speed_btns[p], name, NULL, body);
-        if (p == app.preset) {
-            g_autofree char *cap = smaller < 0 ? g_strdup_printf ("%s Medium time", ft)
-                                   : g_strdup_printf ("%s · %s Medium time", size_text, ft);
-            gtk_label_set_text (GTK_LABEL (app.speed_caption), cap);
-        }
     }
 }
 
+/* The footer while a batch runs: "Converting 4 of 6", the batch's bar and the time left. */
 static void
 update_progress (void)
 {
     if (app.items == NULL || app.closing)
         return;
     guint total = 0, done = 0;
-    guint64 all = 0, finished = 0, held = 0, saved = 0;
+    guint64 all = 0, finished = 0, held = 0;
     for (guint i = 0; i < app.items->len; i++) {
         Item *it = app.items->pdata[i];
         if (!it->in_batch)
@@ -706,26 +871,20 @@ update_progress (void)
             done++;
             finished += it->size;
         }
-        if (app.mode != VC_MODE_FRAMES && it->out != NULL && it->out_size < it->size)   /* a web copy can be bigger */
-            saved += it->size - it->out_size;
     }
     Item *job = app.job;
     double progressed = finished + (job != NULL ? job->fraction * job->size : 0);
-    gtk_progress_bar_set_fraction (GTK_PROGRESS_BAR (app.run_bar), all > 0 ? progressed / all : 0);
-    if (app.paused)
-        gtk_widget_add_css_class (app.run_bar, "paused");
-    else
-        gtk_widget_remove_css_class (app.run_bar, "paused");
+    gtk_progress_bar_set_fraction (GTK_PROGRESS_BAR (app.foot_bar), all > 0 ? progressed / all : 0);
+    gtk_widget_set_visible (app.foot_bar, TRUE);
 
     g_autofree char *title = NULL, *eta = NULL;
     if (job != NULL) {
-        g_autofree char *name = basename_display (job->path);
-        title = g_markup_printf_escaped ("<b>%s %u of %u</b> · %s",
+        title = g_markup_printf_escaped ("<b>%s %u of %u</b>",
                                          app.paused ? "Paused ·"
                                          : app.mode == VC_MODE_COMPRESS || app.mode == VC_MODE_IMAGES
                                              ? "Compressing"
                                          : app.mode == VC_MODE_FRAMES ? "Extracting" : "Converting",
-                                         MIN (done + 1, total), total, name);
+                                         MIN (done + 1, total), total);
         double active = (g_get_monotonic_time () - app.job_t0 - app.paused_total) / 1e6;
         double rate = active > 0 ? job->fraction * job->size / active : 0;   /* source bytes/s */
         eta = app.paused ? g_strdup ("Press play to resume")
@@ -736,27 +895,28 @@ update_progress (void)
         title = g_strdup ("<b>Checking the last copy…</b>");
         eta = g_strdup ("");
     }
-    gtk_label_set_markup (GTK_LABEL (app.run_title), title);
-    gtk_label_set_text (GTK_LABEL (app.run_eta), eta);
-
-    g_autofree char *saved_text = g_format_size (saved);
-    const char *originals = trash_on () ? "riginals go to Trash after a check" : "riginals are untouched";
-    g_autofree char *sub = saved == 0 ? g_strdup_printf ("O%s", originals)
-                           : g_strdup_printf ("Saved %s so far · o%s", saved_text, originals);
-    gtk_label_set_text (GTK_LABEL (app.run_sub), sub);
+    gtk_widget_remove_css_class (app.foot_left, "error");
+    gtk_label_set_markup (GTK_LABEL (app.foot_left), title);
+    gtk_label_set_text (GTK_LABEL (app.foot_right), eta);
 }
 
 static void
 update_summary (void)
 {
-    guint compressed = 0, efficient = 0, unreadable = 0;
+    guint compressed = 0, efficient = 0, unreadable = 0, copies = 0;
     guint64 before = 0, after = 0;
     for (guint i = 0; i < app.items->len; i++) {
         Item *it = app.items->pdata[i];
         if (it->out != NULL) {
+            guint64 smallest = it->out_size;   /* images: the smaller of the two copies */
+            for (guint r = 0; r < it->n_res; r++) {
+                copies += it->res[r].size > 0 && it->res[r].fresh;
+                if (it->res[r].size > 0)
+                    smallest = MIN (smallest, it->res[r].size);
+            }
             compressed++;
             before += it->size;
-            after += it->out_size;
+            after += smallest;
         } else if (it->state == ST_DONE) {
             efficient++;
         } else if (it->probed && it->probe == NULL) {
@@ -774,12 +934,16 @@ update_summary (void)
     gtk_label_set_text (GTK_LABEL (app.sum_title), title);
 
     GString *s = g_string_new (NULL);
-    g_string_printf (s, "%u %s%s %s", compressed, noun (), compressed == 1 ? "" : "s",
-                     web ? "converted" : frames ? "extracted" : "compressed");
+    if (app.mode == VC_MODE_IMAGES)
+        g_string_printf (s, "%u image%s · %u cop%s", compressed, compressed == 1 ? "" : "s", copies,
+                         copies == 1 ? "y" : "ies");
+    else
+        g_string_printf (s, "%u %s%s %s", compressed, noun (), compressed == 1 ? "" : "s",
+                         web ? "converted" : frames ? "extracted" : "compressed");
     if (app.batch_t0 > 0 && app.batch_end > app.batch_t0) {
-        guint min = (guint) ((app.batch_end - app.batch_t0) / G_USEC_PER_SEC / 60);
+        guint secs = (guint) ((app.batch_end - app.batch_t0) / G_USEC_PER_SEC), min = secs / 60;
         if (min == 0)
-            g_string_append (s, " in under a minute");
+            g_string_append_printf (s, " in %u s", MAX (secs, 1));
         else if (min < 60)
             g_string_append_printf (s, " in %u min", min);
         else
@@ -800,6 +964,8 @@ update_summary (void)
     gtk_label_set_text (GTK_LABEL (app.sum_pct), pct);
     /* frames aren't a smaller copy of the video, and a web copy can come out bigger */
     gtk_label_set_text (GTK_LABEL (app.sum_pct_cap), frames ? "vs the videos" : after > before ? "Bigger" : "Smaller");
+    gtk_label_set_text (GTK_LABEL (gtk_widget_get_last_child (gtk_widget_get_parent (app.sum_after))),
+                        app.mode == VC_MODE_IMAGES ? "Smallest set" : frames ? "Frames" : "After");
 }
 
 static void
@@ -839,6 +1005,23 @@ on_busy_changed (gboolean busy)
     notify ("done", gtk_label_get_text (GTK_LABEL (app.sum_title)), body);
 }
 
+/* The install command for a missing tool, for the banner's copy button. */
+static const char *
+fix_command (const char *missing)
+{
+    return strcmp (missing, "magick") == 0 ? "sudo dnf install ImageMagick"
+           : strcmp (missing, "pngquant") == 0 ? "sudo dnf install pngquant"
+           : "sudo dnf swap ffmpeg-free ffmpeg --allowerasing";   /* RPM Fusion's full build */
+}
+
+static void
+set_ready (GtkWidget *label, gboolean ok)
+{
+    gtk_label_set_text (GTK_LABEL (label), !app.tools_ok ? "Checking…" : ok ? "Ready" : "Missing");
+    const char *cls[] = { "tool-state", !app.tools_ok ? NULL : ok ? "ok" : "missing", NULL };
+    gtk_widget_set_css_classes (label, cls);
+}
+
 static void
 update_controls (void)
 {
@@ -846,10 +1029,11 @@ update_controls (void)
         return;
     guint n = app.items != NULL ? app.items->len : 0;
     gboolean probing = app.items != NULL && app.probes_done < n;
-    gboolean busy = FALSE, start = FALSE, stop = FALSE, any_done = FALSE;
+    gboolean busy = FALSE, start = FALSE, stop = FALSE, any_done = FALSE, any_result = FALSE;
     gboolean s_start = FALSE, s_pause = FALSE, s_stop = FALSE, s_trash = FALSE;
-    guint nsel = 0, ready = 0, skipped = 0;
+    guint nsel = 0, ready = 0, skipped = 0, frames = 0;
     guint64 src = 0, est = 0;
+    VcOptions o = current_options ();
     for (guint i = 0; i < n; i++) {
         Item *it = app.items->pdata[i];
         busy |= it->state == ST_QUEUED || it->state == ST_ACTIVE || it->state == ST_CHECKING;
@@ -858,6 +1042,7 @@ update_controls (void)
         start |= can_start (it) && !skip;
         stop |= can_stop (it);
         any_done |= it->state == ST_DONE || it->state == ST_TRASHED;
+        any_result |= it->state != ST_NEW || it->note != NULL;
         if (checked (it)) {
             nsel++;
             s_start |= can_start (it);
@@ -866,11 +1051,12 @@ update_controls (void)
             s_trash |= can_trash (it);
         }
         if (((it->state == ST_NEW && it->probe != NULL) || it->state == ST_HELD) && !skip) {
-            VcOptions o = current_options ();
             guint64 e = item_estimate (it, &o, NULL);
             ready++;
             src += it->size;
             est += e > 0 ? e : it->size;
+            if (app.mode == VC_MODE_FRAMES)
+                frames += vc_frames_estimate (it->probe->duration, it->probe->fps, &o);
         }
     }
     gboolean finished = n > 0 && !busy && !start && any_done;
@@ -879,37 +1065,56 @@ update_controls (void)
 
     gboolean loaded = app.items != NULL;
     gtk_stack_set_visible_child_name (GTK_STACK (app.pages), loaded ? "list" : "empty");
-    gtk_widget_set_visible (app.bottom, loaded);
-    gtk_stack_set_visible_child_name (GTK_STACK (app.bottom_stack),
-                                      busy ? "running" : finished ? "finished" : "ready");
-    gtk_widget_set_visible (app.controls, !finished);
-    gtk_widget_set_visible (app.summary, finished);
-    gtk_widget_set_visible (app.choose_btn, loaded && !busy && !finished);
-    gtk_widget_set_visible (app.files_btn, loaded && !busy && !finished);
+
+    /* header: Choose stays visible but dims while busy; Start/Pause swap while a batch runs; a
+     * finished batch offers Show in Files instead */
     gtk_widget_set_sensitive (app.choose_btn, app.tools_ok && !busy);
     gtk_widget_set_sensitive (app.files_btn, app.tools_ok && !busy);
-    gtk_widget_set_sensitive (app.choose_empty, app.tools_ok);
-    gtk_widget_set_sensitive (app.files_empty, app.tools_ok);
-    gtk_widget_set_sensitive (app.mode_dd, !busy);
+    gtk_widget_set_visible (app.show_btn, finished);
+    gtk_widget_set_visible (app.start_btn, !finished && (!busy || app.paused));
+    gtk_widget_set_visible (app.pause_btn, !finished && (!busy || !app.paused));
+    gtk_widget_set_visible (app.stop_btn, !finished);
+    if (busy && !app.paused)
+        gtk_widget_add_css_class (app.pause_btn, "suggested-action");
+    else
+        gtk_widget_remove_css_class (app.pause_btn, "suggested-action");
+
+    /* sidebar: modes lock while busy; a dot marks a mode whose tool is missing */
+    for (guint m = 0; m < G_N_ELEMENTS (MODE_INFO); m++) {
+        gboolean here = m == app.mode;
+        gboolean missing_m = app.tools_ok && vc_mode_missing_tool (m, app.have) != NULL;
+        gtk_widget_set_sensitive (app.mode_row[m], !busy || here);
+        gtk_widget_set_visible (app.mode_lock[m], busy && !here);
+        gtk_widget_set_visible (app.mode_dot[m], missing_m && !(busy && !here));
+        gtk_widget_set_visible (app.mode_count[m], here && loaded && !busy && !missing_m && n > 0);
+        g_autofree char *count = g_strdup_printf ("%u", n);
+        gtk_label_set_text (GTK_LABEL (app.mode_count[m]), count);
+    }
+    set_ready (app.tool_state[0], app.tools_ok);
+    set_ready (app.tool_state[1], (app.have & (VC_HAVE_X265 | VC_HAVE_X264 | VC_HAVE_ZSCALE))
+                                  == (VC_HAVE_X265 | VC_HAVE_X264 | VC_HAVE_ZSCALE));
+    set_ready (app.tool_state[2], app.have & VC_HAVE_MAGICK);
+    set_ready (app.tool_state[3], app.have & VC_HAVE_PNGQUANT);
 
     /* Shown once the tool check is done; this mode can't start without the tool. */
     const char *missing = app.tools_ok ? vc_mode_missing_tool (app.mode, app.have) : NULL;
     gtk_widget_set_visible (app.banner, missing != NULL);
     if (missing != NULL) {
-        const char *mode_name = MODE_NAMES[gtk_drop_down_get_selected (GTK_DROP_DOWN (app.mode_dd))];
-        g_autofree char *b = app.mode == VC_MODE_IMAGES
-            ? g_strdup_printf ("%s needs %s: sudo dnf install %s", mode_name, missing,
-                               strcmp (missing, "magick") == 0 ? "ImageMagick" : missing)
-            : g_strdup_printf ("%s needs ffmpeg with %s, which this ffmpeg doesn't "
-                               "have. Install the full ffmpeg build from RPM Fusion.", mode_name, missing);
-        gtk_label_set_text (GTK_LABEL (app.banner), b);
+        gboolean ffmpeg_part = strcmp (missing, "magick") != 0 && strcmp (missing, "pngquant") != 0;
+        g_autofree char *t = g_strdup_printf ("%s needs %s%s", MODE_INFO[app.mode].name,
+                                              ffmpeg_part ? "ffmpeg with " : "", missing);
+        gtk_label_set_text (GTK_LABEL (app.banner_title), t);
+        gtk_label_set_text (GTK_LABEL (app.banner_sub), ffmpeg_part
+                            ? "This ffmpeg lacks it: install the full build from RPM Fusion. The other modes still work."
+                            : "Install it, then come back. The other modes still work.");
+        gtk_label_set_text (GTK_LABEL (app.banner_code), fix_command (missing));
     }
-    gboolean range_ok = check_range ();
-    gboolean can_run = app.tools_ok && missing == NULL && !probing
-                       && (app.mode != VC_MODE_FRAMES || range_ok);
+    const char *bad_field = check_range ();   /* also keeps the frames inspector's fields current */
+    if (app.mode != VC_MODE_FRAMES)
+        bad_field = NULL;
+    gboolean can_run = app.tools_ok && missing == NULL && !probing && bad_field == NULL;
 
-    gtk_widget_set_sensitive (app.start_btn, can_run && start
-                                             && (!busy || app.paused));
+    gtk_widget_set_sensitive (app.start_btn, can_run && start && (!busy || app.paused));
     gtk_widget_set_sensitive (app.pause_btn, app.job != NULL && !app.paused);
     gtk_widget_set_sensitive (app.stop_btn, stop);
     if (app.job != NULL && app.paused) {
@@ -918,8 +1123,9 @@ update_controls (void)
                                                  (int) (app.job->fraction * 100));
         set_tip (app.start_btn, "Resume", "Space", body);
     } else {
-        g_autofree char *body = g_strdup_printf ("%s every waiting %s, one after another.", verb (), noun ());
-        set_tip (app.start_btn, "Start", "Space", body);
+        g_autofree char *body = g_strdup_printf ("%s every waiting %s.", verb (), noun ());
+        g_autofree char *key = g_strdup_printf ("Space · one %s at a time", noun ());
+        set_tip (app.start_btn, "Start", key, body);
     }
     for (guint p = 0; VC_PRESETS[p] != NULL && p < G_N_ELEMENTS (app.speed_btns); p++)
         gtk_widget_set_sensitive (app.speed_btns[p], !busy);
@@ -932,23 +1138,63 @@ update_controls (void)
     gtk_widget_set_sensitive (app.frames_opts, !busy);
     gtk_widget_set_sensitive (app.images_opts, !busy);
 
-    g_autofree char *src_text = g_format_size (src), *est_text = g_format_size (est);
-    gboolean est_shown = app.mode == VC_MODE_COMPRESS;
-    g_autofree char *total = ready == 0 || !est_shown ? g_strdup ("")
-                             : g_strdup_printf ("%s → ≈ %s", src_text, est_text);
-    g_autofree char *preset = preset_title (app.preset);
-    g_autofree char *total_sub = probing ? g_strdup_printf ("Reading %ss…", noun ())
-                                 : ready == 0 && skipped > 0
-                                     ? g_strdup_printf ("%u video%s likely won't get smaller · "
-                                                        "select to compress anyway", skipped,
-                                                        skipped == 1 ? "" : "s")
-                                 : ready == 0 ? g_strdup ("Nothing waiting to compress")
-                                 : !est_shown ? g_strdup_printf ("%u %s%s ready", ready, noun (),
-                                                                 ready == 1 ? "" : "s")
-                                 : g_strdup_printf ("%u video%s ready · estimated for %s", ready,
-                                                    ready == 1 ? "" : "s", preset);
-    gtk_label_set_text (GTK_LABEL (app.total), total);
-    gtk_label_set_text (GTK_LABEL (app.total_sub), total_sub);
+    /* the column head says what the status column shows in this mode */
+    gtk_label_set_text (GTK_LABEL (app.size_head),
+                        app.mode == VC_MODE_COMPRESS ? (any_result ? "SIZE → RESULT" : "SIZE → ESTIMATE")
+                        : app.mode == VC_MODE_WEB_VIDEO ? "SIZE → RESULT"
+                        : app.mode == VC_MODE_FRAMES ? "FRAMES"
+                        : any_result ? "SAME TYPE · WEBP" : "STATUS");
+
+    /* footer: progress while busy, else what Start would do or why it can't */
+    gtk_widget_set_visible (app.footer, loaded && !finished);
+    if (busy) {
+        update_progress ();
+    } else {
+        g_autofree char *left = NULL, *right = NULL;
+        gboolean err = FALSE;
+        g_autofree char *src_text = g_format_size (src), *est_text = g_format_size (est);
+        g_autofree char *preset = preset_title (app.preset);
+        g_autofree char *things = g_strdup_printf ("%u %s%s", ready, noun (), ready == 1 ? "" : "s");
+        if (missing != NULL) {
+            left = g_markup_printf_escaped ("Start is off until %s is installed", missing);
+        } else if (bad_field != NULL) {
+            left = g_markup_printf_escaped ("⚠ Fix the %s time to start", bad_field);
+            err = TRUE;
+        } else if (probing) {
+            left = g_markup_printf_escaped ("Reading %ss…", noun ());
+        } else if (ready == 0 && skipped > 0) {
+            left = g_markup_printf_escaped ("%u video%s likely won't get smaller · select to compress anyway",
+                                            skipped, skipped == 1 ? "" : "s");
+        } else if (ready == 0) {
+            left = g_markup_printf_escaped ("Nothing waiting to %s", app.mode == VC_MODE_WEB_VIDEO ? "convert"
+                                            : app.mode == VC_MODE_FRAMES ? "extract" : "compress");
+        } else if (app.mode == VC_MODE_COMPRESS) {
+            left = g_markup_printf_escaped ("<b>%s ready</b> · %s → ≈ %s", things, src_text, est_text);
+        } else {
+            left = g_markup_printf_escaped ("<b>%s ready</b> · %s", things, src_text);
+        }
+        if (app.hidden != NULL && app.hidden->len > 0 && (missing != NULL || app.mode == VC_MODE_IMAGES)) {
+            GString *h = g_string_new (NULL);
+            for (guint i = 0; i < app.hidden->len && i < 3; i++)
+                g_string_append_printf (h, "%s%s", i > 0 ? ", " : "", (char *) app.hidden->pdata[i]);
+            if (app.hidden->len > 3)
+                g_string_append (h, ", …");
+            right = g_strdup_printf ("%u file%s hidden: %s", app.hidden->len, app.hidden->len == 1 ? "" : "s",
+                                     h->str);
+            g_string_free (h, TRUE);
+        } else if (app.mode == VC_MODE_FRAMES && ready > 0) {
+            right = g_strdup_printf ("%s · ≈ %u frames", things, frames);
+        } else if (app.mode == VC_MODE_COMPRESS && ready > 0 && missing == NULL) {
+            right = g_strdup_printf ("estimated for %s", preset);
+        }
+        if (err)
+            gtk_widget_add_css_class (app.foot_left, "error");
+        else
+            gtk_widget_remove_css_class (app.foot_left, "error");
+        gtk_label_set_markup (GTK_LABEL (app.foot_left), left);
+        gtk_label_set_text (GTK_LABEL (app.foot_right), right != NULL ? right : "");
+        gtk_widget_set_visible (app.foot_bar, FALSE);
+    }
 
     gtk_widget_set_visible (app.selbar, nsel > 0);
     g_autofree char *sel = g_strdup_printf ("%u selected", nsel);
@@ -956,7 +1202,8 @@ update_controls (void)
     gtk_widget_set_sensitive (app.sel_start, can_run && s_start);
     gtk_widget_set_sensitive (app.sel_pause, s_pause);
     gtk_widget_set_sensitive (app.sel_stop, s_stop);
-    gtk_widget_set_sensitive (app.sel_trash, s_trash);
+    gtk_widget_set_sensitive (app.sel_trash, s_trash && vc_mode_can_trash (app.mode));
+    gtk_widget_set_visible (app.sel_trash, vc_mode_can_trash (app.mode));
     g_autofree char *sel_body = g_strdup_printf ("%u %s%s, in list order. Others wait.", nsel, noun (),
                                                  nsel == 1 ? "" : "s");
     g_autofree char *sel_title = g_strdup_printf ("%s selected", verb ());
@@ -964,7 +1211,7 @@ update_controls (void)
     g_autofree char *trash_body = g_strdup_printf ("For selected finished %ss, after checking each copy. "
                                                    "Asks first.", noun ());
     set_tip (app.sel_trash, "Move originals to Trash", NULL, trash_body);
-    g_autofree char *clear_body = g_strdup_printf ("Buttons below act on every %s again.", noun ());
+    g_autofree char *clear_body = g_strdup_printf ("Buttons act on every %s again.", noun ());
     set_tip (app.sel_clear, "Clear selection", "Esc", clear_body);
     g_autofree char *pause_body = g_strdup_printf ("Pause the current %s. Resume continues from the same "
                                                    "point.", noun ());
@@ -976,10 +1223,9 @@ update_controls (void)
     app.syncing = FALSE;
     gtk_widget_set_sensitive (app.select_all, n > 0);
 
-    if (busy)
-        update_progress ();
     if (finished)
         update_summary ();
+    gtk_widget_set_visible (app.summary, finished);
     sample_next ();
 }
 
@@ -992,8 +1238,10 @@ toast_hide (gpointer data)
 }
 
 static void
-show_toast (const char *title, const char *detail)
+show_toast (const char *icon, const char *title, const char *detail)
 {
+    gtk_image_set_from_icon_name (GTK_IMAGE (gtk_widget_get_first_child (
+        gtk_revealer_get_child (GTK_REVEALER (app.toast)))), icon);
     g_autofree char *m = g_markup_printf_escaped ("<b>%s</b>   <span alpha=\"70%%\">%s</span>",
                                                   title, detail);
     gtk_label_set_markup (GTK_LABEL (app.toast_label), m);
@@ -1011,6 +1259,14 @@ show_probe (Item *it, const char *error)
     it->probed = TRUE;
     g_free (it->tip);
     it->tip = g_strdup (error);
+    if (it->probe != NULL && app.mode == VC_MODE_IMAGES) {
+        /* a twin's outputs keep the whole source name: twin.jpg → twin.jpg.jpg */
+        g_autofree char *same = vc_image_outputs (it->path, it->probe, NULL);
+        g_autofree char *name = g_path_get_basename (it->path);
+        g_autofree char *out = g_path_get_basename (same);
+        if (g_str_has_prefix (out, name) && out[strlen (name)] == '.')
+            it->twin_out = g_filename_display_name (out);
+    }
     refresh_chips (it);
     render_row (it);
 }
@@ -1256,10 +1512,10 @@ trash_done (GObject *source, GAsyncResult *res, gpointer user_data)
         set_status (it, NULL, it->out);
         g_autofree char *name = basename_display (it->path);
         g_autofree char *detail = g_strdup_printf ("%s · restore it from Trash any time", name);
-        show_toast ("Original moved to Trash", detail);
+        show_toast ("user-trash-symbolic", "Original moved to Trash", detail);
     } else {
         it->state = ST_DONE;
-        it->extra = "Original kept (trash failed)";
+        it->extra = "Original kept · trash failed";
         set_status (it, NULL, error->message);
     }
     update_controls ();
@@ -1376,7 +1632,7 @@ dir_usage (const char *path, guint *count)
     return total;
 }
 
-/* Images: the row's "jpg 412 kB −58% · webp 288 kB −71%", from what is on disk now. `out` becomes the
+/* Images: the row's result lines (same type, then webp), from what is on disk now. `out` becomes the
  * same-type copy, else the webp, else NULL. */
 static void
 image_result (Item *it, GPtrArray *steps)
@@ -1384,39 +1640,29 @@ image_result (Item *it, GPtrArray *steps)
     g_autofree char *webp = NULL;
     g_autofree char *same = vc_image_outputs (it->path, it->probe, &webp);
     const char *outs[] = { same, webp };
-    GString *d = g_string_new (NULL);
     g_clear_pointer (&it->out, g_free);
     it->out_size = 0;
+    it->n_res = 0;
     for (guint i = 0; i < G_N_ELEMENTS (outs) && outs[i] != NULL; i++) {
         gboolean planned = FALSE;   /* else it existed before this run */
         for (guint s = 0; s < steps->len; s++)
             planned |= g_strcmp0 (((VcStep *) steps->pdata[s])->output, outs[i]) == 0;
         GStatBuf st;
         gboolean exists = g_stat (outs[i], &st) == 0;
-        const char *ext = strrchr (outs[i], '.') + 1;
-        if (d->len > 0)
-            g_string_append (d, " · ");
-        if (!exists) {
-            g_string_append_printf (d, "%s already optimized", ext);
-        } else if (!planned) {
-            g_string_append_printf (d, "%s exists", ext);
-        } else {
-            g_autofree char *size = g_format_size (st.st_size);
-            g_autofree char *change = change_text (it->size, st.st_size);
-            g_string_append_printf (d, "%s %s %s", ext, size, change);
-        }
+        g_strlcpy (it->res[i].ext, strrchr (outs[i], '.') + 1, sizeof it->res[i].ext);
+        it->res[i].size = exists ? (guint64) st.st_size : 0;
+        it->res[i].fresh = planned;
+        it->n_res = i + 1;
         if (exists && it->out == NULL) {
             it->out = g_strdup (outs[i]);
             it->out_size = st.st_size;
         }
     }
-    g_free (it->detail);
-    it->detail = g_string_free (d, FALSE);
     /* only the same-type copy may replace the original (SPEC-image-compress.md D6) */
     it->webp_only = it->out != NULL && strcmp (it->out, same) != 0;
     if (it->webp_only && trash_on ())
-        it->extra = g_str_has_suffix (same, ".png") ? "Original kept (no png copy)"
-                                                    : "Original kept (no jpg copy)";
+        it->extra = g_str_has_suffix (same, ".png") ? "Original kept · no png copy"
+                                                    : "Original kept · no jpg copy";
 }
 
 /* Runs when the job's last step has ended (or one failed, or it was stopped): moves the outputs
@@ -1539,11 +1785,7 @@ on_progress_line (GObject *source, GAsyncResult *res, gpointer user_data)
         double fraction, dur = s->duration > 0 ? s->duration : it->probe->duration;
         if (s->progress && vc_parse_progress_line (line, dur, &fraction)) {
             it->fraction = (it->step + fraction) / it->steps->len;
-            gtk_progress_bar_set_fraction (GTK_PROGRESS_BAR (it->bar), it->fraction);
-            if (!it->stop) {
-                g_autofree char *pct = g_strdup_printf ("%d%%", (int) (it->fraction * 100));
-                gtk_label_set_text (GTK_LABEL (it->pct), pct);
-            }
+            render_row (it);   /* bar, percent and the time left under it */
             update_progress ();
         } else if (s->progress && dur <= 0 && g_str_has_prefix (line, "progress=")) {
             gtk_progress_bar_pulse (GTK_PROGRESS_BAR (it->bar));
@@ -1651,7 +1893,7 @@ start_job (Item *it, GPtrArray *steps)
     it->state = ST_ACTIVE;
     it->stop = FALSE;
     it->fraction = 0;
-    g_clear_pointer (&it->detail, g_free);
+    it->n_res = 0;
     it->webp_only = FALSE;
     gtk_progress_bar_set_fraction (GTK_PROGRESS_BAR (it->bar), 0);
     set_status (it, NULL, NULL);
@@ -2074,43 +2316,62 @@ make_row (Item *it)
     gtk_widget_add_css_class (tile, tile_class);
     gtk_widget_set_valign (tile, GTK_ALIGN_CENTER);
 
+    /* line 1: name and a chip (Twin, Original in Trash); line 2: meta and its chips */
     GtkWidget *name = gtk_label_new (display);
     gtk_label_set_ellipsize (GTK_LABEL (name), PANGO_ELLIPSIZE_MIDDLE);
     gtk_label_set_xalign (GTK_LABEL (name), 0);
     gtk_widget_add_css_class (name, "name");
+    it->name_chip = chip ("", NULL);
+    gtk_widget_set_visible (it->name_chip, FALSE);
+    GtkWidget *line1 = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 6);
+    gtk_box_append (GTK_BOX (line1), name);
+    gtk_box_append (GTK_BOX (line1), it->name_chip);
     it->meta = gtk_label_new ("");
     gtk_label_set_xalign (GTK_LABEL (it->meta), 0);
     gtk_label_set_ellipsize (GTK_LABEL (it->meta), PANGO_ELLIPSIZE_END);
-    gtk_widget_add_css_class (it->meta, "caption");
-    GtkWidget *names = gtk_box_new (GTK_ORIENTATION_VERTICAL, 2);
+    gtk_widget_add_css_class (it->meta, "meta");
+    it->chips = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 6);
+    GtkWidget *line2 = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 6);
+    gtk_box_append (GTK_BOX (line2), it->meta);
+    gtk_box_append (GTK_BOX (line2), it->chips);
+    GtkWidget *names = gtk_box_new (GTK_ORIENTATION_VERTICAL, 1);
     gtk_widget_set_hexpand (names, TRUE);
     gtk_widget_set_valign (names, GTK_ALIGN_CENTER);
-    gtk_box_append (GTK_BOX (names), name);
-    gtk_box_append (GTK_BOX (names), it->meta);
+    gtk_box_append (GTK_BOX (names), line1);
+    gtk_box_append (GTK_BOX (names), line2);
 
-    it->chips = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 6);
-    gtk_size_group_add_widget (app.col_quality, it->chips);
-
-    it->size_lbl = gtk_label_new ("");
-    it->pill = gtk_label_new ("");
-    gtk_widget_set_valign (it->pill, GTK_ALIGN_CENTER);
+    /* status column: two right-aligned lines; the bar and percent sit in the first */
+    GtkWidget *status = gtk_box_new (GTK_ORIENTATION_VERTICAL, 2);
+    gtk_widget_set_valign (status, GTK_ALIGN_CENTER);
     it->bar = gtk_progress_bar_new ();
-    gtk_widget_set_size_request (it->bar, 120, -1);
+    gtk_widget_set_size_request (it->bar, 150, -1);
     gtk_widget_set_valign (it->bar, GTK_ALIGN_CENTER);
     it->pct = gtk_label_new ("");
-    gtk_widget_set_size_request (it->pct, 40, -1);
-    gtk_label_set_xalign (GTK_LABEL (it->pct), 1);
-    GtkWidget *status = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 10);
-    gtk_widget_set_halign (status, GTK_ALIGN_END);
-    gtk_box_append (GTK_BOX (status), it->size_lbl);
-    gtk_box_append (GTK_BOX (status), it->bar);
-    gtk_box_append (GTK_BOX (status), it->pct);
-    gtk_box_append (GTK_BOX (status), it->pill);
-    GtkWidget *status_col = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 0);
-    gtk_box_append (GTK_BOX (status_col), status);
-    gtk_widget_set_hexpand (status, TRUE);
-    gtk_widget_set_hexpand (status_col, FALSE);   /* right-align inside the column, don't grow it */
-    gtk_size_group_add_widget (app.col_status, status_col);
+    gtk_widget_add_css_class (it->pct, "pct");
+    for (guint i = 0; i < 2; i++) {
+        GtkWidget *line = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 6);
+        gtk_widget_set_halign (line, i == 0 ? GTK_ALIGN_FILL : GTK_ALIGN_END);
+        if (i == 0) {
+            GtkWidget *push = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 0);   /* keeps what is shown at the right edge */
+            gtk_widget_set_hexpand (push, TRUE);
+            gtk_box_append (GTK_BOX (line), push);
+            gtk_box_append (GTK_BOX (line), it->bar);
+            gtk_box_append (GTK_BOX (line), it->pct);
+        }
+        it->tag[i] = gtk_label_new ("");
+        gtk_widget_add_css_class (it->tag[i], "fmt");
+        gtk_label_set_xalign (GTK_LABEL (it->tag[i]), 1);
+        it->val[i] = gtk_label_new ("");
+        gtk_label_set_xalign (GTK_LABEL (it->val[i]), 1);
+        it->pill[i] = gtk_label_new ("");
+        gtk_widget_set_valign (it->pill[i], GTK_ALIGN_CENTER);
+        gtk_box_append (GTK_BOX (line), it->tag[i]);
+        gtk_box_append (GTK_BOX (line), it->val[i]);
+        gtk_box_append (GTK_BOX (line), it->pill[i]);
+        gtk_box_append (GTK_BOX (status), line);
+    }
+    gtk_widget_set_size_request (status, 200, -1);
+    gtk_size_group_add_widget (app.col_status, status);
 
     it->b_play = mini_button ("media-playback-start-symbolic", "Compress next",
                               G_CALLBACK (on_row_play), it);
@@ -2118,7 +2379,7 @@ make_row (Item *it)
                                G_CALLBACK (on_row_pause), it);
     it->b_stop = mini_button ("media-playback-stop-symbolic", "Stop or skip",
                               G_CALLBACK (on_row_stop), it);
-    it->b_show = mini_button ("folder-open-symbolic", "Show in Files", G_CALLBACK (on_row_show), it);
+    it->b_show = mini_button ("mt-external-symbolic", "Show in Files", G_CALLBACK (on_row_show), it);
     g_autofree char *show_body = g_strdup_printf ("Open the %s folder with this %s selected.",
                                                   vc_mode_out_dir (app.mode), noun ());
     set_tip (it->b_show, "Show in Files", NULL, show_body);
@@ -2135,13 +2396,12 @@ make_row (Item *it)
         gtk_box_append (GTK_BOX (actions), b[i]);
     gtk_size_group_add_widget (app.col_actions, actions);
 
-    it->box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 14);
+    it->box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 12);
     gtk_widget_add_css_class (it->box, "vrow");
     gtk_box_append (GTK_BOX (it->box), it->check);
     gtk_box_append (GTK_BOX (it->box), tile);
     gtk_box_append (GTK_BOX (it->box), names);
-    gtk_box_append (GTK_BOX (it->box), it->chips);
-    gtk_box_append (GTK_BOX (it->box), status_col);
+    gtk_box_append (GTK_BOX (it->box), status);
     gtk_box_append (GTK_BOX (it->box), actions);
 
     GtkGesture *click = gtk_gesture_click_new ();
@@ -2189,6 +2449,48 @@ add_item (const char *path)
     g_ptr_array_add (app.items, it);
 }
 
+/* The header's title, its Folder / Files badge and the line under it. */
+static void
+update_header (void)
+{
+    gboolean files = app.files != NULL;
+    gtk_widget_set_visible (app.title_badge, app.items != NULL);
+    gtk_label_set_text (GTK_LABEL (app.title_badge), files ? "Files" : "Folder");
+    if (app.items == NULL) {
+        gtk_label_set_text (GTK_LABEL (app.title), "Media Tools");
+        gtk_label_set_text (GTK_LABEL (app.subtitle), "No folder or files chosen");
+        return;
+    }
+    guint n = app.items->len, hidden = app.hidden->len;
+    GString *sub = g_string_new (NULL);
+    if (files) {
+        guint chosen = n + hidden;
+        g_autofree char *t = g_strdup_printf ("%u chosen file%s", chosen, chosen == 1 ? "" : "s");
+        gtk_label_set_text (GTK_LABEL (app.title), t);
+        if (app.n_dirs == 1) {
+            g_autofree char *dir = g_path_get_dirname (((Item *) app.items->pdata[0])->path);
+            g_autofree char *where = home_relative (dir);
+            g_string_printf (sub, "From %s · saves to its own %s/", where, vc_mode_out_dir (app.mode));
+        } else if (app.n_dirs > 1) {
+            g_string_printf (sub, "From %u folders · each saves to its own %s/", app.n_dirs,
+                             vc_mode_out_dir (app.mode));
+        }
+    } else {
+        g_autofree char *base = basename_display (app.folder);
+        g_autofree char *where = home_relative (app.folder);
+        gtk_label_set_text (GTK_LABEL (app.title), base);
+        g_string_assign (sub, where);
+    }
+    if (hidden > 0) {
+        if (!files)
+            g_string_append_printf (sub, " · %u %s%s", n, noun (), n == 1 ? "" : "s");
+        g_string_append_printf (sub, "%s%u file%s hidden (not %ss)", sub->len > 0 ? " · " : "", hidden,
+                                hidden == 1 ? "" : "s", noun ());
+    }
+    gtk_label_set_text (GTK_LABEL (app.subtitle), sub->str);
+    g_string_free (sub, TRUE);
+}
+
 /* Lists one folder (`files` NULL) or the chosen files (`folder` NULL), replacing the list. */
 static void
 load_source (const char *folder, char *const *files)
@@ -2212,55 +2514,49 @@ load_source (const char *folder, char *const *files)
     app.files = new_files;
     folder = app.folder;   /* the argument may be the old app.folder, freed just above */
 
+    g_clear_pointer (&app.hidden, g_ptr_array_unref);
+    app.hidden = g_ptr_array_new_with_free_func (g_free);
+    app.n_dirs = 0;
     if (app.files != NULL) {
-        guint hidden = 0;
+        g_autoptr (GHashTable) dirs = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, NULL);
         g_autofree char *last_dir = NULL;
         for (char **f = app.files; *f != NULL; f++) {
             g_autofree char *dir = g_path_get_dirname (*f);
             g_autofree char *base = g_path_get_basename (*f);
             if (g_strcmp0 (dir, last_dir) != 0)   /* the dialog lists one folder's files together */
                 remove_stale_parts (dir);
+            if (vc_mode_accepts (app.mode, base)) {
+                add_item (*f);
+                g_hash_table_add (dirs, g_strdup (dir));
+            } else {
+                g_ptr_array_add (app.hidden, g_filename_display_name (base));
+            }
             g_free (last_dir);
             last_dir = g_steal_pointer (&dir);
-            if (vc_mode_accepts (app.mode, base))
-                add_item (*f);
-            else
-                hidden++;
         }
-        guint n = app.items->len;
-        g_autofree char *sub = hidden == 0
-            ? g_strdup_printf ("%u file%s", n, n == 1 ? "" : "s")
-            : g_strdup_printf ("%u file%s · %u hidden (not %ss)", n, n == 1 ? "" : "s", hidden, noun ());
-        gtk_label_set_text (GTK_LABEL (app.title), "Chosen files");
-        gtk_label_set_text (GTK_LABEL (app.subtitle), sub);
+        app.n_dirs = g_hash_table_size (dirs);
     } else {
-        g_autofree char *base = basename_display (folder);
-        g_autofree char *display = g_filename_display_name (folder);
-        const char *home = g_get_home_dir ();
-        gsize hl = strlen (home);
-        g_autofree char *sub = strncmp (display, home, hl) == 0 && (display[hl] == '/' || !display[hl])
-                                   ? g_strconcat ("~", display + hl, NULL)
-                                   : g_strdup (display);
-        gtk_label_set_text (GTK_LABEL (app.title), base);
-        gtk_label_set_text (GTK_LABEL (app.subtitle), sub);
         remove_stale_parts (folder);
-
         g_autoptr (GError) error = NULL;
         g_autoptr (GDir) dir = g_dir_open (folder, 0, &error);
         if (dir == NULL) {
             alert ("Cannot open folder", error->message, NULL);
+            update_header ();
             update_speed_guide ();
             update_controls ();
             return;
         }
         /* Not recursive, by design; the output folder has no media extension so it never matches. */
         for (const char *name; (name = g_dir_read_name (dir)) != NULL;) {
-            if (!vc_mode_accepts (app.mode, name))
-                continue;
             g_autofree char *path = g_build_filename (folder, name, NULL);
-            add_item (path);
+            if (vc_mode_accepts (app.mode, name))
+                add_item (path);
+            else if (name[0] != '.' && g_file_test (path, G_FILE_TEST_IS_REGULAR))
+                g_ptr_array_add (app.hidden, g_filename_display_name (name));
         }
+        g_ptr_array_sort_values (app.hidden, (GCompareFunc) g_utf8_collate);
     }
+    update_header ();
     g_ptr_array_sort (app.items, compare_items);
     for (guint i = 0; i < app.items->len; i++) {
         Item *it = app.items->pdata[i];
@@ -2366,28 +2662,89 @@ on_speed (GtkToggleButton *b, gpointer user_data)
     on_estimate_input ();
 }
 
+static void
+update_frames_note (void)
+{
+    if (app.mode != VC_MODE_FRAMES)
+        return;
+    g_autofree char *m = g_strdup_printf ("<tt>frames/&lt;name&gt;/frame_0001.%s</tt>\n"
+                                          "One folder per video, numbered from 0001.", app.webp ? "webp" : "jpg");
+    gtk_label_set_markup (GTK_LABEL (app.insp_note), m);
+}
+
+/* Everything that follows the mode without a reload: accent, inspector, empty page. */
+static void
+apply_mode_ui (void)
+{
+    for (guint m = 0; m < G_N_ELEMENTS (MODE_INFO); m++)
+        gtk_widget_remove_css_class (GTK_WIDGET (app.win), MODE_INFO[m].css);
+    gtk_widget_add_css_class (GTK_WIDGET (app.win), MODE_INFO[app.mode].css);
+    gtk_stack_set_visible_child_name (GTK_STACK (app.insp_stack), MODE_INFO[app.mode].css);
+    gtk_image_set_from_icon_name (GTK_IMAGE (app.insp_icon), MODE_INFO[app.mode].icon);
+    gtk_image_set_from_icon_name (GTK_IMAGE (app.empty_icon), MODE_INFO[app.mode].icon);
+    gtk_label_set_text (GTK_LABEL (app.insp_title), MODE_INFO[app.mode].name);
+    gtk_label_set_text (GTK_LABEL (app.insp_sub), MODE_INFO[app.mode].sub);
+    if (MODE_INFO[app.mode].note != NULL)
+        gtk_label_set_markup (GTK_LABEL (app.insp_note), MODE_INFO[app.mode].note);
+    update_frames_note ();
+    gtk_label_set_text (GTK_LABEL (app.empty_sub), MODE_INFO[app.mode].empty);
+    g_autofree char *hero = g_strdup_printf ("Drop %ss or a folder", noun ());
+    gtk_label_set_text (GTK_LABEL (app.hero), hero);
+}
+
 /* Locked while busy (update_controls). Rows start fresh: the list is rebuilt from the same
  * source with the new mode's filter (SPEC-app-shell.md D3). */
 static void
-on_mode (void)
+on_mode (GtkListBox *box, GtkListBoxRow *row, gpointer user_data)
 {
-    guint i = gtk_drop_down_get_selected (GTK_DROP_DOWN (app.mode_dd));
-    if (i >= G_N_ELEMENTS (MODES) || app.mode == MODES[i])
+    (void) box; (void) user_data;
+    if (row == NULL || app.syncing)
         return;
-    app.mode = MODES[i];
-    gtk_widget_set_visible (app.compress_opts, app.mode == VC_MODE_COMPRESS);
-    gtk_widget_set_visible (app.web_opts, app.mode == VC_MODE_WEB_VIDEO);
-    gtk_widget_set_visible (app.frames_opts, app.mode == VC_MODE_FRAMES);
-    gtk_widget_set_visible (app.images_opts, app.mode == VC_MODE_IMAGES);
-    gtk_label_set_text (GTK_LABEL (app.empty_sub), EMPTY_SUB[i]);
-    g_autofree char *hero = g_strdup_printf ("Drop a folder of %ss here", noun ());
-    gtk_label_set_text (GTK_LABEL (app.hero), hero);
-    gtk_label_set_text (GTK_LABEL (app.size_head),
-                        app.mode == VC_MODE_COMPRESS ? "SIZE → ESTIMATED" : "SIZE");
+    VcMode m = gtk_list_box_row_get_index (row);
+    if (app.mode == m)
+        return;
+    app.mode = m;
+    apply_mode_ui ();
     if (app.items != NULL)
         load_source (app.folder, app.files);
     else
         update_controls ();
+}
+
+static void
+on_fps (GtkToggleButton *b, gpointer user_data)
+{
+    if (!gtk_toggle_button_get_active (b))
+        return;
+    app.fps_idx = GPOINTER_TO_UINT (user_data);
+    on_estimate_input ();
+}
+
+static void
+on_format (GtkToggleButton *b, gpointer user_data)
+{
+    if (!gtk_toggle_button_get_active (b))
+        return;
+    app.webp = GPOINTER_TO_UINT (user_data) == 0;
+    gtk_label_set_text (GTK_LABEL (app.fmt_caption), app.webp ? "Smaller, plays in Safari 14 and later."
+                                                              : "Bigger files that open everywhere.");
+    update_frames_note ();
+}
+
+static void
+on_quality (GtkRange *r, gpointer user_data)
+{
+    (void) user_data;
+    g_autofree char *v = g_strdup_printf ("%d", (int) gtk_range_get_value (r));
+    gtk_label_set_text (GTK_LABEL (app.quality_val), v);
+}
+
+static void
+on_copy_fix (void)
+{
+    gdk_clipboard_set_text (gtk_widget_get_clipboard (app.banner),
+                            gtk_label_get_text (GTK_LABEL (app.banner_code)));
+    show_toast ("edit-copy-symbolic", "Copied", "Paste it into a terminal");
 }
 
 /* ---- keyboard ---- */
@@ -2398,7 +2755,7 @@ on_space (GtkWidget *w, GVariant *args, gpointer user_data)
     (void) w; (void) args; (void) user_data;
     if (app.job != NULL && !app.paused)
         on_pause_all ();
-    else if (gtk_widget_get_sensitive (app.start_btn) && gtk_widget_get_visible (app.controls))
+    else if (gtk_widget_get_sensitive (app.start_btn) && gtk_widget_get_visible (app.start_btn))
         on_start_all ();
     return TRUE;
 }
@@ -2416,11 +2773,12 @@ on_escape (GtkWidget *w, GVariant *args, gpointer user_data)
 
 static void stop_for_quit (void);
 
+/* The design's "Keep working in the background?" card: 0 Cancel (Esc), 1 Stop and Quit,
+ * 2 Run in Background. */
 static void
-close_chosen (GObject *source, GAsyncResult *res, gpointer user_data)
+close_chosen (int choice)
 {
-    (void) user_data;
-    int choice = gtk_alert_dialog_choose_finish (GTK_ALERT_DIALOG (source), res, NULL);
+    g_clear_pointer ((GtkWindow **) &app.close_dialog, gtk_window_destroy);
     if (choice == 1) {
         stop_for_quit ();
         gtk_window_destroy (app.win);
@@ -2436,19 +2794,81 @@ close_chosen (GObject *source, GAsyncResult *res, gpointer user_data)
     }
 }
 
+static void on_close_stop (void) { close_chosen (1); }
+static void on_close_background (void) { close_chosen (2); }
+
+/* Esc, or the dialog's own close request */
+static gboolean
+on_close_cancel (GtkWidget *w, GVariant *args, gpointer user_data)
+{
+    (void) w; (void) args; (void) user_data;
+    close_chosen (0);
+    return TRUE;
+}
+
+static void
+show_close_dialog (void)
+{
+    GtkWidget *icon = gtk_image_new_from_icon_name ("mt-bolt-symbolic");
+    gtk_widget_add_css_class (icon, "brand-icon");
+    gtk_widget_add_css_class (icon, "big");
+    gtk_widget_set_halign (icon, GTK_ALIGN_CENTER);
+    GtkWidget *title = gtk_label_new ("Keep working in the background?");
+    gtk_widget_add_css_class (title, "dialog-title");
+    GtkWidget *body = gtk_label_new ("The window closes and the work goes on. You'll get a notification "
+                                     "when it's done.");
+    gtk_widget_add_css_class (body, "dialog-body");
+    gtk_label_set_wrap (GTK_LABEL (body), TRUE);
+    gtk_label_set_justify (GTK_LABEL (body), GTK_JUSTIFY_CENTER);
+    gtk_label_set_max_width_chars (GTK_LABEL (body), 40);
+    GtkWidget *stop = gtk_button_new_with_mnemonic ("_Stop and Quit");
+    gtk_widget_add_css_class (stop, "destructive");
+    g_signal_connect_swapped (stop, "clicked", G_CALLBACK (on_close_stop), NULL);
+    GtkWidget *bg = gtk_button_new_with_mnemonic ("_Run in Background");
+    gtk_widget_add_css_class (bg, "suggested-action");
+    g_signal_connect_swapped (bg, "clicked", G_CALLBACK (on_close_background), NULL);
+    GtkWidget *buttons = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
+    gtk_box_set_homogeneous (GTK_BOX (buttons), TRUE);
+    gtk_widget_set_margin_top (buttons, 8);
+    gtk_box_append (GTK_BOX (buttons), stop);
+    gtk_box_append (GTK_BOX (buttons), bg);
+    GtkWidget *card = gtk_box_new (GTK_ORIENTATION_VERTICAL, 8);
+    gtk_widget_add_css_class (card, "close-card");
+    gtk_box_append (GTK_BOX (card), icon);
+    gtk_box_append (GTK_BOX (card), title);
+    gtk_box_append (GTK_BOX (card), body);
+    gtk_box_append (GTK_BOX (card), buttons);
+
+    GtkWindow *d = GTK_WINDOW (gtk_window_new ());
+    app.close_dialog = GTK_WIDGET (d);
+    gtk_widget_add_css_class (GTK_WIDGET (d), "close-dialog");
+    gtk_widget_add_css_class (GTK_WIDGET (d), MODE_INFO[app.mode].css);   /* the accent */
+    if (gtk_widget_has_css_class (GTK_WIDGET (app.win), "dark"))
+        gtk_widget_add_css_class (GTK_WIDGET (d), "dark");
+    gtk_window_set_title (d, "Keep working in the background?");
+    gtk_window_set_decorated (d, FALSE);
+    gtk_window_set_resizable (d, FALSE);
+    gtk_window_set_modal (d, TRUE);
+    gtk_window_set_transient_for (d, app.win);
+    gtk_window_set_default_widget (d, bg);
+    gtk_window_set_child (d, card);
+    g_signal_connect (d, "close-request", G_CALLBACK (on_close_cancel), NULL);
+    GtkEventController *keys = gtk_shortcut_controller_new ();
+    gtk_shortcut_controller_add_shortcut (GTK_SHORTCUT_CONTROLLER (keys),
+        gtk_shortcut_new (gtk_shortcut_trigger_parse_string ("Escape"),
+                          gtk_callback_action_new (on_close_cancel, NULL, NULL)));
+    gtk_widget_add_controller (GTK_WIDGET (d), keys);
+    gtk_window_present (d);
+    gtk_widget_grab_focus (bg);
+}
+
 static gboolean
 on_close (GtkWindow *win, gpointer user_data)
 {
     (void) win; (void) user_data;
     if (is_busy ()) {
-        g_autoptr (GtkAlertDialog) d = gtk_alert_dialog_new ("Keep working in the background?");
-        gtk_alert_dialog_set_detail (d, "The window closes and the work goes on. "
-                                        "You'll get a notification when it's done.");
-        const char *buttons[] = { "Cancel", "Stop and Quit", "Run in Background", NULL };
-        gtk_alert_dialog_set_buttons (d, buttons);
-        gtk_alert_dialog_set_cancel_button (d, 0);
-        gtk_alert_dialog_set_default_button (d, 2);
-        gtk_alert_dialog_choose (d, app.win, NULL, close_chosen, NULL);
+        if (app.close_dialog == NULL)
+            show_close_dialog ();
         return TRUE;
     }
     stop_for_quit ();
@@ -2590,30 +3010,120 @@ check_tools (void)
         g_subprocess_communicate_utf8_async (proc, NULL, NULL, encoders_listed, ffmpeg);
 }
 
+/* The v3 design (Figma "v3 – Media Tools"): colours are variables, so a mode's accent and the dark
+ * appearance each change one place. */
+#define DARK_VARS \
+    "  --text: #f5f5f7; --text2: #a1a1a6; --text3: #6e6e73; --bg: #1e1e20; --side: #28282b;" \
+    "  --insp: #232326; --fill: #323236; --line: #38383c; --card: #2c2c2f; --sel: #1e1e20;" \
+    "  --seg-on: #5a5a5f; --shadow: rgba(0,0,0,0.4); --green: #32d74b; --green-bg: #17351f;" \
+    "  --amber: #ffb340; --amber-bg: #3a2a12; --red: #ff6961; --red-bg: #3d1c1e; --teal: #5ac8dd;" \
+    "  --teal-bg: #123238;"
 static const char CSS[] =
-    ".dropzone { border: 2px dashed alpha(@accent_color, 0.45); border-radius: 16px;"
-    "  background: alpha(@accent_color, 0.05); }"
-    ".drop-icon { background: linear-gradient(135deg, #62a0ea, #1c71d8); color: white;"
-    "  border-radius: 20px; min-width: 76px; min-height: 76px; -gtk-icon-size: 34px;"
-    "  box-shadow: 0 6px 18px alpha(#1c71d8, 0.35); }"
-    ".hero { font-size: 20px; font-weight: 700; }"
-    ".feature { border-radius: 999px; padding: 4px 12px; font-size: 12px;"
-    "  background: @theme_base_color; border: 1px solid @borders; }"
-    ".feature image { color: @accent_color; }"
-    ".card { background: @theme_base_color; border: 1px solid @borders; border-radius: 12px; }"
-    ".colhead { font-size: 11px; font-weight: 600; letter-spacing: 1px; opacity: 0.55; }"
-    ".colhead-row { padding: 8px 16px; border-bottom: 1px solid @borders; }"
+    "window.mt, window.close-dialog {"
+    "  --accent: #0a84ff; --text: #1d1d1f; --text2: #6e6e73; --text3: #a1a1a6;"
+    "  --bg: #ffffff; --side: #f3f3f6; --insp: #fafafc; --fill: #f2f2f5; --line: #e6e6eb;"
+    "  --card: #ffffff; --sel: #ffffff; --seg-on: #ffffff; --shadow: rgba(0,0,0,0.08);"
+    "  --green: #1f8f4e; --green-bg: #e6f6ec; --amber: #b25e00; --amber-bg: #fff3e0;"
+    "  --red: #d70015; --red-bg: #ffe9eb; --teal: #0f7f91; --teal-bg: #e3f6f9;"
+    "  color: var(--text); background: var(--bg); font-size: 13px; }"
+    "@media (prefers-color-scheme: dark) { window.mt, window.close-dialog {" DARK_VARS "} }"
+    /* a dark theme chosen the older way (prefer-dark-theme) doesn't set the media query: sync_dark */
+    "window.mt.dark, window.close-dialog.dark {" DARK_VARS "}"
+    "list.rows, list.modes { color: var(--text); }"
+    /* as specific as window.mt, and later, so the mode wins */
+    "window.web { --accent: #5e5ce6; } window.frames { --accent: #ff9f0a; } window.images { --accent: #30b0c7; }"
+
+    /* buttons */
+    "button.suggested-action { background: var(--accent); color: white; border: none; box-shadow: none;"
+    "  border-radius: 8px; font-weight: 600; }"
+    "button.suggested-action:hover { background: color-mix(in srgb, var(--accent) 88%, black); }"
+    "button.outline { background: var(--card); color: var(--text); border: 1px solid var(--line);"
+    "  border-radius: 8px; box-shadow: none; padding: 5px 12px; font-weight: 500; }"
+    "button.outline:hover { background: var(--fill); }"
+    "button.outline:disabled { color: var(--text3); background: var(--card); }"
+    "button.round { min-width: 30px; min-height: 30px; padding: 0; border-radius: 999px; border: none;"
+    "  box-shadow: none; background: var(--fill); color: var(--text2); -gtk-icon-size: 12px; }"
+    "button.round.big { min-width: 34px; min-height: 34px; -gtk-icon-size: 14px; }"
+    "button.round.suggested-action { background: var(--accent); color: white; }"
+    "button.round:disabled { color: var(--text3); background: var(--fill); }"
+    "button.round.suggested-action:disabled { background: color-mix(in srgb, var(--accent) 35%, var(--bg));"
+    "  color: white; }"
+    "button.mini { min-width: 26px; min-height: 26px; padding: 0; border-radius: 999px; border: none;"
+    "  box-shadow: none; background: var(--fill); color: var(--text2); -gtk-icon-size: 12px; }"
+    "button.mini:hover { background: color-mix(in srgb, var(--text) 12%, transparent); }"
+    "button.mini.suggested-action { background: var(--accent); color: white; }"
+    "button.mini.danger { color: var(--red); }"
+    "separator.tool-sep { background: var(--line); min-width: 1px; margin: 14px 4px; }"
+
+    /* sidebar */
+    ".sidebar { background: var(--side); border-right: 1px solid var(--line); }"
+    ".sidebar windowcontrols { margin: 14px 0 0 16px; }"
+    ".sidebar windowcontrols button { min-width: 12px; min-height: 12px; padding: 0; margin: 0 8px 0 0;"
+    "  border-radius: 999px; border: none; box-shadow: none; background: #ff5f57; }"
+    ".sidebar windowcontrols button.minimize { background: #febc2e; }"
+    ".sidebar windowcontrols button.maximize { background: #28c840; }"
+    ".sidebar windowcontrols button image { background: none; box-shadow: none; padding: 0; min-width: 0;"
+    "  min-height: 0; -gtk-icon-size: 8px; color: rgba(0,0,0,0.55); opacity: 0; }"
+    ".sidebar windowcontrols:hover button image { opacity: 1; }"
+    ".brand-icon { background: linear-gradient(135deg, #3b82f6, #8b5cf6 55%, #f59e0b); color: white;"
+    "  border-radius: 8px; min-width: 30px; min-height: 30px; -gtk-icon-size: 16px; }"
+    ".brand-icon.big { min-width: 54px; min-height: 54px; border-radius: 14px; -gtk-icon-size: 26px; }"
+    ".brand-title { font-weight: 700; font-size: 14px; }"
+    ".brand-sub, .mode-sub { font-size: 11px; color: var(--text2); }"
+    ".side-head, .colhead, .sect { font-size: 11px; font-weight: 600; letter-spacing: 0.5px;"
+    "  color: var(--text3); }"
+    "list.modes { background: transparent; }"
+    "list.modes > row { padding: 6px 8px; border-radius: 10px; margin-bottom: 2px; }"
+    "list.modes > row:selected { background: var(--sel); color: var(--text); box-shadow: 0 1px 3px var(--shadow); }"
+    "list.modes > row:hover:not(:selected) { background: color-mix(in srgb, var(--text) 4%, transparent); }"
+    "list.modes > row:disabled { opacity: 0.45; }"
+    ".mode-tile { border-radius: 7px; min-width: 28px; min-height: 28px; color: white; -gtk-icon-size: 15px; }"
+    ".mode-tile.t-compress { background: #0a84ff; } .mode-tile.t-web { background: #5e5ce6; }"
+    ".mode-tile.t-frames { background: #ff9f0a; } .mode-tile.t-images { background: #30b0c7; }"
+    ".mode-name { font-weight: 600; }"
+    ".mode-count { font-size: 12px; font-weight: 600; color: var(--text2); }"
+    ".mode-lock { color: var(--text3); -gtk-icon-size: 11px; }"
+    ".mode-dot { background: #ff9f0a; border-radius: 999px; min-width: 8px; min-height: 8px; }"
+    ".tools { background: var(--card); border-radius: 10px; padding: 10px 12px;"
+    "  box-shadow: 0 1px 2px var(--shadow); }"
+    ".tools-title { font-weight: 600; font-size: 12px; }"
+    ".tool-name { font-size: 11.5px; color: var(--text2); }"
+    ".tool-state { font-size: 11.5px; font-weight: 500; color: var(--text3); }"
+    ".tool-state.ok { color: var(--green); } .tool-state.missing { color: var(--amber); font-weight: 600; }"
+
+    /* header and footer */
+    "headerbar.top { background: var(--bg); border-bottom: 1px solid var(--line); box-shadow: none;"
+    "  min-height: 59px; padding: 0 10px 0 12px; }"
+    ".h-title { font-weight: 700; font-size: 15px; }"
+    ".h-sub { font-size: 12px; color: var(--text2); }"
+    ".badge { background: var(--fill); color: var(--text2); border-radius: 4px; padding: 0 5px;"
+    "  font-size: 10.5px; font-weight: 700; }"
+    ".footer { border-top: 1px solid var(--line); padding: 0 16px; min-height: 44px; }"
+    ".footer label.error { color: var(--red); font-weight: 600; }"
+    ".foot-right { color: var(--text2); }"
+
+    /* empty page */
+    ".dropzone { border: 1px dashed color-mix(in srgb, var(--text) 25%, transparent); border-radius: 14px; }"
+    ".drop-icon { background: linear-gradient(160deg, color-mix(in srgb, var(--accent) 75%, white), var(--accent));"
+    "  color: white; border-radius: 18px; min-width: 76px; min-height: 76px; -gtk-icon-size: 34px;"
+    "  box-shadow: 0 6px 18px color-mix(in srgb, var(--accent) 35%, transparent); }"
+    ".hero { font-size: 22px; font-weight: 700; }"
+    ".empty-sub { color: var(--text2); font-size: 13.5px; }"
+    ".feature { background: var(--fill); border-radius: 999px; padding: 4px 10px; font-size: 12px;"
+    "  color: var(--text2); }"
+    ".feature image { -gtk-icon-size: 11px; }"
+
+    /* list */
+    ".colhead-row { padding: 9px 16px; border-bottom: 1px solid var(--line); }"
     "list.rows { background: transparent; }"
-    "list.rows > row { padding: 0; border-bottom: 1px solid alpha(currentColor, 0.07); }"
-    "list.rows > row:last-child { border-bottom: none; }"
-    "list.rows > row:hover { background: alpha(currentColor, 0.04); }"
-    "list.rows > row.active { background: alpha(@theme_selected_bg_color, 0.08); }"
-    "list.rows > row.checked { background: alpha(@theme_selected_bg_color, 0.14); }"
-    ".vrow { padding: 8px 16px; min-height: 40px; }"
-    ".name { font-weight: 600; }"
-    ".caption { font-size: 12px; opacity: 0.6; }"
-    ".tile { border-radius: 6px; min-width: 44px; min-height: 30px; color: white;"
-    "  -gtk-icon-size: 12px; }"
+    "list.rows > row { padding: 0; border-bottom: 1px solid var(--line); }"
+    "list.rows > row:hover { background: color-mix(in srgb, var(--text) 3%, transparent); }"
+    "list.rows > row.active { background: color-mix(in srgb, var(--accent) 7%, transparent); }"
+    "list.rows > row.checked { background: color-mix(in srgb, var(--accent) 11%, transparent); }"
+    ".vrow { padding: 8px 16px; min-height: 38px; }"
+    ".name { font-weight: 500; font-size: 13.5px; }"
+    ".meta { font-size: 12px; color: var(--text2); }"
+    ".tile { border-radius: 8px; min-width: 38px; min-height: 38px; color: white; -gtk-icon-size: 12px; }"
     ".tile-0 { background: linear-gradient(135deg, #ff9a9e, #f5576c); }"
     ".tile-1 { background: linear-gradient(135deg, #a18cd1, #6a5acd); }"
     ".tile-2 { background: linear-gradient(135deg, #43c6ac, #191654); }"
@@ -2622,55 +3132,108 @@ static const char CSS[] =
     ".tile-5 { background: linear-gradient(135deg, #f6d365, #fda085); }"
     ".tile-6 { background: linear-gradient(135deg, #a1c4fd, #6b7fae); }"
     ".tile-7 { background: linear-gradient(135deg, #84fab0, #2f9e7a); }"
-    ".chip { border-radius: 5px; padding: 2px 7px; font-size: 11px; font-weight: 600;"
-    "  background: alpha(currentColor, 0.09); }"
-    ".chip.hdr { background: alpha(#f5a623, 0.2); color: #c47a00; }"
-    ".pill { border-radius: 999px; padding: 2px 9px; font-size: 12px; font-weight: 600; }"
-    ".pill.estimate { border: 1px dashed alpha(currentColor, 0.45); font-weight: normal; }"
-    ".pill.done { background: alpha(@success_color, 0.16); color: @success_color; }"
-    ".pill.hold { background: alpha(#f5a623, 0.2); color: #c47a00; }"
-    ".pill.error { background: alpha(#e5484d, 0.15); color: #e5484d; }"
-    ".pill.waiting, .pill.neutral { font-weight: normal; opacity: 0.7; }"
-    "button.mini { min-width: 26px; min-height: 26px; padding: 0; border-radius: 999px;"
-    "  background: alpha(currentColor, 0.08); box-shadow: none; border: none; }"
-    "button.mini:hover { background: alpha(currentColor, 0.16); }"
-    "button.mini.suggested-action { background: @accent_color; color: white; }"
-    "button.mini.danger { color: @error_color; }"
-    "progressbar trough, progressbar progress { min-height: 5px; border-radius: 3px; }"
-    "progressbar.paused progress { background: #f5a623; }"
-    "progressbar.time progress { background: #f5a623; }"
-    "progressbar.size progress { background: @success_color; }"
-    ".bottombar { background: @theme_base_color; border-top: 1px solid @borders;"
-    "  padding: 12px 20px; }"
-    "button.round { border-radius: 999px; min-width: 38px; min-height: 38px; padding: 0; }"
-    "button.round.big { min-width: 48px; min-height: 48px; }"
-    ".total { font-weight: 700; }"
-    ".overlaybar { background: rgba(30,30,32,0.94); color: white; border-radius: 999px;"
+    "checkbutton check:checked, checkbutton check:indeterminate { background-color: var(--accent);"
+    "  border-color: var(--accent); color: white; }"
+    ".pill { border-radius: 6px; padding: 1px 7px; font-size: 11.5px; font-weight: 600; }"
+    ".pill.estimate { border: 1px dashed var(--text3); }"
+    ".pill.done { background: var(--green-bg); color: var(--green); }"
+    ".pill.bigger, .pill.hold { background: var(--amber-bg); color: var(--amber); }"
+    ".pill.neutral { background: var(--fill); color: var(--text2); }"
+    ".pill.error { background: var(--red-bg); color: var(--red); }"
+    ".chip { border-radius: 4px; padding: 0 5px; font-size: 10.5px; font-weight: 700; }"
+    ".chip.hdr, .chip.kept { background: var(--amber-bg); color: var(--amber); }"
+    ".chip.res, .chip.trashed { background: var(--fill); color: var(--text2); }"
+    ".chip.twin { background: var(--teal-bg); color: var(--teal); }"
+    ".fmt { font-size: 10px; font-weight: 700; color: var(--text3); }"
+    ".pct { font-weight: 700; }"
+    "progressbar trough { min-height: 5px; border-radius: 3px; background: var(--fill); border: none; }"
+    "progressbar progress { min-height: 5px; border-radius: 3px; background: var(--accent); border: none; margin: 0; }"
+    "progressbar.time progress { background: #ff9f0a; }"
+    "progressbar.size progress { background: var(--green); }"
+    ".summary { border: 1px solid var(--line); border-radius: 12px; background: var(--card);"
+    "  padding: 12px 16px; }"
+    ".sum-icon { background: var(--accent); color: white; border-radius: 999px; min-width: 40px;"
+    "  min-height: 40px; -gtk-icon-size: 20px; }"
+    ".sum-title { font-size: 17px; font-weight: 700; }"
+    ".sum-sub, .stat-cap { font-size: 12px; color: var(--text2); }"
+    ".stat-cap { font-size: 11px; }"
+    ".stat { font-size: 16px; font-weight: 700; }"
+    ".stat.good { color: var(--green); }"
+    ".banner { background: var(--amber-bg); border: 1px solid color-mix(in srgb, var(--amber) 25%, transparent);"
+    "  border-radius: 10px; padding: 10px 12px 10px 14px; }"
+    ".banner > image { color: var(--amber); -gtk-icon-size: 18px; }"
+    ".banner-title { font-weight: 600; }"
+    ".banner-sub { font-size: 12px; color: var(--text2); }"
+    ".code { background: color-mix(in srgb, var(--card) 75%, transparent); border-radius: 6px;"
+    "  padding: 2px 2px 2px 8px; }"
+    ".code label { font-family: monospace; font-size: 12px; }"
+    ".code button { min-width: 22px; min-height: 22px; padding: 0; background: none; border: none;"
+    "  box-shadow: none; -gtk-icon-size: 12px; color: var(--text2); }"
+
+    /* inspector */
+    ".inspector { background: var(--insp); border-left: 1px solid var(--line); }"
+    ".insp-icon { background: var(--accent); color: white; border-radius: 8px; min-width: 34px;"
+    "  min-height: 34px; -gtk-icon-size: 17px; }"
+    ".insp-title { font-weight: 700; font-size: 14px; }"
+    ".insp-sub, .hint, .opt-sub { font-size: 11.5px; color: var(--text2); }"
+    ".opt-title { font-weight: 500; }"
+    ".note { background: var(--fill); border-radius: 8px; padding: 9px 10px; font-size: 11.5px;"
+    "  color: var(--text2); }"
+    ".check-line { font-size: 12px; }"
+    ".check-line image { color: var(--text2); -gtk-icon-size: 12px; }"
+    ".err-line { color: var(--red); font-size: 11.5px; }"
+    ".err-line image { -gtk-icon-size: 12px; }"
+    ".seg { background: var(--fill); border-radius: 8px; padding: 2px; }"
+    ".seg button { background: none; box-shadow: none; border: none; min-height: 24px; padding: 0 2px;"
+    "  border-radius: 6px; font-size: 12px; color: var(--text2); }"
+    ".seg button:checked { background: var(--seg-on); color: var(--text); font-weight: 600;"
+    "  box-shadow: 0 1px 2px var(--shadow); }"
+    "menubutton.link > button { color: var(--accent); background: none; box-shadow: none; border: none;"
+    "  padding: 0; min-height: 0; font-size: 12px; font-weight: 500; }"
+    "menubutton.link image { -gtk-icon-size: 12px; }"
+    ".inspector dropdown > button { background: var(--card); border: 1px solid var(--line);"
+    "  border-radius: 8px; box-shadow: none; min-height: 30px; padding: 0 10px; color: var(--text); }"
+    ".inspector entry { background: var(--card); border: 1px solid var(--line); border-radius: 8px;"
+    "  min-height: 30px; box-shadow: none; color: var(--text); }"
+    ".inspector entry.error { border: 2px solid var(--red); color: var(--red); }"
+    "switch { background: color-mix(in srgb, var(--text) 16%, transparent); border: none; border-radius: 999px;"
+    "  padding: 2px; box-shadow: none; }"
+    "switch:checked { background: var(--accent); }"
+    "switch slider { min-width: 16px; min-height: 16px; margin: 0; background: white; border: none;"
+    "  border-radius: 999px; box-shadow: 0 1px 2px rgba(0,0,0,0.25); }"
+    "switch image { opacity: 0; }"
+    "scale trough { background: var(--fill); min-height: 4px; border-radius: 2px; border: none; }"
+    "scale highlight { background: var(--accent); border-radius: 2px; border: none; margin: 0; }"
+    "scale slider { background: white; min-width: 20px; min-height: 20px; margin: -8px;"
+    "  border-radius: 999px; border: none; box-shadow: 0 1px 3px rgba(0,0,0,0.3); }"
+
+    /* floating: tooltip, toast, selection bar, close dialog */
+    "tooltip { background: rgba(29,29,31,0.96); border-radius: 8px; padding: 6px 10px; }"
+    "tooltip label { color: white; }"
+    ".toast { background: rgba(29,29,31,0.96); color: white; border-radius: 10px; padding: 9px 14px;"
+    "  box-shadow: 0 6px 20px rgba(0,0,0,0.3); }"
+    ".overlaybar { background: rgba(29,29,31,0.96); color: white; border-radius: 999px;"
     "  padding: 6px 8px 6px 16px; box-shadow: 0 6px 20px rgba(0,0,0,0.3); }"
-    ".overlaybar button { color: white; background: alpha(white, 0.12); border: none;"
-    "  box-shadow: none; }"
+    ".overlaybar button { color: white; background: alpha(white, 0.12); border: none; box-shadow: none; }"
     ".overlaybar button:disabled { color: alpha(white, 0.35); background: alpha(white, 0.06); }"
-    ".overlaybar button.suggested-action { background: @accent_color; }"
-    ".toast { background: rgba(30,30,32,0.94); color: white; border-radius: 10px;"
-    "  padding: 10px 16px; box-shadow: 0 6px 20px rgba(0,0,0,0.3); }"
-    ".bigcheck { background: @success_color; color: white; border-radius: 999px;"
-    "  min-width: 46px; min-height: 46px; -gtk-icon-size: 24px; }"
-    ".sum-title { font-size: 20px; font-weight: 700; }"
-    ".stat { font-size: 17px; font-weight: 700; }"
-    ".stat.good { color: @success_color; }"
-    "menubutton.info > button { color: @accent_color; background: none; border: none;"
-    "  box-shadow: none; min-width: 18px; min-height: 18px; padding: 0; }"
+    ".overlaybar button.suggested-action { background: var(--accent); }"
+    "window.close-dialog { background: var(--card); border-radius: 14px; }"
+    ".close-card { padding: 22px 20px 18px; min-width: 300px; }"
+    ".dialog-title { font-weight: 700; font-size: 15px; margin-top: 4px; }"
+    ".dialog-body { font-size: 12.5px; color: var(--text2); }"
+    ".close-card button { border-radius: 8px; min-height: 30px; box-shadow: none; border: none; font-weight: 600; }"
+    ".close-card button.destructive { background: var(--fill); color: var(--red); }"
     ".guide { padding: 8px; }"
     ".guide-row { padding: 8px 10px; border-radius: 8px; }"
-    ".guide-row.current { background: alpha(@theme_selected_bg_color, 0.14); }"
-    ".guide-row.current > label:first-child { color: @accent_color; font-weight: 600; }"
-    ".banner { background: alpha(#f5a623, 0.2); padding: 10px 20px; font-weight: 600; }";
+    ".guide-row.current { background: color-mix(in srgb, var(--accent) 14%, transparent); }"
+    ".guide-row.current > label:first-child { color: var(--accent); font-weight: 600; }"
+    ".caption { font-size: 12px; opacity: 0.6; }";
 
 static GtkWidget *
 label_button (const char *icon, const char *mnemonic, GCallback clicked)
 {
     GtkWidget *b = gtk_button_new ();
-    GtkWidget *h = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
+    GtkWidget *h = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 6);
     GtkWidget *l = gtk_label_new_with_mnemonic (mnemonic);
     gtk_label_set_mnemonic_widget (GTK_LABEL (l), b);
     gtk_box_append (GTK_BOX (h), gtk_image_new_from_icon_name (icon));
@@ -2685,24 +3248,23 @@ icon_button (const char *icon, const char *name, const char *style, GCallback cl
 {
     GtkWidget *b = gtk_button_new_from_icon_name (icon);
     gtk_widget_add_css_class (b, style);
+    gtk_widget_set_valign (b, GTK_ALIGN_CENTER);
     gtk_accessible_update_property (GTK_ACCESSIBLE (b), GTK_ACCESSIBLE_PROPERTY_LABEL, name, -1);
     g_signal_connect (b, "clicked", clicked, NULL);
     return b;
 }
 
-/* The Max width dropdown that web video and frames each have, at 1920. */
+/* The Max width dropdown that web video, frames and images each have, at 1920. */
 static GtkWidget *
 width_dropdown (void)
 {
-    const char *widths[] = { "Original width", "Max 3840 px", "Max 2560 px", "Max 1920 px",
-                             "Max 1280 px", "Max 960 px", "Max 640 px", NULL };
+    const char *widths[] = { "Original", "3840 px", "2560 px", "1920 px", "1280 px", "960 px", "640 px", NULL };
     G_STATIC_ASSERT (G_N_ELEMENTS (widths) == G_N_ELEMENTS (WEB_WIDTHS) + 1);
     GtkWidget *dd = gtk_drop_down_new_from_strings (widths);
     gtk_drop_down_set_selected (GTK_DROP_DOWN (dd), WEB_DEFAULT_WIDTH);
     gtk_accessible_update_property (GTK_ACCESSIBLE (dd), GTK_ACCESSIBLE_PROPERTY_LABEL, "Max width", -1);
     gtk_widget_set_tooltip_text (dd, "Scale wider videos down to this width, keeping the aspect ratio. "
                                      "Narrower videos are never enlarged.");
-    gtk_widget_set_valign (dd, GTK_ALIGN_CENTER);
     return dd;
 }
 
@@ -2729,25 +3291,169 @@ styled_label (const char *text, const char *style, float xalign)
 }
 
 static GtkWidget *
+build_sidebar (void)
+{
+    GtkWidget *controls = gtk_window_controls_new (GTK_PACK_START);
+    gtk_window_controls_set_decoration_layout (GTK_WINDOW_CONTROLS (controls), "close,minimize,maximize:");
+    gtk_widget_set_halign (controls, GTK_ALIGN_START);
+    GtkWidget *brand_icon = gtk_image_new_from_icon_name ("mt-bolt-symbolic");
+    gtk_widget_add_css_class (brand_icon, "brand-icon");
+    gtk_widget_set_valign (brand_icon, GTK_ALIGN_CENTER);
+    GtkWidget *brand_text = vbox (0);
+    gtk_box_append (GTK_BOX (brand_text), styled_label ("Media Tools", "brand-title", 0));
+    gtk_box_append (GTK_BOX (brand_text), styled_label ("Video & image toolkit", "brand-sub", 0));
+    GtkWidget *brand = hbox (10);
+    gtk_widget_set_margin_start (brand, 18);
+    gtk_widget_set_margin_top (brand, 18);
+    gtk_box_append (GTK_BOX (brand), brand_icon);
+    gtk_box_append (GTK_BOX (brand), brand_text);
+    GtkWidget *top = vbox (0);
+    gtk_box_append (GTK_BOX (top), controls);
+    gtk_box_append (GTK_BOX (top), brand);
+    GtkWidget *handle = gtk_window_handle_new ();   /* drag the window by the sidebar's top */
+    gtk_window_handle_set_child (GTK_WINDOW_HANDLE (handle), top);
+
+    GtkWidget *head = styled_label ("MODES", "side-head", 0);
+    gtk_widget_set_margin_start (head, 20);
+    gtk_widget_set_margin_top (head, 18);
+    gtk_widget_set_margin_bottom (head, 6);
+
+    app.mode_list = gtk_list_box_new ();
+    gtk_widget_add_css_class (app.mode_list, "modes");
+    gtk_accessible_update_property (GTK_ACCESSIBLE (app.mode_list), GTK_ACCESSIBLE_PROPERTY_LABEL, "Mode", -1);
+    gtk_widget_set_margin_start (app.mode_list, 10);
+    gtk_widget_set_margin_end (app.mode_list, 10);
+    for (guint m = 0; m < G_N_ELEMENTS (MODE_INFO); m++) {
+        GtkWidget *tile = gtk_image_new_from_icon_name (MODE_INFO[m].icon);
+        gtk_widget_add_css_class (tile, "mode-tile");
+        g_autofree char *t = g_strdup_printf ("t-%s", MODE_INFO[m].css);
+        gtk_widget_add_css_class (tile, t);
+        gtk_widget_set_valign (tile, GTK_ALIGN_CENTER);
+        GtkWidget *texts = vbox (0);
+        gtk_widget_set_hexpand (texts, TRUE);
+        gtk_box_append (GTK_BOX (texts), styled_label (MODE_INFO[m].name, "mode-name", 0));
+        gtk_box_append (GTK_BOX (texts), styled_label (MODE_INFO[m].sub, "mode-sub", 0));
+        app.mode_count[m] = styled_label ("", "mode-count", 1);
+        app.mode_lock[m] = gtk_image_new_from_icon_name ("changes-prevent-symbolic");
+        gtk_widget_add_css_class (app.mode_lock[m], "mode-lock");
+        app.mode_dot[m] = hbox (0);
+        gtk_widget_add_css_class (app.mode_dot[m], "mode-dot");
+        gtk_widget_set_valign (app.mode_dot[m], GTK_ALIGN_CENTER);
+        gtk_widget_set_tooltip_text (app.mode_dot[m], "A tool this mode needs is missing");
+        GtkWidget *row = hbox (10);
+        gtk_box_append (GTK_BOX (row), tile);
+        gtk_box_append (GTK_BOX (row), texts);
+        gtk_box_append (GTK_BOX (row), app.mode_count[m]);
+        gtk_box_append (GTK_BOX (row), app.mode_lock[m]);
+        gtk_box_append (GTK_BOX (row), app.mode_dot[m]);
+        gtk_list_box_append (GTK_LIST_BOX (app.mode_list), row);
+        app.mode_row[m] = gtk_widget_get_parent (row);
+    }
+    app.syncing = TRUE;
+    gtk_list_box_select_row (GTK_LIST_BOX (app.mode_list), GTK_LIST_BOX_ROW (app.mode_row[0]));
+    app.syncing = FALSE;
+    g_signal_connect (app.mode_list, "row-selected", G_CALLBACK (on_mode), NULL);
+
+    GtkWidget *tools = gtk_grid_new ();
+    gtk_widget_add_css_class (tools, "tools");
+    gtk_grid_set_row_spacing (GTK_GRID (tools), 3);
+    gtk_widget_set_margin_start (tools, 10);
+    gtk_widget_set_margin_end (tools, 10);
+    gtk_widget_set_margin_bottom (tools, 12);
+    GtkWidget *tools_title = styled_label ("Tools", "tools-title", 0);
+    gtk_widget_set_margin_bottom (tools_title, 4);
+    gtk_grid_attach (GTK_GRID (tools), tools_title, 0, 0, 2, 1);
+    const char *names[] = { "ffmpeg", "x265 · x264 · zscale", "ImageMagick", "pngquant" };
+    for (guint i = 0; i < G_N_ELEMENTS (names); i++) {
+        GtkWidget *n = styled_label (names[i], "tool-name", 0);
+        gtk_widget_set_hexpand (n, TRUE);
+        app.tool_state[i] = styled_label ("", "tool-state", 1);
+        gtk_grid_attach (GTK_GRID (tools), n, 0, i + 1, 1, 1);
+        gtk_grid_attach (GTK_GRID (tools), app.tool_state[i], 1, i + 1, 1, 1);
+    }
+
+    GtkWidget *side = vbox (0);
+    gtk_widget_add_css_class (side, "sidebar");
+    gtk_widget_set_size_request (side, 210, -1);
+    gtk_box_append (GTK_BOX (side), handle);
+    gtk_box_append (GTK_BOX (side), head);
+    gtk_box_append (GTK_BOX (side), app.mode_list);
+    GtkWidget *space = vbox (0);
+    gtk_widget_set_vexpand (space, TRUE);
+    gtk_box_append (GTK_BOX (side), space);
+    gtk_box_append (GTK_BOX (side), tools);
+    return side;
+}
+
+static GtkWidget *
+build_header (void)
+{
+    app.title = styled_label ("Media Tools", "h-title", 0);
+    gtk_label_set_ellipsize (GTK_LABEL (app.title), PANGO_ELLIPSIZE_END);
+    app.title_badge = styled_label ("Folder", "badge", 0.5);
+    gtk_widget_set_valign (app.title_badge, GTK_ALIGN_CENTER);
+    GtkWidget *line = hbox (8);
+    gtk_box_append (GTK_BOX (line), app.title);
+    gtk_box_append (GTK_BOX (line), app.title_badge);
+    app.subtitle = styled_label ("No folder or files chosen", "h-sub", 0);
+    gtk_label_set_ellipsize (GTK_LABEL (app.subtitle), PANGO_ELLIPSIZE_START);
+    GtkWidget *titles = vbox (1);
+    gtk_widget_set_valign (titles, GTK_ALIGN_CENTER);
+    gtk_box_append (GTK_BOX (titles), line);
+    gtk_box_append (GTK_BOX (titles), app.subtitle);
+
+    GtkWidget *header = gtk_header_bar_new ();
+    gtk_widget_add_css_class (header, "top");
+    gtk_header_bar_set_show_title_buttons (GTK_HEADER_BAR (header), FALSE);   /* they're in the sidebar */
+    gtk_header_bar_set_title_widget (GTK_HEADER_BAR (header), hbox (0));
+    gtk_header_bar_pack_start (GTK_HEADER_BAR (header), titles);
+
+    app.files_btn = label_button ("document-open-symbolic", "Choose _Files…", G_CALLBACK (on_choose_files));
+    app.choose_btn = label_button ("folder-symbolic", "_Choose Folder…", G_CALLBACK (on_choose));
+    gtk_widget_add_css_class (app.files_btn, "outline");
+    gtk_widget_add_css_class (app.choose_btn, "outline");
+    gtk_widget_set_valign (app.files_btn, GTK_ALIGN_CENTER);
+    gtk_widget_set_valign (app.choose_btn, GTK_ALIGN_CENTER);
+    app.tool_sep = gtk_separator_new (GTK_ORIENTATION_VERTICAL);
+    gtk_widget_add_css_class (app.tool_sep, "tool-sep");
+    app.start_btn = icon_button ("media-playback-start-symbolic", "Start", "round", G_CALLBACK (on_start_all));
+    gtk_widget_add_css_class (app.start_btn, "big");
+    gtk_widget_add_css_class (app.start_btn, "suggested-action");
+    app.pause_btn = icon_button ("media-playback-pause-symbolic", "Pause", "round", G_CALLBACK (on_pause_all));
+    app.stop_btn = icon_button ("media-playback-stop-symbolic", "Stop", "round", G_CALLBACK (on_stop_all));
+    set_tip (app.stop_btn, "Stop", "Esc", "Stop the batch. The unfinished file is removed; originals stay.");
+    app.show_btn = label_button ("mt-external-symbolic", "_Show in Files", G_CALLBACK (on_finished_show));
+    gtk_widget_add_css_class (app.show_btn, "suggested-action");
+    gtk_widget_set_valign (app.show_btn, GTK_ALIGN_CENTER);
+    GtkWidget *end[] = { app.stop_btn, app.pause_btn, app.start_btn, app.show_btn, app.tool_sep,
+                         app.choose_btn, app.files_btn };
+    for (gsize i = 0; i < G_N_ELEMENTS (end); i++)
+        gtk_header_bar_pack_end (GTK_HEADER_BAR (header), end[i]);
+    return header;
+}
+
+static GtkWidget *
 build_empty_page (void)
 {
-    GtkWidget *icon = gtk_image_new_from_icon_name ("folder-download-symbolic");
-    gtk_widget_add_css_class (icon, "drop-icon");
-    gtk_widget_set_halign (icon, GTK_ALIGN_CENTER);
+    app.empty_icon = gtk_image_new_from_icon_name (MODE_INFO[0].icon);
+    gtk_widget_add_css_class (app.empty_icon, "drop-icon");
+    gtk_widget_set_halign (app.empty_icon, GTK_ALIGN_CENTER);
+    gtk_widget_set_margin_bottom (app.empty_icon, 10);
     GtkWidget *choose = label_button ("folder-symbolic", "_Choose Folder…", G_CALLBACK (on_choose));
-    app.choose_empty = choose;
     gtk_widget_add_css_class (choose, "suggested-action");
-    app.files_empty = label_button ("document-open-symbolic", "Choose _Files…",
-                                    G_CALLBACK (on_choose_files));
-    GtkWidget *buttons = hbox (10);
+    GtkWidget *files = label_button ("document-open-symbolic", "Choose _Files…", G_CALLBACK (on_choose_files));
+    gtk_widget_add_css_class (files, "outline");
+    g_object_bind_property (app.choose_btn, "sensitive", choose, "sensitive", G_BINDING_SYNC_CREATE);
+    g_object_bind_property (app.files_btn, "sensitive", files, "sensitive", G_BINDING_SYNC_CREATE);
+    GtkWidget *buttons = hbox (8);
     gtk_widget_set_halign (buttons, GTK_ALIGN_CENTER);
     gtk_box_append (GTK_BOX (buttons), choose);
-    gtk_box_append (GTK_BOX (buttons), app.files_empty);
+    gtk_box_append (GTK_BOX (buttons), files);
     GtkWidget *features = hbox (8);
     gtk_widget_set_halign (features, GTK_ALIGN_CENTER);
-    const char *f[][2] = { { "starred-symbolic", "Quality set automatically" },
-                           { "security-high-symbolic", "Originals never changed" },
-                           { "alarm-symbolic", "Cancel any time" } };
+    const char *f[][2] = { { "mt-sliders-symbolic", "Quality set automatically" },
+                           { "changes-prevent-symbolic", "Originals never changed" },
+                           { "media-playback-stop-symbolic", "Cancel any time" } };
     for (gsize i = 0; i < G_N_ELEMENTS (f); i++) {
         GtkWidget *c = hbox (6);
         gtk_widget_add_css_class (c, "feature");
@@ -2755,25 +3461,27 @@ build_empty_page (void)
         gtk_box_append (GTK_BOX (c), gtk_label_new (f[i][1]));
         gtk_box_append (GTK_BOX (features), c);
     }
-    GtkWidget *inner = vbox (12);
+    GtkWidget *inner = vbox (10);
     gtk_widget_set_valign (inner, GTK_ALIGN_CENTER);
     gtk_widget_set_vexpand (inner, TRUE);
-    gtk_box_append (GTK_BOX (inner), icon);
-    app.hero = styled_label ("Drop a folder of videos here", "hero", 0.5);
+    gtk_box_append (GTK_BOX (inner), app.empty_icon);
+    app.hero = styled_label ("Drop videos or a folder", "hero", 0.5);
     gtk_box_append (GTK_BOX (inner), app.hero);
-    GtkWidget *sub = app.empty_sub = styled_label (EMPTY_SUB[0], "dim-label", 0.5);
-    gtk_label_set_wrap (GTK_LABEL (sub), TRUE);
-    gtk_box_append (GTK_BOX (inner), sub);
-    gtk_widget_set_margin_bottom (sub, 8);
+    app.empty_sub = styled_label ("", "empty-sub", 0.5);
+    gtk_label_set_wrap (GTK_LABEL (app.empty_sub), TRUE);
+    gtk_label_set_justify (GTK_LABEL (app.empty_sub), GTK_JUSTIFY_CENTER);
+    gtk_label_set_max_width_chars (GTK_LABEL (app.empty_sub), 52);
+    gtk_widget_set_margin_bottom (app.empty_sub, 8);
+    gtk_box_append (GTK_BOX (inner), app.empty_sub);
     gtk_box_append (GTK_BOX (inner), buttons);
-    gtk_widget_set_margin_top (features, 20);
+    gtk_widget_set_margin_top (features, 18);
     gtk_box_append (GTK_BOX (inner), features);
     GtkWidget *zone = vbox (0);
     gtk_widget_add_css_class (zone, "dropzone");
-    gtk_widget_set_margin_start (zone, 24);
-    gtk_widget_set_margin_end (zone, 24);
-    gtk_widget_set_margin_top (zone, 24);
-    gtk_widget_set_margin_bottom (zone, 24);
+    gtk_widget_set_margin_start (zone, 22);
+    gtk_widget_set_margin_end (zone, 22);
+    gtk_widget_set_margin_top (zone, 22);
+    gtk_widget_set_margin_bottom (zone, 22);
     gtk_box_append (GTK_BOX (zone), inner);
     return zone;
 }
@@ -2786,7 +3494,7 @@ stat_box (GtkWidget **value, const char *caption, gboolean good)
         gtk_widget_add_css_class (*value, "good");
     GtkWidget *v = vbox (0);
     gtk_box_append (GTK_BOX (v), *value);
-    gtk_box_append (GTK_BOX (v), styled_label (caption, "caption", 1));
+    gtk_box_append (GTK_BOX (v), styled_label (caption, "stat-cap", 1));
     return v;
 }
 
@@ -2794,32 +3502,32 @@ static GtkWidget *
 build_list_page (void)
 {
     /* finished summary */
-    GtkWidget *ok = gtk_image_new_from_icon_name ("object-select-symbolic");
-    gtk_widget_add_css_class (ok, "bigcheck");
-    gtk_widget_set_valign (ok, GTK_ALIGN_CENTER);
+    app.sum_icon = gtk_image_new_from_icon_name ("object-select-symbolic");
+    gtk_widget_add_css_class (app.sum_icon, "sum-icon");
+    gtk_widget_set_valign (app.sum_icon, GTK_ALIGN_CENTER);
     app.sum_title = styled_label ("", "sum-title", 0);
-    app.sum_sub = styled_label ("", "dim-label", 0);
-    GtkWidget *texts = vbox (2);
+    app.sum_sub = styled_label ("", "sum-sub", 0);
+    gtk_label_set_ellipsize (GTK_LABEL (app.sum_sub), PANGO_ELLIPSIZE_END);
+    GtkWidget *texts = vbox (1);
     gtk_widget_set_hexpand (texts, TRUE);
     gtk_widget_set_valign (texts, GTK_ALIGN_CENTER);
     gtk_box_append (GTK_BOX (texts), app.sum_title);
     gtk_box_append (GTK_BOX (texts), app.sum_sub);
-    app.summary = hbox (16);
-    gtk_widget_add_css_class (app.summary, "card");
-    gtk_widget_set_margin_bottom (app.summary, 14);
-    GtkWidget *sum_in = hbox (16);
-    gtk_widget_set_hexpand (sum_in, TRUE);
-    gtk_widget_set_margin_start (sum_in, 18);
-    gtk_widget_set_margin_end (sum_in, 22);
-    gtk_widget_set_margin_top (sum_in, 14);
-    gtk_widget_set_margin_bottom (sum_in, 14);
-    gtk_box_append (GTK_BOX (sum_in), ok);
-    gtk_box_append (GTK_BOX (sum_in), texts);
-    gtk_box_append (GTK_BOX (sum_in), stat_box (&app.sum_before, "Before", FALSE));
-    gtk_box_append (GTK_BOX (sum_in), stat_box (&app.sum_after, "After", FALSE));
-    gtk_box_append (GTK_BOX (sum_in), stat_box (&app.sum_pct, "Smaller", TRUE));
-    app.sum_pct_cap = gtk_widget_get_last_child (gtk_widget_get_last_child (sum_in));
-    gtk_box_append (GTK_BOX (app.summary), sum_in);
+    app.summary = hbox (24);
+    gtk_widget_add_css_class (app.summary, "summary");
+    gtk_widget_set_margin_start (app.summary, 16);
+    gtk_widget_set_margin_end (app.summary, 16);
+    gtk_widget_set_margin_top (app.summary, 12);
+    gtk_widget_set_margin_bottom (app.summary, 8);
+    GtkWidget *lead = hbox (14);
+    gtk_widget_set_hexpand (lead, TRUE);
+    gtk_box_append (GTK_BOX (lead), app.sum_icon);
+    gtk_box_append (GTK_BOX (lead), texts);
+    gtk_box_append (GTK_BOX (app.summary), lead);
+    gtk_box_append (GTK_BOX (app.summary), stat_box (&app.sum_before, "Before", FALSE));
+    gtk_box_append (GTK_BOX (app.summary), stat_box (&app.sum_after, "After", FALSE));
+    gtk_box_append (GTK_BOX (app.summary), stat_box (&app.sum_pct, "Smaller", TRUE));
+    app.sum_pct_cap = gtk_widget_get_last_child (gtk_widget_get_last_child (app.summary));
     gtk_widget_set_visible (app.summary, FALSE);
 
     /* column header, aligned with the rows by size groups */
@@ -2828,56 +3536,44 @@ build_list_page (void)
                                     "Select all", -1);
     g_signal_connect (app.select_all, "toggled", G_CALLBACK (on_select_all), NULL);
     GtkWidget *tile_space = hbox (0);
-    gtk_widget_set_size_request (tile_space, 44, -1);
+    gtk_widget_set_size_request (tile_space, 38, -1);
     GtkWidget *name = styled_label ("NAME", "colhead", 0);
     gtk_widget_set_hexpand (name, TRUE);
-    GtkWidget *quality = styled_label ("QUALITY", "colhead", 0);
-    gtk_widget_set_size_request (quality, 150, -1);
-    gtk_size_group_add_widget (app.col_quality, quality);
-    GtkWidget *size = app.size_head = styled_label ("SIZE → ESTIMATED", "colhead", 1);
-    gtk_widget_set_size_request (size, 290, -1);
-    gtk_size_group_add_widget (app.col_status, size);
+    app.size_head = styled_label ("SIZE → ESTIMATE", "colhead", 1);
+    gtk_size_group_add_widget (app.col_status, app.size_head);
     GtkWidget *actions_space = hbox (0);
-    gtk_widget_set_size_request (actions_space, 90, -1);
     gtk_size_group_add_widget (app.col_actions, actions_space);
-    GtkWidget *head = hbox (14);
+    GtkWidget *head = hbox (12);
     gtk_widget_add_css_class (head, "colhead-row");
     gtk_box_append (GTK_BOX (head), app.select_all);
     gtk_box_append (GTK_BOX (head), tile_space);
     gtk_box_append (GTK_BOX (head), name);
-    gtk_box_append (GTK_BOX (head), quality);
-    gtk_box_append (GTK_BOX (head), size);
+    gtk_box_append (GTK_BOX (head), app.size_head);
     gtk_box_append (GTK_BOX (head), actions_space);
 
     app.list = gtk_list_box_new ();
     gtk_widget_add_css_class (app.list, "rows");
     gtk_list_box_set_selection_mode (GTK_LIST_BOX (app.list), GTK_SELECTION_NONE);
-    GtkWidget *placeholder = styled_label ("No videos in this folder.", "dim-label", 0.5);
+    GtkWidget *placeholder = styled_label ("Nothing here for this mode.", "hint", 0.5);
     gtk_widget_set_margin_top (placeholder, 32);
     gtk_widget_set_margin_bottom (placeholder, 32);
     gtk_list_box_set_placeholder (GTK_LIST_BOX (app.list), placeholder);
-    GtkWidget *card = vbox (0);
-    gtk_widget_add_css_class (card, "card");
-    gtk_widget_set_overflow (card, GTK_OVERFLOW_HIDDEN);
-    gtk_box_append (GTK_BOX (card), head);
-    gtk_box_append (GTK_BOX (card), app.list);
-
     GtkWidget *content = vbox (0);
-    gtk_widget_set_margin_start (content, 20);
-    gtk_widget_set_margin_end (content, 20);
-    gtk_widget_set_margin_top (content, 18);
-    gtk_widget_set_margin_bottom (content, 80);   /* room for the selection bar */
-    gtk_box_append (GTK_BOX (content), app.summary);
-    gtk_box_append (GTK_BOX (content), card);
+    gtk_widget_set_margin_bottom (content, 70);   /* room for the selection bar */
+    gtk_box_append (GTK_BOX (content), app.list);
     GtkWidget *scroll = gtk_scrolled_window_new ();
-    gtk_scrolled_window_set_policy (GTK_SCROLLED_WINDOW (scroll), GTK_POLICY_NEVER,
-                                    GTK_POLICY_AUTOMATIC);
+    gtk_scrolled_window_set_policy (GTK_SCROLLED_WINDOW (scroll), GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
     gtk_scrolled_window_set_child (GTK_SCROLLED_WINDOW (scroll), content);
+    gtk_widget_set_vexpand (scroll, TRUE);
+    GtkWidget *page = vbox (0);
+    gtk_box_append (GTK_BOX (page), app.summary);
+    gtk_box_append (GTK_BOX (page), head);
+    gtk_box_append (GTK_BOX (page), scroll);
 
     /* floating selection bar */
     app.sel_label = styled_label ("", "heading", 0);
     gtk_widget_set_margin_end (app.sel_label, 6);
-    app.sel_start = icon_button ("media-playback-start-symbolic", "Compress selected", "round",
+    app.sel_start = icon_button ("media-playback-start-symbolic", "Start selected", "round",
                                  G_CALLBACK (on_sel_start));
     gtk_widget_add_css_class (app.sel_start, "suggested-action");
     app.sel_pause = icon_button ("media-playback-pause-symbolic", "Pause or hold selected", "round",
@@ -2903,35 +3599,149 @@ build_list_page (void)
         gtk_box_append (GTK_BOX (app.selbar), sel_items[i]);
     gtk_widget_set_visible (app.selbar, FALSE);
 
-    /* toast */
-    app.toast_label = gtk_label_new ("");
-    GtkWidget *t = hbox (10);
-    gtk_widget_add_css_class (t, "toast");
-    gtk_box_append (GTK_BOX (t), gtk_image_new_from_icon_name ("user-trash-symbolic"));
-    gtk_box_append (GTK_BOX (t), app.toast_label);
-    app.toast = gtk_revealer_new ();
-    gtk_revealer_set_transition_type (GTK_REVEALER (app.toast),
-                                      GTK_REVEALER_TRANSITION_TYPE_SLIDE_UP);
-    gtk_revealer_set_child (GTK_REVEALER (app.toast), t);
-    gtk_widget_set_halign (app.toast, GTK_ALIGN_START);
-    gtk_widget_set_valign (app.toast, GTK_ALIGN_END);
-    gtk_widget_set_margin_start (app.toast, 20);
-    gtk_widget_set_margin_bottom (app.toast, 16);
-    gtk_widget_set_can_target (app.toast, FALSE);
-
     GtkWidget *overlay = gtk_overlay_new ();
-    gtk_overlay_set_child (GTK_OVERLAY (overlay), scroll);
+    gtk_overlay_set_child (GTK_OVERLAY (overlay), page);
     gtk_overlay_add_overlay (GTK_OVERLAY (overlay), app.selbar);
-    gtk_overlay_add_overlay (GTK_OVERLAY (overlay), app.toast);
     return overlay;
 }
 
+/* Missing tool: what to install, with a copy button (shown in that mode only). */
 static GtkWidget *
-build_bottom_bar (void)
+build_banner (void)
 {
-    /* ready: speed, switches, totals */
-    GtkWidget *speed_label = gtk_label_new_with_mnemonic ("S_peed");
-    gtk_widget_add_css_class (speed_label, "caption");
+    app.banner_title = styled_label ("", "banner-title", 0);
+    app.banner_sub = styled_label ("", "banner-sub", 0);
+    gtk_label_set_wrap (GTK_LABEL (app.banner_sub), TRUE);
+    GtkWidget *texts = vbox (1);
+    gtk_widget_set_hexpand (texts, TRUE);
+    gtk_box_append (GTK_BOX (texts), app.banner_title);
+    gtk_box_append (GTK_BOX (texts), app.banner_sub);
+    app.banner_code = gtk_label_new ("");
+    gtk_label_set_selectable (GTK_LABEL (app.banner_code), TRUE);
+    GtkWidget *copy = icon_button ("edit-copy-symbolic", "Copy the command", "flat", G_CALLBACK (on_copy_fix));
+    gtk_widget_set_tooltip_text (copy, "Copy");
+    GtkWidget *code = hbox (4);
+    gtk_widget_add_css_class (code, "code");
+    gtk_widget_set_valign (code, GTK_ALIGN_CENTER);
+    gtk_box_append (GTK_BOX (code), app.banner_code);
+    gtk_box_append (GTK_BOX (code), copy);
+    GtkWidget *icon = gtk_image_new_from_icon_name ("mt-wrench-symbolic");
+    gtk_widget_set_valign (icon, GTK_ALIGN_CENTER);
+    app.banner = hbox (12);
+    gtk_widget_add_css_class (app.banner, "banner");
+    gtk_widget_set_margin_start (app.banner, 16);
+    gtk_widget_set_margin_end (app.banner, 16);
+    gtk_widget_set_margin_top (app.banner, 12);
+    gtk_widget_set_margin_bottom (app.banner, 4);
+    gtk_box_append (GTK_BOX (app.banner), icon);
+    gtk_box_append (GTK_BOX (app.banner), texts);
+    gtk_box_append (GTK_BOX (app.banner), code);
+    gtk_widget_set_visible (app.banner, FALSE);
+    return app.banner;
+}
+
+static GtkWidget *
+build_footer (void)
+{
+    app.foot_left = styled_label ("", NULL, 0);
+    gtk_label_set_ellipsize (GTK_LABEL (app.foot_left), PANGO_ELLIPSIZE_END);
+    app.foot_bar = gtk_progress_bar_new ();
+    gtk_widget_set_size_request (app.foot_bar, 260, -1);
+    gtk_widget_set_valign (app.foot_bar, GTK_ALIGN_CENTER);
+    app.foot_right = styled_label ("", "foot-right", 1);
+    gtk_widget_set_hexpand (app.foot_right, TRUE);
+    gtk_label_set_ellipsize (GTK_LABEL (app.foot_right), PANGO_ELLIPSIZE_START);
+    app.footer = hbox (14);
+    gtk_widget_add_css_class (app.footer, "footer");
+    gtk_box_append (GTK_BOX (app.footer), app.foot_left);
+    gtk_box_append (GTK_BOX (app.footer), app.foot_bar);
+    gtk_box_append (GTK_BOX (app.footer), app.foot_right);
+    return app.footer;
+}
+
+/* ---- inspector ---- */
+
+static GtkWidget *
+section (GtkWidget *box, const char *title)
+{
+    GtkWidget *l = styled_label (title, "sect", 0);
+    gtk_widget_set_margin_top (l, 16);
+    gtk_widget_set_margin_bottom (l, 6);
+    gtk_box_append (GTK_BOX (box), l);
+    return l;
+}
+
+static GtkWidget *
+hint (GtkWidget *box, const char *text)
+{
+    GtkWidget *l = styled_label (text, "hint", 0);
+    gtk_label_set_wrap (GTK_LABEL (l), TRUE);
+    gtk_label_set_max_width_chars (GTK_LABEL (l), 20);   /* wraps to the inspector instead of widening it */
+    gtk_widget_set_margin_top (l, 6);
+    gtk_box_append (GTK_BOX (box), l);
+    return l;
+}
+
+/* A switch with its title and a line of help, as the design's option rows. */
+static GtkWidget *
+option_row (GtkWidget *box, const char *title, const char *sub, const char *tip)
+{
+    GtkWidget *sw = gtk_switch_new ();
+    gtk_widget_set_valign (sw, GTK_ALIGN_START);
+    GtkWidget *l = gtk_label_new_with_mnemonic (title);
+    gtk_widget_add_css_class (l, "opt-title");
+    gtk_label_set_xalign (GTK_LABEL (l), 0);
+    gtk_label_set_mnemonic_widget (GTK_LABEL (l), sw);
+    gtk_accessible_update_relation (GTK_ACCESSIBLE (sw), GTK_ACCESSIBLE_RELATION_LABELLED_BY, l, NULL, -1);
+    GtkWidget *s = styled_label (sub, "opt-sub", 0);
+    gtk_label_set_wrap (GTK_LABEL (s), TRUE);
+    gtk_label_set_max_width_chars (GTK_LABEL (s), 20);
+    GtkWidget *texts = vbox (1);
+    gtk_widget_set_hexpand (texts, TRUE);
+    gtk_box_append (GTK_BOX (texts), l);
+    gtk_box_append (GTK_BOX (texts), s);
+    GtkWidget *row = hbox (10);
+    gtk_widget_set_margin_bottom (row, 10);
+    gtk_widget_set_tooltip_text (row, tip);
+    gtk_box_append (GTK_BOX (row), texts);
+    gtk_box_append (GTK_BOX (row), sw);
+    gtk_box_append (GTK_BOX (box), row);
+    return sw;
+}
+
+/* A segmented control of toggle buttons; returns the box, fills `out` with the buttons. */
+static GtkWidget *
+segmented (const char *const *labels, guint n, guint active, GtkWidget **out, GCallback toggled)
+{
+    GtkWidget *seg = hbox (0);
+    gtk_widget_add_css_class (seg, "seg");
+    for (guint i = 0; i < n; i++) {
+        GtkWidget *b = gtk_toggle_button_new_with_label (labels[i]);
+        if (i > 0)
+            gtk_toggle_button_set_group (GTK_TOGGLE_BUTTON (b), GTK_TOGGLE_BUTTON (out[0]));
+        gtk_toggle_button_set_active (GTK_TOGGLE_BUTTON (b), i == active);
+        gtk_widget_set_hexpand (b, TRUE);   /* natural widths plus an equal share: six speeds fit */
+        g_signal_connect (b, "toggled", toggled, GUINT_TO_POINTER (i));
+        out[i] = b;
+        gtk_box_append (GTK_BOX (seg), b);
+    }
+    return seg;
+}
+
+static void
+check_line (GtkWidget *box, const char *icon, const char *text)
+{
+    GtkWidget *row = hbox (8);
+    gtk_widget_add_css_class (row, "check-line");
+    gtk_widget_set_margin_bottom (row, 5);
+    gtk_box_append (GTK_BOX (row), gtk_image_new_from_icon_name (icon));
+    gtk_box_append (GTK_BOX (row), styled_label (text, NULL, 0));
+    gtk_box_append (GTK_BOX (box), row);
+}
+
+static GtkWidget *
+build_speed_guide (void)
+{
     GtkWidget *guide_head = hbox (16);
     gtk_widget_set_margin_start (guide_head, 10);
     const char *heads[] = { "SPEED", "ENCODE TIME", "FILE SIZE" };
@@ -2958,252 +3768,260 @@ build_bottom_bar (void)
     gtk_box_append (GTK_BOX (guide), note);
     GtkWidget *pop = gtk_popover_new ();
     gtk_popover_set_child (GTK_POPOVER (pop), guide);
+    GtkWidget *link = hbox (6);
+    gtk_box_append (GTK_BOX (link), gtk_image_new_from_icon_name ("help-about-symbolic"));
+    gtk_box_append (GTK_BOX (link), gtk_label_new ("Speed guide · time vs size"));
     GtkWidget *info = gtk_menu_button_new ();
-    gtk_menu_button_set_icon_name (GTK_MENU_BUTTON (info), "help-about-symbolic");
+    gtk_menu_button_set_child (GTK_MENU_BUTTON (info), link);
+    gtk_menu_button_set_always_show_arrow (GTK_MENU_BUTTON (info), FALSE);
     gtk_menu_button_set_popover (GTK_MENU_BUTTON (info), pop);
-    gtk_widget_add_css_class (info, "info");
-    gtk_widget_set_tooltip_text (info, "Speed guide");
-    GtkWidget *speed_head = hbox (2);
-    gtk_box_append (GTK_BOX (speed_head), speed_label);
-    gtk_box_append (GTK_BOX (speed_head), info);
+    gtk_widget_add_css_class (info, "link");
+    gtk_widget_set_halign (info, GTK_ALIGN_START);
+    gtk_widget_set_margin_top (info, 8);
+    return info;
+}
 
-    GtkWidget *seg = hbox (0);
-    gtk_widget_add_css_class (seg, "linked");
-    for (guint p = 0; VC_PRESETS[p] != NULL && p < G_N_ELEMENTS (app.speed_btns); p++) {
-        g_autofree char *t = preset_title (p);
-        GtkWidget *b = gtk_toggle_button_new_with_label (t);
-        if (p > 0)
-            gtk_toggle_button_set_group (GTK_TOGGLE_BUTTON (b),
-                                         GTK_TOGGLE_BUTTON (app.speed_btns[0]));
-        if (strcmp (VC_PRESETS[p], VC_DEFAULT_PRESET) == 0) {
-            app.preset = p;
-            gtk_toggle_button_set_active (GTK_TOGGLE_BUTTON (b), TRUE);
-        }
-        g_signal_connect (b, "toggled", G_CALLBACK (on_speed), GUINT_TO_POINTER (p));
-        gtk_widget_set_visible (b, strcmp (VC_PRESETS[p], VC_PRESET_GPU) != 0);   /* gpu_test_done */
-        app.speed_btns[p] = b;
-        gtk_box_append (GTK_BOX (seg), b);
+static GtkWidget *
+build_compress_opts (void)
+{
+    GtkWidget *box = vbox (0);
+    section (box, "SPEED");
+    const char *titles[G_N_ELEMENTS (app.speed_btns)];
+    guint np = 0, active = 0;
+    g_autoptr (GPtrArray) names = g_ptr_array_new_with_free_func (g_free);
+    for (; VC_PRESETS[np] != NULL && np < G_N_ELEMENTS (app.speed_btns); np++) {
+        g_ptr_array_add (names, preset_title (np));
+        titles[np] = names->pdata[np];
+        if (strcmp (VC_PRESETS[np], VC_DEFAULT_PRESET) == 0)
+            active = np;
     }
-    gtk_label_set_mnemonic_widget (GTK_LABEL (speed_label), app.speed_btns[app.preset]);
-    app.speed_caption = styled_label ("", "caption", 0);
-    GtkWidget *speed = vbox (4);
-    gtk_box_append (GTK_BOX (speed), speed_head);
-    gtk_box_append (GTK_BOX (speed), seg);
-    gtk_box_append (GTK_BOX (speed), app.speed_caption);
+    app.preset = active;
+    gtk_box_append (GTK_BOX (box), segmented (titles, np, active, app.speed_btns, G_CALLBACK (on_speed)));
+    for (guint p = 0; p < np; p++)
+        gtk_widget_set_visible (app.speed_btns[p], strcmp (VC_PRESETS[p], VC_PRESET_GPU) != 0);   /* gpu_test_done */
+    gtk_box_append (GTK_BOX (box), build_speed_guide ());
 
-    GtkWidget *switches = gtk_grid_new ();
-    gtk_grid_set_row_spacing (GTK_GRID (switches), 8);
-    gtk_grid_set_column_spacing (GTK_GRID (switches), 16);
-    gtk_widget_set_valign (switches, GTK_ALIGN_CENTER);
-    GtkWidget **sw[] = { &app.subs, &app.trash, &app.fps30 };
-    const char *sw_label[] = { "Keep _subtitles", "Move originals to _Trash", "Max _30 fps" };
-    const char *sw_tip[] = { "Copy subtitle tracks too. The output becomes .mkv.",
-                             "After each copy is checked: same length and at least 5% smaller. "
-                             "Asks before starting.",
-                             "Save videos above 30 fps (often 60 fps phone clips) at 30 fps: about "
-                             "half the encode time. Off keeps every frame." };
-    for (guint i = 0; i < 3; i++) {
-        *sw[i] = gtk_switch_new ();
-        gtk_widget_set_valign (*sw[i], GTK_ALIGN_CENTER);
-        GtkWidget *l = gtk_label_new_with_mnemonic (sw_label[i]);
-        gtk_label_set_mnemonic_widget (GTK_LABEL (l), *sw[i]);
-        gtk_accessible_update_relation (GTK_ACCESSIBLE (*sw[i]), GTK_ACCESSIBLE_RELATION_LABELLED_BY,
-                                        l, NULL, -1);
-        GtkWidget *row = hbox (10);
-        gtk_widget_set_tooltip_text (row, sw_tip[i]);
-        gtk_box_append (GTK_BOX (row), *sw[i]);
-        gtk_box_append (GTK_BOX (row), l);
-        gtk_grid_attach (GTK_GRID (switches), row, i / 2, i % 2, 1, 1);
-    }
+    section (box, "MAX SIZE");
     const char *sizes[] = { "Original size", "Max 1080p", "Max 720p", NULL };
     app.max_size = gtk_drop_down_new_from_strings (sizes);
-    gtk_accessible_update_property (GTK_ACCESSIBLE (app.max_size), GTK_ACCESSIBLE_PROPERTY_LABEL,
-                                    "Max size", -1);
-    gtk_widget_set_tooltip_text (app.max_size, "Shrink bigger videos so the short side is at most "
-                                               "this (a 4K video at 1080p takes about a quarter of "
-                                               "the time). Smaller videos are never enlarged.");
-    gtk_widget_set_halign (app.max_size, GTK_ALIGN_START);
+    gtk_accessible_update_property (GTK_ACCESSIBLE (app.max_size), GTK_ACCESSIBLE_PROPERTY_LABEL, "Max size", -1);
+    gtk_widget_set_tooltip_text (app.max_size, "Shrink bigger videos so the short side is at most this (a 4K "
+                                               "video at 1080p takes about a quarter of the time). Smaller "
+                                               "videos are never enlarged.");
     g_signal_connect (app.max_size, "notify::selected", G_CALLBACK (on_estimate_input), NULL);
+    gtk_box_append (GTK_BOX (box), app.max_size);
+
+    section (box, "OPTIONS");
+    app.subs = option_row (box, "Keep _subtitles", "Copies subtitle tracks. Output becomes .mkv.",
+                           "Copy subtitle tracks too. The output becomes .mkv.");
+    app.fps30 = option_row (box, "Max _30 fps", "60 fps phone clips saved at 30 fps.",
+                            "Save videos above 30 fps (often 60 fps phone clips) at 30 fps: about half the "
+                            "encode time. Off keeps every frame.");
     /* a size sample is taken at the frame rate it will be encoded at */
     g_signal_connect (app.fps30, "notify::active", G_CALLBACK (on_estimate_input), NULL);
-    gtk_grid_attach (GTK_GRID (switches), app.max_size, 1, 1, 1, 1);
+    app.trash = option_row (box, "Move originals to _Trash", "Only after each copy is checked. Asks first.",
+                            "After each copy is checked: same length and at least 5% smaller. Asks before "
+                            "starting.");
+    return box;
+}
 
-    app.total = styled_label ("", "total", 1);
-    app.total_sub = styled_label ("", "caption", 1);
-    /* totals give way first, so the extra options don't force a wider window */
-    gtk_label_set_ellipsize (GTK_LABEL (app.total), PANGO_ELLIPSIZE_START);
-    gtk_label_set_ellipsize (GTK_LABEL (app.total_sub), PANGO_ELLIPSIZE_END);
-    GtkWidget *totals = vbox (2);
-    gtk_widget_set_hexpand (totals, TRUE);
-    gtk_widget_set_valign (totals, GTK_ALIGN_CENTER);
-    gtk_box_append (GTK_BOX (totals), app.total);
-    gtk_box_append (GTK_BOX (totals), app.total_sub);
-
-    app.compress_opts = hbox (28);
-    gtk_box_append (GTK_BOX (app.compress_opts), speed);
-    gtk_box_append (GTK_BOX (app.compress_opts), switches);
-
-    /* Web video: Max width and Remove audio */
+static GtkWidget *
+build_web_opts (void)
+{
+    GtkWidget *box = vbox (0);
+    section (box, "MAX WIDTH");
     app.web_width = width_dropdown ();
-    app.no_audio = gtk_switch_new ();
-    gtk_widget_set_valign (app.no_audio, GTK_ALIGN_CENTER);
-    GtkWidget *na_label = gtk_label_new_with_mnemonic ("Remove _audio");
-    gtk_label_set_mnemonic_widget (GTK_LABEL (na_label), app.no_audio);
-    gtk_accessible_update_relation (GTK_ACCESSIBLE (app.no_audio), GTK_ACCESSIBLE_RELATION_LABELLED_BY,
-                                    na_label, NULL, -1);
-    GtkWidget *na_row = hbox (10);
-    gtk_widget_set_tooltip_text (na_row, "No audio track, for muted autoplay backgrounds.");
-    gtk_box_append (GTK_BOX (na_row), app.no_audio);
-    gtk_box_append (GTK_BOX (na_row), na_label);
-    app.web_opts = hbox (28);
-    gtk_box_append (GTK_BOX (app.web_opts), app.web_width);
-    gtk_box_append (GTK_BOX (app.web_opts), na_row);
-    gtk_widget_set_visible (app.web_opts, FALSE);
+    gtk_box_append (GTK_BOX (box), app.web_width);
+    hint (box, "Narrower videos are never enlarged.");
+    section (box, "AUDIO");
+    app.no_audio = option_row (box, "Remove _audio", "No audio track, for muted autoplay backgrounds.",
+                               "No audio track, for muted autoplay backgrounds.");
+    section (box, "EVERY FILE GETS");
+    check_line (box, "object-select-symbolic", "H.264 MP4 · plays in Safari & iOS");
+    check_line (box, "object-select-symbolic", "Fast start · plays while loading");
+    check_line (box, "object-select-symbolic", "HDR converted to SDR");
+    check_line (box, "object-select-symbolic", "Location & metadata removed");
+    return box;
+}
 
-    /* Video → frames: FPS, Start, End, Max width, Format, Quality */
-    const char *rates[] = { "5 fps", "10 fps", "12 fps", "15 fps", "24 fps", "30 fps", "Every frame", NULL };
-    G_STATIC_ASSERT (G_N_ELEMENTS (rates) == G_N_ELEMENTS (FRAME_RATES) + 1);
-    app.frames_fps = gtk_drop_down_new_from_strings (rates);
-    gtk_drop_down_set_selected (GTK_DROP_DOWN (app.frames_fps), FRAMES_DEFAULT_RATE);
-    gtk_accessible_update_property (GTK_ACCESSIBLE (app.frames_fps), GTK_ACCESSIBLE_PROPERTY_LABEL,
-                                    "Frames per second", -1);
-    gtk_widget_set_tooltip_text (app.frames_fps, "Frames saved per second of video. Every frame keeps "
-                                                 "the video's own rate.");
-    gtk_widget_set_valign (app.frames_fps, GTK_ALIGN_CENTER);
-    g_signal_connect (app.frames_fps, "notify::selected", G_CALLBACK (on_estimate_input), NULL);
+static GtkWidget *
+build_frames_opts (void)
+{
+    GtkWidget *box = app.frames_opts = vbox (0);
+    section (box, "FRAMES PER SECOND");
+    const char *rates[] = { "5", "10", "12", "15", "24", "30", "All" };
+    G_STATIC_ASSERT (G_N_ELEMENTS (rates) == G_N_ELEMENTS (FRAME_RATES));
+    app.fps_idx = FRAMES_DEFAULT_RATE;
+    GtkWidget *seg = segmented (rates, G_N_ELEMENTS (rates), FRAMES_DEFAULT_RATE, app.fps_btns, G_CALLBACK (on_fps));
+    gtk_widget_set_tooltip_text (seg, "Frames saved per second of video. All keeps the video's own rate.");
+    gtk_box_append (GTK_BOX (box), seg);
+
+    section (box, "RANGE");
+    GtkWidget *range = gtk_grid_new ();
+    gtk_grid_set_column_spacing (GTK_GRID (range), 8);
+    gtk_grid_set_row_spacing (GTK_GRID (range), 4);
+    gtk_grid_set_column_homogeneous (GTK_GRID (range), TRUE);
     GtkWidget **times[] = { &app.frames_start, &app.frames_end };
     const char *time_label[] = { "Sta_rt", "_End" };
     const char *time_hint[] = { "0:00", "end" };
     const char *time_tip[] = { "Where to start: empty for the beginning, or 12, 12.5, 1:05, 0:01:05.",
                                "Where to stop: empty for the end. The same range applies to every video." };
-    GtkWidget *range = hbox (8);
     for (guint i = 0; i < 2; i++) {
         *times[i] = gtk_entry_new ();
-        gtk_editable_set_width_chars (GTK_EDITABLE (*times[i]), 7);
+        gtk_editable_set_width_chars (GTK_EDITABLE (*times[i]), 6);
         gtk_entry_set_placeholder_text (GTK_ENTRY (*times[i]), time_hint[i]);
-        gtk_widget_set_valign (*times[i], GTK_ALIGN_CENTER);
         gtk_widget_set_tooltip_text (*times[i], time_tip[i]);
         g_signal_connect (*times[i], "changed", G_CALLBACK (on_estimate_input), NULL);
         GtkWidget *l = gtk_label_new_with_mnemonic (time_label[i]);
+        gtk_label_set_xalign (GTK_LABEL (l), 0);
+        gtk_widget_add_css_class (l, "hint");
         gtk_label_set_mnemonic_widget (GTK_LABEL (l), *times[i]);
         gtk_accessible_update_relation (GTK_ACCESSIBLE (*times[i]), GTK_ACCESSIBLE_RELATION_LABELLED_BY,
                                         l, NULL, -1);
-        gtk_box_append (GTK_BOX (range), l);
-        gtk_box_append (GTK_BOX (range), *times[i]);
+        gtk_grid_attach (GTK_GRID (range), l, i, 0, 1, 1);
+        gtk_grid_attach (GTK_GRID (range), *times[i], i, 1, 1, 1);
     }
+    gtk_box_append (GTK_BOX (box), range);
+    GtkWidget *err = hbox (6);
+    gtk_widget_add_css_class (err, "err-line");
+    gtk_widget_set_margin_top (err, 6);
+    app.range_err = styled_label ("", NULL, 0);
+    gtk_box_append (GTK_BOX (err), gtk_image_new_from_icon_name ("dialog-warning-symbolic"));
+    gtk_box_append (GTK_BOX (err), app.range_err);
+    gtk_widget_set_visible (err, FALSE);
+    gtk_box_append (GTK_BOX (box), err);
+
+    section (box, "MAX WIDTH");
     app.frames_width = width_dropdown ();
-    const char *formats[] = { "WebP", "JPG", NULL };
-    app.frames_format = gtk_drop_down_new_from_strings (formats);
-    gtk_accessible_update_property (GTK_ACCESSIBLE (app.frames_format), GTK_ACCESSIBLE_PROPERTY_LABEL,
-                                    "Format", -1);
-    gtk_widget_set_tooltip_text (app.frames_format, "WebP is smaller and works in every current browser, "
-                                                    "Safari 14 and later included.");
-    gtk_widget_set_valign (app.frames_format, GTK_ALIGN_CENTER);
-    app.frames_quality = gtk_spin_button_new_with_range (1, 100, 1);
-    gtk_spin_button_set_value (GTK_SPIN_BUTTON (app.frames_quality), 80);
-    gtk_widget_set_valign (app.frames_quality, GTK_ALIGN_CENTER);
+    gtk_box_append (GTK_BOX (box), app.frames_width);
+
+    section (box, "FORMAT");
+    const char *formats[] = { "WebP", "JPG" };
+    app.webp = TRUE;
+    gtk_box_append (GTK_BOX (box), segmented (formats, 2, 0, app.fmt_btns, G_CALLBACK (on_format)));
+    app.fmt_caption = hint (box, "Smaller, plays in Safari 14 and later.");
+
     GtkWidget *q_label = gtk_label_new_with_mnemonic ("_Quality");
+    gtk_widget_add_css_class (q_label, "opt-title");
+    gtk_widget_set_hexpand (q_label, TRUE);
+    gtk_label_set_xalign (GTK_LABEL (q_label), 0);
+    app.quality_val = styled_label ("80", "hint", 1);
+    GtkWidget *q_head = hbox (8);
+    gtk_widget_set_margin_top (q_head, 18);
+    gtk_box_append (GTK_BOX (q_head), q_label);
+    gtk_box_append (GTK_BOX (q_head), app.quality_val);
+    gtk_box_append (GTK_BOX (box), q_head);
+    app.frames_quality = gtk_scale_new_with_range (GTK_ORIENTATION_HORIZONTAL, 1, 100, 1);
+    gtk_range_set_value (GTK_RANGE (app.frames_quality), 80);
+    gtk_widget_set_tooltip_text (app.frames_quality, "1–100. Higher keeps more detail in bigger files.");
     gtk_label_set_mnemonic_widget (GTK_LABEL (q_label), app.frames_quality);
     gtk_accessible_update_relation (GTK_ACCESSIBLE (app.frames_quality), GTK_ACCESSIBLE_RELATION_LABELLED_BY,
                                     q_label, NULL, -1);
-    GtkWidget *q_row = hbox (8);
-    gtk_widget_set_tooltip_text (q_row, "1–100. Higher keeps more detail in bigger files.");
-    gtk_box_append (GTK_BOX (q_row), q_label);
-    gtk_box_append (GTK_BOX (q_row), app.frames_quality);
-    app.frames_opts = hbox (20);
-    gtk_box_append (GTK_BOX (app.frames_opts), app.frames_fps);
-    gtk_box_append (GTK_BOX (app.frames_opts), range);
-    gtk_box_append (GTK_BOX (app.frames_opts), app.frames_width);
-    gtk_box_append (GTK_BOX (app.frames_opts), app.frames_format);
-    gtk_box_append (GTK_BOX (app.frames_opts), q_row);
-    gtk_widget_set_visible (app.frames_opts, FALSE);
+    g_signal_connect (app.frames_quality, "value-changed", G_CALLBACK (on_quality), NULL);
+    gtk_widget_set_margin_top (app.frames_quality, 6);
+    gtk_box_append (GTK_BOX (box), app.frames_quality);
+    return box;
+}
 
-    /* Compress images: Max width (default Original) and its own Move to Trash */
+static void
+format_line (GtkWidget *box, const char *badge, const char *text)
+{
+    GtkWidget *row = hbox (8);
+    gtk_widget_set_margin_bottom (row, 6);
+    GtkWidget *b = styled_label (badge, "badge", 0.5);
+    gtk_widget_set_valign (b, GTK_ALIGN_CENTER);
+    gtk_box_append (GTK_BOX (row), b);
+    gtk_box_append (GTK_BOX (row), styled_label (text, "check-line", 0));
+    gtk_box_append (GTK_BOX (box), row);
+}
+
+static GtkWidget *
+build_images_opts (void)
+{
+    GtkWidget *box = app.images_opts = vbox (0);
+    section (box, "MAX WIDTH");
     app.images_width = width_dropdown ();
     gtk_drop_down_set_selected (GTK_DROP_DOWN (app.images_width), 0);
-    gtk_widget_set_tooltip_text (app.images_width, "Scale wider images down to this width, keeping the "
-                                                   "aspect ratio. Narrower images are never enlarged.");
-    app.img_trash = gtk_switch_new ();
-    gtk_widget_set_valign (app.img_trash, GTK_ALIGN_CENTER);
-    GtkWidget *it_label = gtk_label_new_with_mnemonic ("Move originals to _Trash");
-    gtk_label_set_mnemonic_widget (GTK_LABEL (it_label), app.img_trash);
-    gtk_accessible_update_relation (GTK_ACCESSIBLE (app.img_trash), GTK_ACCESSIBLE_RELATION_LABELLED_BY,
-                                    it_label, NULL, -1);
-    GtkWidget *it_row = hbox (10);
-    gtk_widget_set_tooltip_text (it_row, "After each same-type copy (jpg or png) is checked: it opens, has "
-                                         "the expected size and is at least 5% smaller. Asks before starting.");
-    gtk_box_append (GTK_BOX (it_row), app.img_trash);
-    gtk_box_append (GTK_BOX (it_row), it_label);
-    app.images_opts = hbox (28);
-    gtk_box_append (GTK_BOX (app.images_opts), app.images_width);
-    gtk_box_append (GTK_BOX (app.images_opts), it_row);
-    gtk_widget_set_visible (app.images_opts, FALSE);
+    gtk_widget_set_tooltip_text (app.images_width, "Scale wider images down to this width, keeping the aspect "
+                                                   "ratio. Narrower images are never enlarged.");
+    gtk_box_append (GTK_BOX (box), app.images_width);
+    hint (box, "Wider images scale down, never up.");
+    section (box, "YOU GET");
+    format_line (box, "JPG", "→ optimized JPG + WebP");
+    format_line (box, "PNG", "→ quantized PNG + WebP");
+    format_line (box, "WEBP", "→ smaller WebP");
+    format_line (box, "BMP·TIFF", "→ PNG or JPG + WebP");
+    section (box, "PRIVACY");
+    check_line (box, "object-select-symbolic", "GPS & camera data removed");
+    check_line (box, "object-select-symbolic", "Colour profile kept");
+    section (box, "ORIGINALS");
+    app.img_trash = option_row (box, "Move originals to _Trash", "Only when the same-type copy opens at the "
+                                "right size.",
+                                "After each same-type copy (jpg or png) is checked: it opens, has the expected "
+                                "size and is at least 5% smaller. Asks before starting.");
+    return box;
+}
 
-    GtkWidget *ready = hbox (28);
-    gtk_box_append (GTK_BOX (ready), app.compress_opts);
-    gtk_box_append (GTK_BOX (ready), app.web_opts);
-    gtk_box_append (GTK_BOX (ready), app.frames_opts);
-    gtk_box_append (GTK_BOX (ready), app.images_opts);
-    gtk_box_append (GTK_BOX (ready), totals);
+static GtkWidget *
+build_inspector (void)
+{
+    app.insp_icon = gtk_image_new_from_icon_name (MODE_INFO[0].icon);
+    gtk_widget_add_css_class (app.insp_icon, "insp-icon");
+    gtk_widget_set_valign (app.insp_icon, GTK_ALIGN_CENTER);
+    app.insp_title = styled_label ("", "insp-title", 0);
+    app.insp_sub = styled_label ("", "insp-sub", 0);
+    GtkWidget *texts = vbox (0);
+    gtk_box_append (GTK_BOX (texts), app.insp_title);
+    gtk_box_append (GTK_BOX (texts), app.insp_sub);
+    GtkWidget *head = hbox (10);
+    gtk_box_append (GTK_BOX (head), app.insp_icon);
+    gtk_box_append (GTK_BOX (head), texts);
 
-    /* running: overall progress */
-    app.run_title = styled_label ("", NULL, 0);
-    gtk_label_set_ellipsize (GTK_LABEL (app.run_title), PANGO_ELLIPSIZE_MIDDLE);
-    gtk_widget_set_hexpand (app.run_title, TRUE);
-    app.run_eta = styled_label ("", "dim-label", 1);
-    GtkWidget *run_head = hbox (12);
-    gtk_box_append (GTK_BOX (run_head), app.run_title);
-    gtk_box_append (GTK_BOX (run_head), app.run_eta);
-    app.run_bar = gtk_progress_bar_new ();
-    app.run_sub = styled_label ("", "caption", 0);
-    GtkWidget *running = vbox (6);
-    gtk_widget_set_valign (running, GTK_ALIGN_CENTER);
-    gtk_box_append (GTK_BOX (running), run_head);
-    gtk_box_append (GTK_BOX (running), app.run_bar);
-    gtk_box_append (GTK_BOX (running), app.run_sub);
+    app.insp_stack = gtk_stack_new ();
+    gtk_stack_set_vhomogeneous (GTK_STACK (app.insp_stack), FALSE);
+    gtk_stack_add_named (GTK_STACK (app.insp_stack), build_compress_opts (), MODE_INFO[VC_MODE_COMPRESS].css);
+    gtk_stack_add_named (GTK_STACK (app.insp_stack), build_web_opts (), MODE_INFO[VC_MODE_WEB_VIDEO].css);
+    gtk_stack_add_named (GTK_STACK (app.insp_stack), build_frames_opts (), MODE_INFO[VC_MODE_FRAMES].css);
+    gtk_stack_add_named (GTK_STACK (app.insp_stack), build_images_opts (), MODE_INFO[VC_MODE_IMAGES].css);
+    gtk_widget_set_vexpand (app.insp_stack, TRUE);
 
-    /* finished */
-    GtkWidget *again = label_button ("folder-symbolic", "Choose _Another Folder…",
-                                     G_CALLBACK (on_choose));
-    GtkWidget *show = label_button ("folder-open-symbolic", "_Show in Files",
-                                    G_CALLBACK (on_finished_show));
-    gtk_widget_add_css_class (show, "suggested-action");
-    GtkWidget *finished = hbox (10);
-    gtk_widget_set_halign (finished, GTK_ALIGN_END);
-    gtk_widget_set_valign (finished, GTK_ALIGN_CENTER);
-    gtk_box_append (GTK_BOX (finished), again);
-    gtk_box_append (GTK_BOX (finished), show);
+    app.insp_note = styled_label ("", "note", 0);
+    gtk_label_set_wrap (GTK_LABEL (app.insp_note), TRUE);
+    gtk_label_set_max_width_chars (GTK_LABEL (app.insp_note), 20);
+    gtk_widget_set_margin_top (app.insp_note, 16);
 
-    app.bottom_stack = gtk_stack_new ();
-    gtk_stack_set_hhomogeneous (GTK_STACK (app.bottom_stack), FALSE);
-    gtk_stack_set_vhomogeneous (GTK_STACK (app.bottom_stack), FALSE);
-    gtk_widget_set_hexpand (app.bottom_stack, TRUE);
-    gtk_stack_add_named (GTK_STACK (app.bottom_stack), ready, "ready");
-    gtk_stack_add_named (GTK_STACK (app.bottom_stack), running, "running");
-    gtk_stack_add_named (GTK_STACK (app.bottom_stack), finished, "finished");
+    GtkWidget *box = vbox (0);
+    gtk_widget_set_margin_start (box, 18);
+    gtk_widget_set_margin_end (box, 18);
+    gtk_widget_set_margin_top (box, 18);
+    gtk_widget_set_margin_bottom (box, 18);
+    gtk_box_append (GTK_BOX (box), head);
+    gtk_box_append (GTK_BOX (box), app.insp_stack);
+    gtk_box_append (GTK_BOX (box), app.insp_note);
+    GtkWidget *scroll = gtk_scrolled_window_new ();
+    gtk_scrolled_window_set_policy (GTK_SCROLLED_WINDOW (scroll), GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+    gtk_scrolled_window_set_propagate_natural_height (GTK_SCROLLED_WINDOW (scroll), FALSE);
+    gtk_scrolled_window_set_child (GTK_SCROLLED_WINDOW (scroll), box);
+    gtk_widget_add_css_class (scroll, "inspector");
+    gtk_widget_set_size_request (scroll, 262, -1);
+    return scroll;
+}
 
-    /* batch controls */
-    app.start_btn = icon_button ("media-playback-start-symbolic", "Start", "round",
-                                 G_CALLBACK (on_start_all));
-    gtk_widget_add_css_class (app.start_btn, "big");
-    gtk_widget_add_css_class (app.start_btn, "suggested-action");
-    app.pause_btn = icon_button ("media-playback-pause-symbolic", "Pause", "round",
-                                 G_CALLBACK (on_pause_all));
-    app.stop_btn = icon_button ("media-playback-stop-symbolic", "Stop", "round",
-                                G_CALLBACK (on_stop_all));
-    set_tip (app.stop_btn, "Stop", "Esc",
-             "Stop the batch. The unfinished file is removed; originals stay.");
-    app.controls = hbox (10);
-    gtk_widget_set_valign (app.controls, GTK_ALIGN_CENTER);
-    gtk_box_append (GTK_BOX (app.controls), app.start_btn);
-    gtk_box_append (GTK_BOX (app.controls), app.pause_btn);
-    gtk_box_append (GTK_BOX (app.controls), app.stop_btn);
-
-    app.bottom = hbox (28);
-    gtk_widget_add_css_class (app.bottom, "bottombar");
-    gtk_box_append (GTK_BOX (app.bottom), app.bottom_stack);
-    gtk_box_append (GTK_BOX (app.bottom), app.controls);
-    return app.bottom;
+/* Follows the theme: dark when the colour scheme is dark or the app is asked for a dark theme. */
+static void
+sync_dark (void)
+{
+    GtkInterfaceColorScheme scheme;
+    gboolean prefer;
+    g_object_get (gtk_settings_get_default (), "gtk-interface-color-scheme", &scheme,
+                  "gtk-application-prefer-dark-theme", &prefer, NULL);
+    GtkWidget *w[] = { GTK_WIDGET (app.win), app.close_dialog };
+    for (gsize i = 0; i < G_N_ELEMENTS (w) && w[i] != NULL; i++) {
+        if (scheme == GTK_INTERFACE_COLOR_SCHEME_DARK || prefer)
+            gtk_widget_add_css_class (w[i], "dark");
+        else
+            gtk_widget_remove_css_class (w[i], "dark");
+    }
 }
 
 static void
@@ -3228,62 +4046,78 @@ activate (GtkApplication *gapp, gpointer user_data)
     gtk_style_context_add_provider_for_display (gdk_display_get_default (),
                                                 GTK_STYLE_PROVIDER (css),
                                                 GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
-    app.col_quality = gtk_size_group_new (GTK_SIZE_GROUP_HORIZONTAL);
     app.col_status = gtk_size_group_new (GTK_SIZE_GROUP_HORIZONTAL);
     app.col_actions = gtk_size_group_new (GTK_SIZE_GROUP_HORIZONTAL);
     for (guint i = 0; i < 3; i++)
         app.guide_cols[i] = gtk_size_group_new (GTK_SIZE_GROUP_HORIZONTAL);
 
     app.win = GTK_WINDOW (gtk_application_window_new (gapp));
+    gtk_widget_add_css_class (GTK_WIDGET (app.win), "mt");
     gtk_window_set_title (app.win, "Media Tools");
-    gtk_window_set_default_size (app.win, 1260, 720);
+    gtk_window_set_default_size (app.win, 1100, 780);
     g_signal_connect (app.win, "close-request", G_CALLBACK (on_close), NULL);
+    /* no title bar: the window controls live in the sidebar, the toolbar in the header */
+    GtkWidget *no_titlebar = hbox (0);
+    gtk_widget_set_visible (no_titlebar, FALSE);
+    gtk_window_set_titlebar (app.win, no_titlebar);
 
-    app.title = styled_label ("Media Tools", "heading", 0.5);
-    app.subtitle = styled_label ("No folder selected", "caption", 0.5);
-    gtk_label_set_ellipsize (GTK_LABEL (app.subtitle), PANGO_ELLIPSIZE_START);
-    GtkWidget *title = vbox (0);
-    gtk_widget_set_valign (title, GTK_ALIGN_CENTER);
-    gtk_box_append (GTK_BOX (title), app.title);
-    gtk_box_append (GTK_BOX (title), app.subtitle);
-    GtkWidget *header = gtk_header_bar_new ();
-    gtk_header_bar_set_title_widget (GTK_HEADER_BAR (header), title);
-    app.choose_btn = label_button ("folder-symbolic", "_Choose Folder…", G_CALLBACK (on_choose));
-    gtk_header_bar_pack_end (GTK_HEADER_BAR (header), app.choose_btn);
-    app.files_btn = label_button ("document-open-symbolic", "Choose _Files…",
-                                  G_CALLBACK (on_choose_files));
-    gtk_header_bar_pack_end (GTK_HEADER_BAR (header), app.files_btn);
-    app.mode_dd = gtk_drop_down_new_from_strings (MODE_NAMES);
-    gtk_accessible_update_property (GTK_ACCESSIBLE (app.mode_dd), GTK_ACCESSIBLE_PROPERTY_LABEL,
-                                    "Mode", -1);
-    gtk_widget_set_tooltip_text (app.mode_dd, "What to do: compress videos or images, make web videos, or "
-                                              "extract frames");
-    g_signal_connect (app.mode_dd, "notify::selected", G_CALLBACK (on_mode), NULL);
-    gtk_header_bar_pack_start (GTK_HEADER_BAR (header), app.mode_dd);
-    gtk_window_set_titlebar (app.win, header);
-
+    GtkWidget *header = build_header ();   /* first: the empty page mirrors its buttons */
     app.pages = gtk_stack_new ();
     gtk_widget_set_vexpand (app.pages, TRUE);
     gtk_stack_add_named (GTK_STACK (app.pages), build_empty_page (), "empty");
     gtk_stack_add_named (GTK_STACK (app.pages), build_list_page (), "list");
-    GtkWidget *content_box = vbox (0);
-    app.banner = styled_label ("", "banner", 0);
-    gtk_label_set_wrap (GTK_LABEL (app.banner), TRUE);
-    gtk_widget_set_visible (app.banner, FALSE);
-    gtk_box_append (GTK_BOX (content_box), app.banner);
-    gtk_box_append (GTK_BOX (content_box), app.pages);
-    gtk_box_append (GTK_BOX (content_box), build_bottom_bar ());
-    gtk_window_set_child (app.win, content_box);
+
+    GtkWidget *center = vbox (0);
+    gtk_widget_set_hexpand (center, TRUE);
+    gtk_box_append (GTK_BOX (center), build_banner ());
+    gtk_box_append (GTK_BOX (center), app.pages);
+    gtk_box_append (GTK_BOX (center), build_footer ());
+    GtkWidget *body = hbox (0);
+    gtk_widget_set_vexpand (body, TRUE);
+    gtk_box_append (GTK_BOX (body), center);
+    gtk_box_append (GTK_BOX (body), build_inspector ());
+    GtkWidget *right = vbox (0);
+    gtk_widget_set_hexpand (right, TRUE);
+    gtk_box_append (GTK_BOX (right), header);
+    gtk_box_append (GTK_BOX (right), body);
+
+    GtkWidget *toast_box = hbox (10);
+    gtk_widget_add_css_class (toast_box, "toast");
+    app.toast_label = gtk_label_new ("");
+    gtk_box_append (GTK_BOX (toast_box), gtk_image_new_from_icon_name ("user-trash-symbolic"));
+    gtk_box_append (GTK_BOX (toast_box), app.toast_label);
+    app.toast = gtk_revealer_new ();
+    gtk_revealer_set_transition_type (GTK_REVEALER (app.toast), GTK_REVEALER_TRANSITION_TYPE_SLIDE_UP);
+    gtk_revealer_set_child (GTK_REVEALER (app.toast), toast_box);
+    gtk_widget_set_halign (app.toast, GTK_ALIGN_CENTER);
+    gtk_widget_set_valign (app.toast, GTK_ALIGN_END);
+    gtk_widget_set_margin_bottom (app.toast, 58);
+    gtk_widget_set_can_target (app.toast, FALSE);
+    GtkWidget *center_overlay = gtk_overlay_new ();   /* the toast floats over the list, as in the design */
+    gtk_overlay_set_child (GTK_OVERLAY (center_overlay), right);
+    gtk_overlay_add_overlay (GTK_OVERLAY (center_overlay), app.toast);
+
+    GtkWidget *root = hbox (0);
+    gtk_box_append (GTK_BOX (root), build_sidebar ());
+    gtk_box_append (GTK_BOX (root), center_overlay);
+    gtk_window_set_child (app.win, root);
 
     GtkDropTarget *drop = gtk_drop_target_new (G_TYPE_FILE, GDK_ACTION_COPY);
     g_signal_connect (drop, "drop", G_CALLBACK (on_drop), NULL);
-    gtk_widget_add_controller (content_box, GTK_EVENT_CONTROLLER (drop));
+    gtk_widget_add_controller (root, GTK_EVENT_CONTROLLER (drop));
 
     GtkEventController *keys = gtk_shortcut_controller_new ();
     add_shortcut (keys, "space", on_space);
     add_shortcut (keys, "Escape", on_escape);
     gtk_widget_add_controller (GTK_WIDGET (app.win), keys);
 
+    sync_dark ();
+    g_signal_connect_swapped (gtk_settings_get_default (), "notify::gtk-interface-color-scheme",
+                              G_CALLBACK (sync_dark), NULL);
+    g_signal_connect_swapped (gtk_settings_get_default (), "notify::gtk-application-prefer-dark-theme",
+                              G_CALLBACK (sync_dark), NULL);
+    apply_mode_ui ();
+    update_header ();
     update_speed_guide ();
     update_controls ();
     gtk_window_present (app.win);

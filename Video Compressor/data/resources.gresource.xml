@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- GtkApplication adds <resource base path>/icons to the icon theme, so these load by name. -->
+<gresources>
+  <gresource prefix="/io/github/dasantha/VideoCompressor/icons/scalable/actions">
+    <file alias="mt-globe-symbolic.svg">icons/scalable/actions/mt-globe-symbolic.svg</file>
+    <file alias="mt-bolt-symbolic.svg">icons/scalable/actions/mt-bolt-symbolic.svg</file>
+    <file alias="mt-external-symbolic.svg">icons/scalable/actions/mt-external-symbolic.svg</file>
+    <file alias="mt-sliders-symbolic.svg">icons/scalable/actions/mt-sliders-symbolic.svg</file>
+    <file alias="mt-wrench-symbolic.svg">icons/scalable/actions/mt-wrench-symbolic.svg</file>
+  </gresource>
+</gresources>

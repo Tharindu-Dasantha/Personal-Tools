@@ -19,6 +19,7 @@ and [tasks/todo.md](tasks/todo.md). Checkboxes in `todo.md` are ticked only for 
 | 7. App shell | T16–T18 | **Done, verified on Xvfb with ASan (2026-11-10)**: `modes.c`, multi-step runner, Choose Files, title `Media Tools`. Committed `7541405`. Checkpoint 7 still open (see below) |
 | 8. Web video | T19, T20 | **Done, verified on Xvfb with ASan (2026-11-10)**: `web_video.c`, Mode dropdown, per-mode options, split tool check, banner. Committed `7de014b`. Checkpoint 8 needs the user (web-video 5, 6, review) |
 | 9. Video → frames | T21, T22 | **Done, verified on Xvfb with ASan (2026-11-10)**: `frames.c`, frames options bar, directory parts in the runner. Committed `d785d0a`. Checkpoint 9 needs the review |
+| 11. v3 UI (Figma "v3 – Media Tools") | – | **Built 2026-11-11, verified on Xvfb with ASan**: mode sidebar (accent per mode, lock while busy, missing-tool dot, Tools card), header toolbar (Choose Files/Folder, Start/Pause/Stop, Show in Files when finished), per-mode inspector, footer status, two-line row results, Twin chip, banner with copyable fix, custom close dialog, dark mode. Engine untouched. Not committed yet |
 | 10. Compress images | T23–T27 | **T23–T26 done, verified on Xvfb with ASan (2026-11-10)**: `images.c`, image fixtures, Compress images mode, trash for images. **Not committed yet.** T27 (calibration against TinyJPG/TinyPNG) needs the user's photos and eyes |
 
 Everything up to `caed08a` is pushed to `origin/main`.
@@ -111,10 +112,16 @@ cmake -S "Video Compressor" -B "Video Compressor/build/san" -DCMAKE_BUILD_TYPE=D
     (even when paused), so there is only ever one ffmpeg.
     Actions are `act_start/pause/stop(Item *one, gboolean sel)`: one row, the checked rows (`sel`), or all, filtered by
     `can_start/pause/stop/trash()`. DONE with `out == NULL` means already efficient: finished, never re-encoded.
-  - **UI (v2 design, 2026-11-08):** `render_row(it)` draws a row purely from its state (+ `note`/`tip`/`extra`); call it after any
-    state change (`set_status()` does). `update_controls()` picks the page (empty/list), the bottom bar (ready/running/finished),
-    the selection bar and the summary. `update_progress()` drives the running bar and ETA. Styling is the `CSS[]` string,
-    using GTK Default theme colours so dark mode works. `in_batch` marks what the running bar and summary count.
+  - **UI (v3 design, 2026-11-11):** sidebar (`build_sidebar`, modes in `MODE_INFO`) | header (`build_header`) over
+    content (`build_banner`, empty/list pages, `build_footer`) | inspector (`build_inspector`, one stack page per mode).
+    `render_row(it)` draws a row purely from its state (+ `note`/`tip`/`extra`/`res[]`); call it after any state change
+    (`set_status()` does). Its status column has two lines (`set_line`). `update_controls()` picks the page, the header
+    buttons, sidebar locks/dots/counts, the banner, the footer, the selection bar and the summary; `update_progress()`
+    drives the footer while busy. Styling is the `CSS[]` string: colours are CSS variables on `window.mt`, the mode's
+    class (`web`, `frames`, `images`) sets `--accent`, and dark comes from `prefers-color-scheme` or the `.dark` class
+    (`sync_dark`, for themes made dark via prefer-dark-theme). Icons Adwaita lacks (globe, bolt, wrench, …) are SVGs in
+    `data/icons`, compiled into a GResource; GtkApplication finds them by name. `in_batch` marks what the footer and
+    summary count.
   - Encoding: `encode_next()` → `vc_mode_steps()` → `start_job()` → `spawn_step()` per step. Each step waits for three
     events (stdout EOF, stderr EOF, process exit), counted in `app.pending`; `step_ended()` then starts the next step or
     calls `finish_job()`, which moves outputs into place and runs every step's part through `vc_remove_part()`.
