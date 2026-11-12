@@ -68,7 +68,7 @@ typedef struct {
     GtkWidget *start_btn, *pause_btn, *stop_btn, *show_btn, *tool_sep;
     GtkWidget *speed_btns[8], *guide_rows, *subs, *trash, *gpu;   /* speed_btns[0] (GPU) is the gpu switch */
     GtkWidget *fps30, *max_size, *empty_icon, *hero, *empty_sub;
-    GtkWidget *mode_list, *mode_row[4], *mode_count[4], *mode_lock[4], *mode_dot[4], *tool_state[4];
+    GtkWidget *mode_list, *mode_row[4], *mode_count[4], *mode_lock[4], *mode_dot[4];
     GtkWidget *banner, *banner_title, *banner_sub, *banner_code, *size_head;
     GtkWidget *insp_icon, *insp_title, *insp_sub, *insp_note, *insp_stack;
     GtkWidget *web_width, *no_audio, *frames_opts, *fps_btns[8], *frames_start, *frames_end;
@@ -105,6 +105,7 @@ typedef struct {
     guint sample_timer, samples_taken, sample_fails;
     int sample_side, sample_fps;   /* the settings samples_taken counts for */
     double sample_secs;
+    guint appearance;    /* 0 follows the system, 1 light, 2 dark; kept in settings.ini */
     gboolean closing;    /* window destroyed: late async callbacks must not touch widgets */
     gboolean was_busy;   /* a batch was running at the last update_controls */
     guint inhibit;       /* suspend inhibitor held while a batch runs, or 0 */
@@ -169,7 +170,7 @@ current_preset (void)
 static const struct {
     const char *name, *sub, *icon, *css, *empty, *note;
 } MODE_INFO[] = {
-    { "Compress video", "H.265, same quality", "camera-video-symbolic", "compress",
+    { "Compress video", "H.265, same quality", "mt-video-symbolic", "compress",
       "Every video is compressed to H.265, keeping its quality and resolution. Pick a mode on the left "
       "to make web videos, extract frames, or compress images instead.",
       "Saves to <tt>compressed/</tt> next to each video. Originals are never changed." },
@@ -1051,14 +1052,6 @@ fix_command (const char *missing)
 }
 
 static void
-set_ready (GtkWidget *label, gboolean ok)
-{
-    gtk_label_set_text (GTK_LABEL (label), !app.tools_ok ? "Checking…" : ok ? "Ready" : "Missing");
-    const char *cls[] = { "tool-state", !app.tools_ok ? NULL : ok ? "ok" : "missing", NULL };
-    gtk_widget_set_css_classes (label, cls);
-}
-
-static void
 update_controls (void)
 {
     if (app.closing)
@@ -1131,11 +1124,6 @@ update_controls (void)
         g_autofree char *count = g_strdup_printf ("%u", n);
         gtk_label_set_text (GTK_LABEL (app.mode_count[m]), count);
     }
-    set_ready (app.tool_state[0], app.tools_ok);
-    set_ready (app.tool_state[1], (app.have & (VC_HAVE_X265 | VC_HAVE_X264 | VC_HAVE_ZSCALE))
-                                  == (VC_HAVE_X265 | VC_HAVE_X264 | VC_HAVE_ZSCALE));
-    set_ready (app.tool_state[2], app.have & VC_HAVE_MAGICK);
-    set_ready (app.tool_state[3], app.have & VC_HAVE_PNGQUANT);
 
     /* Shown once the tool check is done; this mode can't start without the tool. */
     const char *missing = app.tools_ok ? vc_mode_missing_tool (app.mode, app.have) : NULL;
@@ -3134,8 +3122,7 @@ static const char CSS[] =
     "  --red: #d70015; --red-bg: #ffe9eb; --teal: #0f7f91; --teal-bg: #e3f6f9;"
     "  color: var(--text); background: var(--bg); font-size: 13px; font-family: Inter, sans-serif; }"
     "tooltip { font-family: Inter, sans-serif; }"
-    "@media (prefers-color-scheme: dark) { window.mt, window.close-dialog {" DARK_VARS "} }"
-    /* a dark theme chosen the older way (prefer-dark-theme) doesn't set the media query: sync_dark */
+    /* sync_dark sets .dark from the system scheme or the sidebar's Appearance choice */
     "window.mt.dark, window.close-dialog.dark {" DARK_VARS "}"
     "list.rows, list.modes { color: var(--text); }"
     /* as specific as window.mt, and later, so the mode wins */
@@ -3165,14 +3152,20 @@ static const char CSS[] =
 
     /* sidebar */
     ".sidebar { background: var(--side); border-right: 1px solid var(--line); }"
-    ".sidebar windowcontrols { margin: 14px 0 0 16px; }"
-    ".sidebar windowcontrols button { min-width: 12px; min-height: 12px; padding: 0; margin: 0 8px 0 0;"
-    "  border-radius: 999px; border: none; box-shadow: none; background: #ff5f57; }"
-    ".sidebar windowcontrols button.minimize { background: #febc2e; }"
-    ".sidebar windowcontrols button.maximize { background: #28c840; }"
-    ".sidebar windowcontrols button image { background: none; box-shadow: none; padding: 0; min-width: 0;"
-    "  min-height: 0; -gtk-icon-size: 8px; color: rgba(0,0,0,0.55); opacity: 0; }"
+    /* 16px dots, 9px apart; the theme's border-spacing would widen the gaps */
+    ".sidebar windowcontrols { margin: 12px 0 0 12px; border-spacing: 0; }"
+    ".sidebar windowcontrols button { min-width: 16px; min-height: 16px; padding: 0; margin: 0 9px 0 0;"
+    "  border-radius: 999px; border: none; background: #ff5f57; color: #4d0000;"
+    "  box-shadow: inset 0 0 0 1px rgba(0,0,0,0.14); transition: background 120ms; }"
+    ".sidebar windowcontrols button.minimize { background: #febc2e; color: #995700; }"
+    ".sidebar windowcontrols button.maximize { background: #28c840; color: #006500; }"
+    ".sidebar windowcontrols button:active { filter: brightness(0.85); }"
+    ".sidebar windowcontrols button image { background: none; box-shadow: none; padding: 0; margin: 0;"
+    "  min-width: 0; min-height: 0; -gtk-icon-size: 11px; color: inherit; opacity: 0;"
+    "  transition: opacity 100ms; }"
     ".sidebar windowcontrols:hover button image { opacity: 1; }"
+    /* unfocused window: dots go neutral grey, like macOS */
+    "window:backdrop .sidebar windowcontrols:not(:hover) button { background: color-mix(in srgb, var(--text) 18%, transparent); }"
     ".brand-icon { background: linear-gradient(135deg, #3b82f6, #8b5cf6 55%, #f59e0b); color: white;"
     "  border-radius: 8px; min-width: 30px; min-height: 30px; -gtk-icon-size: 16px; }"
     ".brand-icon.big { min-width: 54px; min-height: 54px; border-radius: 14px; -gtk-icon-size: 26px; }"
@@ -3192,12 +3185,6 @@ static const char CSS[] =
     ".mode-count { font-size: 12px; font-weight: 600; color: var(--text2); }"
     ".mode-lock { color: var(--text3); -gtk-icon-size: 11px; }"
     ".mode-dot { background: #ff9f0a; border-radius: 999px; min-width: 8px; min-height: 8px; }"
-    ".tools { background: var(--card); border-radius: 10px; padding: 10px 12px;"
-    "  box-shadow: 0 1px 2px var(--shadow); }"
-    ".tools-title { font-weight: 600; font-size: 12px; }"
-    ".tool-name { font-size: 11.5px; color: var(--text2); }"
-    ".tool-state { font-size: 11.5px; font-weight: 500; color: var(--text3); }"
-    ".tool-state.ok { color: var(--green); } .tool-state.missing { color: var(--amber); font-weight: 600; }"
 
     /* header and footer */
     "headerbar.top { background: var(--bg); border-bottom: 1px solid var(--line); box-shadow: none;"
@@ -3211,15 +3198,12 @@ static const char CSS[] =
     ".foot-right { color: var(--text2); }"
 
     /* empty page */
-    ".dropzone { border: 1px dashed color-mix(in srgb, var(--text) 25%, transparent); border-radius: 14px; }"
+    ".dropzone { border: 1px dashed color-mix(in srgb, var(--text) 25%, transparent); border-radius: 8px; padding: 32px 48px; }"
     ".drop-icon { background: linear-gradient(160deg, color-mix(in srgb, var(--accent) 75%, white), var(--accent));"
     "  color: white; border-radius: 18px; min-width: 76px; min-height: 76px; -gtk-icon-size: 34px;"
     "  box-shadow: 0 6px 18px color-mix(in srgb, var(--accent) 35%, transparent); }"
     ".hero { font-size: 22px; font-weight: 700; }"
     ".empty-sub { color: var(--text2); font-size: 14px; }"
-    ".feature { background: var(--fill); border-radius: 999px; padding: 4px 10px; font-size: 12px;"
-    "  color: var(--text2); }"
-    ".feature image { -gtk-icon-size: 11px; }"
 
     /* list */
     ".colhead-row { padding: 9px 16px; border-bottom: 1px solid var(--line); }"
@@ -3399,6 +3383,10 @@ styled_label (const char *text, const char *style, float xalign)
     return l;
 }
 
+static GtkWidget *segmented (const char *const *labels, guint n, guint active, GtkWidget **out,
+                             GCallback toggled);
+static void on_appearance (GtkToggleButton *b, gpointer user_data);
+
 static GtkWidget *
 build_sidebar (void)
 {
@@ -3463,23 +3451,6 @@ build_sidebar (void)
     app.syncing = FALSE;
     g_signal_connect (app.mode_list, "row-selected", G_CALLBACK (on_mode), NULL);
 
-    GtkWidget *tools = gtk_grid_new ();
-    gtk_widget_add_css_class (tools, "tools");
-    gtk_grid_set_row_spacing (GTK_GRID (tools), 3);
-    gtk_widget_set_margin_start (tools, 10);
-    gtk_widget_set_margin_end (tools, 10);
-    gtk_widget_set_margin_bottom (tools, 12);
-    GtkWidget *tools_title = styled_label ("Tools", "tools-title", 0);
-    gtk_widget_set_margin_bottom (tools_title, 4);
-    gtk_grid_attach (GTK_GRID (tools), tools_title, 0, 0, 2, 1);
-    const char *names[] = { "ffmpeg", "x265 · x264 · zscale", "ImageMagick", "pngquant" };
-    for (guint i = 0; i < G_N_ELEMENTS (names); i++) {
-        GtkWidget *n = styled_label (names[i], "tool-name", 0);
-        gtk_widget_set_hexpand (n, TRUE);
-        app.tool_state[i] = styled_label ("", "tool-state", 1);
-        gtk_grid_attach (GTK_GRID (tools), n, 0, i + 1, 1, 1);
-        gtk_grid_attach (GTK_GRID (tools), app.tool_state[i], 1, i + 1, 1, 1);
-    }
 
     GtkWidget *side = vbox (0);
     gtk_widget_add_css_class (side, "sidebar");
@@ -3490,7 +3461,22 @@ build_sidebar (void)
     GtkWidget *space = vbox (0);
     gtk_widget_set_vexpand (space, TRUE);
     gtk_box_append (GTK_BOX (side), space);
-    gtk_box_append (GTK_BOX (side), tools);
+
+    const char *looks[] = { "Auto", "Light", "Dark" };
+    GtkWidget *look_btns[3];
+    GtkWidget *look = segmented (looks, 3, app.appearance, look_btns, G_CALLBACK (on_appearance));
+    gtk_accessible_update_property (GTK_ACCESSIBLE (look), GTK_ACCESSIBLE_PROPERTY_LABEL, "Appearance", -1);
+    gtk_widget_set_tooltip_text (look_btns[0], "Follow the system appearance");
+    GtkWidget *look_head = styled_label ("APPEARANCE", "side-head", 0);
+    gtk_widget_set_margin_start (look_head, 10);
+    gtk_widget_set_margin_bottom (look_head, 6);
+    GtkWidget *look_box = vbox (0);
+    gtk_widget_set_margin_start (look_box, 10);
+    gtk_widget_set_margin_end (look_box, 10);
+    gtk_widget_set_margin_bottom (look_box, 16);
+    gtk_box_append (GTK_BOX (look_box), look_head);
+    gtk_box_append (GTK_BOX (look_box), look);
+    gtk_box_append (GTK_BOX (side), look_box);
     return side;
 }
 
@@ -3558,18 +3544,6 @@ build_empty_page (void)
     gtk_widget_set_halign (buttons, GTK_ALIGN_CENTER);
     gtk_box_append (GTK_BOX (buttons), choose);
     gtk_box_append (GTK_BOX (buttons), files);
-    GtkWidget *features = hbox (8);
-    gtk_widget_set_halign (features, GTK_ALIGN_CENTER);
-    const char *f[][2] = { { "mt-sliders-symbolic", "Quality set automatically" },
-                           { "changes-prevent-symbolic", "Originals never changed" },
-                           { "media-playback-stop-symbolic", "Cancel any time" } };
-    for (gsize i = 0; i < G_N_ELEMENTS (f); i++) {
-        GtkWidget *c = hbox (6);
-        gtk_widget_add_css_class (c, "feature");
-        gtk_box_append (GTK_BOX (c), gtk_image_new_from_icon_name (f[i][0]));
-        gtk_box_append (GTK_BOX (c), gtk_label_new (f[i][1]));
-        gtk_box_append (GTK_BOX (features), c);
-    }
     GtkWidget *inner = vbox (10);
     gtk_widget_set_valign (inner, GTK_ALIGN_CENTER);
     gtk_widget_set_vexpand (inner, TRUE);
@@ -3583,14 +3557,12 @@ build_empty_page (void)
     gtk_widget_set_margin_bottom (app.empty_sub, 8);
     gtk_box_append (GTK_BOX (inner), app.empty_sub);
     gtk_box_append (GTK_BOX (inner), buttons);
-    gtk_widget_set_margin_top (features, 18);
-    gtk_box_append (GTK_BOX (inner), features);
     GtkWidget *zone = vbox (0);
     gtk_widget_add_css_class (zone, "dropzone");
-    gtk_widget_set_margin_start (zone, 22);
-    gtk_widget_set_margin_end (zone, 22);
-    gtk_widget_set_margin_top (zone, 22);
-    gtk_widget_set_margin_bottom (zone, 22);
+    gtk_widget_set_margin_start (zone, 6);
+    gtk_widget_set_margin_end (zone, 6);
+    gtk_widget_set_margin_top (zone, 6);
+    gtk_widget_set_margin_bottom (zone, 6);
     gtk_box_append (GTK_BOX (zone), inner);
     return zone;
 }
@@ -4203,7 +4175,23 @@ learn_speed (Item *it)
         g_key_file_save_to_file (k, f, NULL);   /* best effort: only estimates depend on it */
 }
 
-/* Follows the theme: dark when the colour scheme is dark or the app is asked for a dark theme. */
+static char *
+settings_file (void)
+{
+    return g_build_filename (g_get_user_config_dir (), "media-tools", "settings.ini", NULL);
+}
+
+static void
+load_appearance (void)
+{
+    g_autoptr (GKeyFile) k = g_key_file_new ();
+    g_autofree char *f = settings_file ();
+    if (g_key_file_load_from_file (k, f, G_KEY_FILE_NONE, NULL))
+        app.appearance = MIN ((guint) g_key_file_get_integer (k, "ui", "appearance", NULL), 2);
+}
+
+/* Dark when Appearance says so, or on Auto when the colour scheme is dark or the app is asked for
+ * a dark theme. */
 static void
 sync_dark (void)
 {
@@ -4213,11 +4201,28 @@ sync_dark (void)
                   "gtk-application-prefer-dark-theme", &prefer, NULL);
     GtkWidget *w[] = { GTK_WIDGET (app.win), app.close_dialog };
     for (gsize i = 0; i < G_N_ELEMENTS (w) && w[i] != NULL; i++) {
-        if (scheme == GTK_INTERFACE_COLOR_SCHEME_DARK || prefer)
+        if (app.appearance == 2
+            || (app.appearance == 0 && (scheme == GTK_INTERFACE_COLOR_SCHEME_DARK || prefer)))
             gtk_widget_add_css_class (w[i], "dark");
         else
             gtk_widget_remove_css_class (w[i], "dark");
     }
+}
+
+static void
+on_appearance (GtkToggleButton *b, gpointer user_data)
+{
+    if (!gtk_toggle_button_get_active (b))
+        return;
+    app.appearance = GPOINTER_TO_UINT (user_data);
+    sync_dark ();
+    g_autoptr (GKeyFile) k = g_key_file_new ();
+    g_autofree char *f = settings_file ();
+    g_key_file_load_from_file (k, f, G_KEY_FILE_KEEP_COMMENTS, NULL);
+    g_key_file_set_integer (k, "ui", "appearance", (gint) app.appearance);
+    g_autofree char *dir = g_path_get_dirname (f);
+    if (g_mkdir_with_parents (dir, 0755) == 0)
+        g_key_file_save_to_file (k, f, NULL);   /* best effort: only the next launch's look depends on it */
 }
 
 static void
@@ -4296,6 +4301,7 @@ activate (GtkApplication *gapp, gpointer user_data)
     gtk_overlay_add_overlay (GTK_OVERLAY (center_overlay), app.toast);
 
     GtkWidget *root = hbox (0);
+    load_appearance ();   /* before build_sidebar: it sets the Appearance control */
     gtk_box_append (GTK_BOX (root), build_sidebar ());
     gtk_box_append (GTK_BOX (root), center_overlay);
     gtk_window_set_child (app.win, root);

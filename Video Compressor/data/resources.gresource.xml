@@ -5,8 +5,8 @@
     <file alias="mt-globe-symbolic.svg">icons/scalable/actions/mt-globe-symbolic.svg</file>
     <file alias="mt-bolt-symbolic.svg">icons/scalable/actions/mt-bolt-symbolic.svg</file>
     <file alias="mt-external-symbolic.svg">icons/scalable/actions/mt-external-symbolic.svg</file>
-    <file alias="mt-sliders-symbolic.svg">icons/scalable/actions/mt-sliders-symbolic.svg</file>
     <file alias="mt-wrench-symbolic.svg">icons/scalable/actions/mt-wrench-symbolic.svg</file>
+    <file alias="mt-video-symbolic.svg">icons/scalable/actions/mt-video-symbolic.svg</file>
   </gresource>
   <!-- Inter 4.1 (SIL OFL 1.1, fonts/Inter-LICENSE.txt), so the design's font works offline everywhere: load_fonts().
        Subset to Latin plus the UI's symbols (PERFORMANCE.md item 6); to add a glyph, subset the originals again:
