@@ -8,14 +8,19 @@ A `Video → frames` mode, like ezgif's video-to-jpg, that turns a video (or a p
 developers use these sequences for scroll-driven canvas animations (the "Apple product page" effect) and similar work.
 
 **User stories**
-- I pick `Video → frames`, choose a video, set the options and press Start. I get `frames/<name>/frame_0001.webp`,
+- I pick `Video → frames`, choose **one** video (Choose Files picks one; a dropped video file works; there is no Choose
+  Folder in this mode, and switching here with a folder or several files loaded empties the list), set the options and
+  press Start. I get `frames/<name>/frame_0001.webp`,
   `frame_0002.webp`, …
-- **FPS:** `5`, `10`, `12`, `15` (**default**), `24`, `30`, `Every frame` (source rate).
-- **Start / End:** two text fields. Empty means the whole video. They accept `12`, `12.5`, `1:05`, `1:05.25` and `0:01:05`. An
-  invalid value turns the field red and greys Start.
+- **FPS:** `5`, `10`, `12`, `15` (**default**), `24`, `30`.
+- **Range:** a two-handle slider from 0 to the video's length (greyed until the video is probed) above two text fields,
+  Start and End. Dragging a handle writes its field (0.1 s steps; a handle at either end empties its field); typing in a
+  field moves its handle. Empty means the whole video, and End's placeholder shows the length. The fields accept `12`,
+  `12.5`, `1:05`, `1:05.25` and `0:01:05`. An invalid value, End not after Start, or a time past the video's length turns
+  the field red and greys Start.
 - **Max width:** the same dropdown as web video, default `1920`, downscale only.
 - **Format:** `WebP` (**default**, smaller, works in every current browser including Safari 14+) or `JPG`.
-- **Quality:** 1–100, default `80`.
+- **Quality:** 1–100 %, default `80`, shown as `80%`.
 - Before I start, each row shows the frame count I'll get, e.g. `≈ 150 frames`, and it updates when I change FPS or the range.
   When a row finishes it shows `150 frames · 9.8 MB`.
 
@@ -24,7 +29,7 @@ developers use these sequences for scroll-driven canvas animations (the "Apple p
    when ffmpeg exits 0. If `frames/<name>/` exists, the row says `Skipped – frames/<name>/ exists`. Two inputs with the same
    stem (`clip.mp4`, `clip.mov`): the second one is skipped by that rule.
 2. **Numbering starts at `frame_0001`** with 4 digits. ffmpeg keeps counting past 9999 with more digits.
-3. **The same range applies to every video in the batch.** A video shorter than Start is skipped
+3. **One video at a time** (2026-11-12). `vc_frames_*` still take any video, so the rule below stays for safety: a video shorter than Start is skipped
    (`Skipped – starts after the end`). An End past a video's length just runs to that video's end.
 4. **Trim seeks before the input** (`-ss S -to E -i IN`, which is fast and frame-accurate on re-encode). Progress is measured
    against the range length.

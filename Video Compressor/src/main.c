@@ -72,6 +72,9 @@ typedef struct {
     GtkWidget *banner, *banner_title, *banner_sub, *banner_code, *size_head;
     GtkWidget *insp_icon, *insp_title, *insp_sub, *insp_note, *insp_stack;
     GtkWidget *web_width, *no_audio, *frames_opts, *fps_btns[8], *frames_start, *frames_end;
+    GtkWidget *range, *range_fill, *range_knob[2];   /* frames range slider, mirrors Start/End */
+    double range_dur, range_s, range_e;               /* seconds; dur 0 = no video yet */
+    guint range_drag;                                 /* 0 Start, 1 End: the knob being dragged */
     GtkWidget *range_err, *frames_width, *fmt_btns[2], *fmt_caption, *frames_quality, *quality_val;
     GtkWidget *images_opts, *images_width, *img_trash, *sel_clear, *sum_pct_cap;
     GtkWidget *footer, *foot_left, *foot_bar, *foot_right;
@@ -180,7 +183,7 @@ static const struct {
       "Saves to <tt>web/</tt> next to each video. Trash isn't offered: web copies are derivatives, "
       "not replacements." },
     { "Video → frames", "JPG / WebP sequence", "view-grid-symbolic", "frames",
-      "Every video becomes a folder of numbered WebP or JPG frames, for scroll animations. Pick a "
+      "One video becomes a folder of numbered WebP or JPG frames, for scroll animations. Pick a "
       "mode on the left to compress or convert videos, or compress images instead.",
       NULL /* set by the format: update_frames_note */ },
     { "Compress images", "Same type + WebP", "image-x-generic-symbolic", "images",
@@ -188,8 +191,8 @@ static const struct {
       "the left to work with videos instead.",
       "Copies under 5% smaller are dropped. Saves to <tt>compressed/</tt>." },
 };
-/* The frames FPS buttons, in order; 0 is All (every frame) */
-static const int FRAME_RATES[] = { 5, 10, 12, 15, 24, 30, 0 };
+/* The frames FPS buttons, in order */
+static const int FRAME_RATES[] = { 5, 10, 12, 15, 24, 30 };
 #define FRAMES_DEFAULT_RATE 3   /* 15 */
 /* The Max width dropdowns, in order; 0 is Original */
 static const int WEB_WIDTHS[] = { 0, 3840, 2560, 1920, 1280, 960, 640 };
@@ -270,29 +273,6 @@ current_options (void)
     };
 }
 
-/* Frames: NULL when Start and End parse and End (when set) is after Start, else the field to fix
- * ("Start" or "End"). Turns a bad field red and shows the hint under the range. */
-static const char *
-check_range (void)
-{
-    double start, end;
-    gboolean s_ok = vc_parse_time (gtk_editable_get_text (GTK_EDITABLE (app.frames_start)), &start);
-    gboolean e_parsed = vc_parse_time (gtk_editable_get_text (GTK_EDITABLE (app.frames_end)), &end);
-    gboolean e_ok = e_parsed && (end == 0 || !s_ok || end > start);
-    GtkWidget *w[] = { app.frames_start, app.frames_end };
-    gboolean ok[] = { s_ok, e_ok };
-    for (guint i = 0; i < 2; i++) {
-        if (ok[i])
-            gtk_widget_remove_css_class (w[i], "error");
-        else
-            gtk_widget_add_css_class (w[i], "error");
-    }
-    gtk_label_set_text (GTK_LABEL (app.range_err), !s_ok || !e_parsed ? "Use 12, 12.5, 1:05 or 0:01:05"
-                                                   : "End must be after Start");
-    gtk_widget_set_visible (gtk_widget_get_parent (app.range_err), !s_ok || !e_ok);
-    return !s_ok ? "Start" : !e_ok ? "End" : NULL;
-}
-
 /* "0:01.5", "1:05", "1:02:03": a frames range end for the row's second line */
 static char *
 format_clock (double t)
@@ -301,6 +281,42 @@ format_clock (double t)
     g_autofree char *hm = s >= 3600 ? g_strdup_printf ("%u:%02u:%02u", s / 3600, s / 60 % 60, s % 60)
                                     : g_strdup_printf ("%u:%02u", s / 60, s % 60);
     return frac != 0 ? g_strdup_printf ("%s.%u", hm, frac) : g_steal_pointer (&hm);
+}
+
+/* Frames: NULL when Start and End parse and End (when set) is after Start, else the field to fix
+ * ("Start" or "End"). Turns a bad field red and shows the hint under the range. */
+static const char *
+check_range (void)
+{
+    double start, end;
+    double dur = app.mode == VC_MODE_FRAMES && app.items != NULL && app.items->len > 0
+                 && ((Item *) app.items->pdata[0])->probe != NULL
+                 ? ((Item *) app.items->pdata[0])->probe->duration : 0;   /* frames mode holds one video */
+    gboolean s_parsed = vc_parse_time (gtk_editable_get_text (GTK_EDITABLE (app.frames_start)), &start);
+    gboolean e_parsed = vc_parse_time (gtk_editable_get_text (GTK_EDITABLE (app.frames_end)), &end);
+    gboolean s_in = dur <= 0 || start < dur, e_in = dur <= 0 || end <= dur + 0.05;
+    gboolean s_ok = s_parsed && s_in;
+    gboolean e_ok = e_parsed && e_in && (end == 0 || !s_ok || end > start);
+    GtkWidget *w[] = { app.frames_start, app.frames_end };
+    gboolean ok[] = { s_ok, e_ok };
+    for (guint i = 0; i < 2; i++) {
+        if (ok[i])
+            gtk_widget_remove_css_class (w[i], "error");
+        else
+            gtk_widget_add_css_class (w[i], "error");
+    }
+    g_autofree char *len = format_clock (dur);
+    g_autofree char *past = g_strdup_printf ("The video is %s long", len);
+    gtk_label_set_text (GTK_LABEL (app.range_err), !s_parsed || !e_parsed ? "Use 12, 12.5, 1:05 or 0:01:05"
+                                                   : !s_in || !e_in ? past : "End must be after Start");
+    gtk_widget_set_visible (gtk_widget_get_parent (app.range_err), !s_ok || !e_ok);
+    gtk_entry_set_placeholder_text (GTK_ENTRY (app.frames_end), dur > 0 ? len : "end");
+    app.range_dur = dur;
+    app.range_s = s_ok ? start : 0;
+    app.range_e = e_ok && end > 0 ? end : dur;
+    gtk_widget_set_sensitive (app.range, dur > 0);
+    gtk_widget_queue_allocate (app.range);
+    return !s_ok ? "Start" : !e_ok ? "End" : NULL;
 }
 
 /* A path for display, with the home folder as ~: "~/Videos/Phone 2026" */
@@ -836,7 +852,7 @@ update_speed_guide (void)
         g_autofree char *delta = d == 0 ? g_strdup ("baseline")
                                  : g_strdup_printf ("%s%d%%", d > 0 ? "+" : "−", abs (d));
 
-        GtkWidget *row = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 16);
+        GtkWidget *row = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 14);
         gtk_widget_add_css_class (row, "guide-row");
         if (p == app.preset)
             gtk_widget_add_css_class (row, "current");
@@ -847,13 +863,13 @@ update_speed_guide (void)
         GtkWidget *tl = gtk_label_new (ft), *dl = gtk_label_new (delta);
         gtk_widget_add_css_class (tl, "heading");
         gtk_widget_add_css_class (dl, "caption");
-        GtkWidget *th = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 6);
+        GtkWidget *th = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 4);
         gtk_box_append (GTK_BOX (th), tl);
         gtk_box_append (GTK_BOX (th), dl);
         GtkWidget *tb = gtk_progress_bar_new ();
         gtk_progress_bar_set_fraction (GTK_PROGRESS_BAR (tb), t / tmax);
         gtk_widget_add_css_class (tb, "time");
-        GtkWidget *tv = gtk_box_new (GTK_ORIENTATION_VERTICAL, 4);
+        GtkWidget *tv = gtk_box_new (GTK_ORIENTATION_VERTICAL, 2);
         gtk_box_append (GTK_BOX (tv), th);
         gtk_box_append (GTK_BOX (tv), tb);
         gtk_size_group_add_widget (app.guide_cols[1], tv);
@@ -864,7 +880,7 @@ update_speed_guide (void)
         GtkWidget *sb = gtk_progress_bar_new ();
         gtk_progress_bar_set_fraction (GTK_PROGRESS_BAR (sb), MAX (smaller, 0) / 100.0);
         gtk_widget_add_css_class (sb, "size");
-        GtkWidget *sv = gtk_box_new (GTK_ORIENTATION_VERTICAL, 4);
+        GtkWidget *sv = gtk_box_new (GTK_ORIENTATION_VERTICAL, 2);
         gtk_box_append (GTK_BOX (sv), sl);
         gtk_box_append (GTK_BOX (sv), sb);
         gtk_size_group_add_widget (app.guide_cols[2], sv);
@@ -2693,6 +2709,17 @@ files_chosen (GObject *source, GAsyncResult *res, gpointer user_data)
 }
 
 static void
+file_chosen (GObject *source, GAsyncResult *res, gpointer user_data)
+{
+    (void) user_data;
+    g_autoptr (GFile) f = gtk_file_dialog_open_finish (GTK_FILE_DIALOG (source), res, NULL);
+    g_autofree char *path = f != NULL ? g_file_get_path (f) : NULL;
+    char *files[] = { path, NULL };
+    if (path != NULL)
+        load_source (NULL, files);
+}
+
+static void
 on_choose_files (void)
 {
     g_autoptr (GtkFileDialog) d = gtk_file_dialog_new ();
@@ -2704,13 +2731,16 @@ on_choose_files (void)
         for (gsize i = 0; i < G_N_ELEMENTS (exts); i++)
             gtk_file_filter_add_suffix (f, exts[i]);
     } else {
-        gtk_file_dialog_set_title (d, "Choose videos");
+        gtk_file_dialog_set_title (d, app.mode == VC_MODE_FRAMES ? "Choose a video" : "Choose videos");
         gtk_file_filter_set_name (f, "Videos");
         gtk_file_filter_add_mime_type (f, "video/*");
         gtk_file_filter_add_suffix (f, "ts");   /* often typed as a Qt translation file */
     }
     gtk_file_dialog_set_default_filter (d, f);
-    gtk_file_dialog_open_multiple (d, app.win, NULL, files_chosen, NULL);
+    if (app.mode == VC_MODE_FRAMES)   /* one video at a time */
+        gtk_file_dialog_open (d, app.win, NULL, file_chosen, NULL);
+    else
+        gtk_file_dialog_open_multiple (d, app.win, NULL, files_chosen, NULL);
 }
 
 static gboolean
@@ -2720,7 +2750,17 @@ on_drop (GtkDropTarget *t, const GValue *value, double x, double y, gpointer use
     if (!app.tools_ok || is_busy () || !G_VALUE_HOLDS (value, G_TYPE_FILE))
         return FALSE;
     g_autofree char *path = g_file_get_path (g_value_get_object (value));
-    if (path == NULL || !g_file_test (path, G_FILE_TEST_IS_DIR))
+    if (path == NULL)
+        return FALSE;
+    if (app.mode == VC_MODE_FRAMES) {   /* one video, never a folder */
+        g_autofree char *base = g_path_get_basename (path);
+        char *files[] = { path, NULL };
+        if (!g_file_test (path, G_FILE_TEST_IS_REGULAR) || !vc_mode_accepts (app.mode, base))
+            return FALSE;
+        load_source (NULL, files);
+        return TRUE;
+    }
+    if (!g_file_test (path, G_FILE_TEST_IS_DIR))
         return FALSE;
     load_source (path, NULL);
     return TRUE;
@@ -2753,7 +2793,7 @@ update_frames_note (void)
     if (app.mode != VC_MODE_FRAMES)
         return;
     g_autofree char *m = g_strdup_printf ("<tt>frames/&lt;name&gt;/frame_0001.%s</tt>\n"
-                                          "One folder per video, numbered from 0001.", app.webp ? "webp" : "jpg");
+                                          "Numbered from 0001, in a folder named after the video.", app.webp ? "webp" : "jpg");
     gtk_label_set_markup (GTK_LABEL (app.insp_note), m);
 }
 
@@ -2774,7 +2814,8 @@ apply_mode_ui (void)
     update_frames_note ();
     gtk_label_set_text (GTK_LABEL (app.empty_sub), MODE_INFO[app.mode].empty);
     g_autofree char *hero = g_strdup_printf ("Drop %ss or a folder", noun ());
-    gtk_label_set_text (GTK_LABEL (app.hero), hero);
+    gtk_label_set_text (GTK_LABEL (app.hero), app.mode == VC_MODE_FRAMES ? "Drop a video" : hero);
+    gtk_widget_set_visible (app.choose_btn, app.mode != VC_MODE_FRAMES);   /* frames takes one video */
 }
 
 static void
@@ -2797,10 +2838,22 @@ on_mode (GtkListBox *box, GtkListBoxRow *row, gpointer user_data)
         return;
     app.mode = m;
     apply_mode_ui ();
-    if (app.items != NULL)
-        load_source (app.folder, app.files);
-    else
+    if (app.items != NULL && m == VC_MODE_FRAMES && (app.folder != NULL || g_strv_length (app.files) != 1)) {
+        /* frames takes one video: a folder or several files go back to the empty page */
+        g_cancellable_cancel (app.probe_cancel);
+        sample_stop ();   /* before the items it points at are freed */
+        gtk_list_box_remove_all (GTK_LIST_BOX (app.list));
+        g_clear_pointer (&app.items, g_ptr_array_unref);
+        g_clear_pointer (&app.folder, g_free);
+        g_clear_pointer (&app.files, g_strfreev);
+        app.anchor = NULL;
+        update_header ();
         update_controls ();
+    } else if (app.items != NULL) {
+        load_source (app.folder, app.files);
+    } else {
+        update_controls ();
+    }
 }
 
 static void
@@ -2827,7 +2880,7 @@ static void
 on_quality (GtkRange *r, gpointer user_data)
 {
     (void) user_data;
-    g_autofree char *v = g_strdup_printf ("%d", (int) gtk_range_get_value (r));
+    g_autofree char *v = g_strdup_printf ("%d%%", (int) gtk_range_get_value (r));
     gtk_label_set_text (GTK_LABEL (app.quality_val), v);
 }
 
@@ -3270,9 +3323,7 @@ static const char CSS[] =
     ".insp-sub, .hint, .opt-sub { font-size: 11.5px; color: var(--text2); }"
     ".opt-title { font-weight: 500; }"
     ".note { background: var(--fill); border-radius: 8px; padding: 9px 10px; font-size: 11.5px;"
-    "  color: var(--text2); }"
-    ".check-line { font-size: 12px; }"
-    ".check-line image { color: var(--text2); -gtk-icon-size: 12px; }"
+    "  margin-right: 4px; color: var(--text2); }"
     ".err-line { color: var(--red); font-size: 11.5px; }"
     ".err-line image { -gtk-icon-size: 12px; }"
     ".seg { background: var(--fill); border-radius: 8px; padding: 2px; }"
@@ -3283,7 +3334,10 @@ static const char CSS[] =
     ".seg button:disabled { opacity: 0.45; }"
     "menubutton.link > button { color: var(--accent); background: none; box-shadow: none; border: none;"
     "  padding: 0; min-height: 0; font-size: 12px; font-weight: 500; }"
-    "menubutton.link image { -gtk-icon-size: 12px; }"
+    "menubutton.link image { -gtk-icon-size: 13px; }"
+    "expander-widget > box > title { padding: 0; }"
+    "expander-widget > box > title > expander { -gtk-icon-size: 12px; min-width: 12px; min-height: 12px;"
+    "  margin-right: 4px; color: var(--text2); }"
     ".inspector dropdown > button { background: var(--card); border: 1px solid var(--line);"
     "  border-radius: 8px; box-shadow: none; min-height: 30px; padding: 0 10px; color: var(--text); }"
     ".inspector entry { background: var(--card); border: 1px solid var(--line); border-radius: 8px;"
@@ -3316,8 +3370,18 @@ static const char CSS[] =
     ".dialog-body { font-size: 12.5px; color: var(--text2); }"
     ".close-card button { border-radius: 8px; min-height: 30px; box-shadow: none; border: none; font-weight: 600; }"
     ".close-card button.destructive { background: var(--fill); color: var(--red); }"
-    ".guide { padding: 8px; }"
-    ".guide-row { padding: 8px 10px; border-radius: 8px; }"
+    ".range-trough { background: var(--fill); min-height: 4px; border-radius: 2px; }"
+    ".range-fill { background: var(--accent); border-radius: 2px; }"
+    ".range-knob { background: white; min-width: 20px; min-height: 20px; border-radius: 999px;"
+    "  box-shadow: 0 1px 3px rgba(0,0,0,0.3); }"
+    ".range:disabled { opacity: 0.4; }"
+    ".guide { padding: 6px; font-size: 12px; }"
+    ".guide .heading { font-size: 12px; }"
+    ".guide .caption { font-size: 11px; }"
+    ".guide .colhead { font-size: 10px; }"
+    ".guide-row { padding: 4px 8px; border-radius: 6px; }"
+    ".guide progressbar trough, .guide progressbar progress { min-height: 3px; }"
+    ".guide progressbar trough { min-width: 96px; }"
     ".guide-row.current { background: color-mix(in srgb, var(--accent) 14%, transparent); }"
     ".guide-row.current > label:first-child { color: var(--accent); font-weight: 600; }"
     ".caption { font-size: 12px; opacity: 0.6; }";
@@ -3455,6 +3519,7 @@ build_sidebar (void)
     GtkWidget *side = vbox (0);
     gtk_widget_add_css_class (side, "sidebar");
     gtk_widget_set_size_request (side, 210, -1);
+    gtk_widget_set_hexpand (side, FALSE);   /* the mode rows' hexpand would otherwise let it take spare width */
     gtk_box_append (GTK_BOX (side), handle);
     gtk_box_append (GTK_BOX (side), head);
     gtk_box_append (GTK_BOX (side), app.mode_list);
@@ -3539,6 +3604,7 @@ build_empty_page (void)
     GtkWidget *files = label_button ("document-open-symbolic", "Choose _Files…", G_CALLBACK (on_choose_files));
     gtk_widget_add_css_class (files, "outline");
     g_object_bind_property (app.choose_btn, "sensitive", choose, "sensitive", G_BINDING_SYNC_CREATE);
+    g_object_bind_property (app.choose_btn, "visible", choose, "visible", G_BINDING_SYNC_CREATE);
     g_object_bind_property (app.files_btn, "sensitive", files, "sensitive", G_BINDING_SYNC_CREATE);
     GtkWidget *buttons = hbox (8);
     gtk_widget_set_halign (buttons, GTK_ALIGN_CENTER);
@@ -3768,19 +3834,21 @@ static GtkWidget *
 option_row (GtkWidget *box, const char *title, const char *sub, const char *tip)
 {
     GtkWidget *sw = gtk_switch_new ();
-    gtk_widget_set_valign (sw, GTK_ALIGN_START);
+    gtk_widget_set_valign (sw, sub ? GTK_ALIGN_START : GTK_ALIGN_CENTER);
     GtkWidget *l = gtk_label_new_with_mnemonic (title);
     gtk_widget_add_css_class (l, "opt-title");
     gtk_label_set_xalign (GTK_LABEL (l), 0);
     gtk_label_set_mnemonic_widget (GTK_LABEL (l), sw);
     gtk_accessible_update_relation (GTK_ACCESSIBLE (sw), GTK_ACCESSIBLE_RELATION_LABELLED_BY, l, NULL, -1);
-    GtkWidget *s = styled_label (sub, "opt-sub", 0);
-    gtk_label_set_wrap (GTK_LABEL (s), TRUE);
-    gtk_label_set_max_width_chars (GTK_LABEL (s), 20);
     GtkWidget *texts = vbox (1);
     gtk_widget_set_hexpand (texts, TRUE);
     gtk_box_append (GTK_BOX (texts), l);
-    gtk_box_append (GTK_BOX (texts), s);
+    if (sub != NULL) {   /* NULL: title only */
+        GtkWidget *s = styled_label (sub, "opt-sub", 0);
+        gtk_label_set_wrap (GTK_LABEL (s), TRUE);
+        gtk_label_set_max_width_chars (GTK_LABEL (s), 20);
+        gtk_box_append (GTK_BOX (texts), s);
+    }
     GtkWidget *row = hbox (10);
     gtk_widget_set_margin_bottom (row, 10);
     gtk_widget_set_tooltip_text (row, tip);
@@ -3809,22 +3877,11 @@ segmented (const char *const *labels, guint n, guint active, GtkWidget **out, GC
     return seg;
 }
 
-static void
-check_line (GtkWidget *box, const char *icon, const char *text)
-{
-    GtkWidget *row = hbox (8);
-    gtk_widget_add_css_class (row, "check-line");
-    gtk_widget_set_margin_bottom (row, 5);
-    gtk_box_append (GTK_BOX (row), gtk_image_new_from_icon_name (icon));
-    gtk_box_append (GTK_BOX (row), styled_label (text, NULL, 0));
-    gtk_box_append (GTK_BOX (box), row);
-}
-
 static GtkWidget *
 build_speed_guide (void)
 {
-    GtkWidget *guide_head = hbox (16);
-    gtk_widget_set_margin_start (guide_head, 10);
+    GtkWidget *guide_head = hbox (14);
+    gtk_widget_set_margin_start (guide_head, 8);
     const char *heads[] = { "SPEED", "ENCODE TIME", "FILE SIZE" };
     for (guint i = 0; i < 3; i++) {
         GtkWidget *h = styled_label (heads[i], "colhead", 0);
@@ -3832,33 +3889,30 @@ build_speed_guide (void)
         gtk_box_append (GTK_BOX (guide_head), h);
     }
     app.guide_rows = vbox (2);
-    GtkWidget *guide = vbox (6);
+    GtkWidget *guide = vbox (3);
     gtk_widget_add_css_class (guide, "guide");
     gtk_box_append (GTK_BOX (guide), styled_label ("Speed guide", "heading", 0));
-    gtk_box_append (GTK_BOX (guide), styled_label ("Time compared with Medium · size compared "
-                                                   "with your originals", "caption", 0));
-    gtk_widget_set_margin_top (guide_head, 8);
+    gtk_box_append (GTK_BOX (guide), styled_label ("Time vs Medium · size vs your originals", "caption", 0));
+    gtk_widget_set_margin_top (guide_head, 6);
     gtk_box_append (GTK_BOX (guide), guide_head);
     gtk_box_append (GTK_BOX (guide), app.guide_rows);
-    GtkWidget *note = styled_label ("Rough estimates for the videos in this folder. At the same "
-                                    "quality setting, slower speeds keep more detail; they don't "
-                                    "reliably make files smaller.", "caption", 0);
+    GtkWidget *note = styled_label ("Rough estimates for this folder. Slower speeds keep more "
+                                    "detail but don't always make smaller files.", "caption", 0);
     gtk_label_set_wrap (GTK_LABEL (note), TRUE);
-    gtk_label_set_max_width_chars (GTK_LABEL (note), 50);
-    gtk_widget_set_margin_top (note, 8);
+    gtk_label_set_max_width_chars (GTK_LABEL (note), 1);   /* asks for no width: wraps to the table's */
+    gtk_widget_set_margin_top (note, 6);
     gtk_box_append (GTK_BOX (guide), note);
     GtkWidget *pop = gtk_popover_new ();
     gtk_popover_set_child (GTK_POPOVER (pop), guide);
-    GtkWidget *link = hbox (6);
-    gtk_box_append (GTK_BOX (link), gtk_image_new_from_icon_name ("help-about-symbolic"));
-    gtk_box_append (GTK_BOX (link), gtk_label_new ("Speed guide · time vs size"));
     GtkWidget *info = gtk_menu_button_new ();
-    gtk_menu_button_set_child (GTK_MENU_BUTTON (info), link);
-    gtk_menu_button_set_always_show_arrow (GTK_MENU_BUTTON (info), FALSE);
+    gtk_menu_button_set_icon_name (GTK_MENU_BUTTON (info), "help-about-symbolic");
     gtk_menu_button_set_popover (GTK_MENU_BUTTON (info), pop);
     gtk_widget_add_css_class (info, "link");
-    gtk_widget_set_halign (info, GTK_ALIGN_START);
-    gtk_widget_set_margin_top (info, 8);
+    gtk_widget_set_tooltip_text (info, "Speed guide: time vs size");
+    gtk_accessible_update_property (GTK_ACCESSIBLE (info), GTK_ACCESSIBLE_PROPERTY_LABEL, "Speed guide", -1);
+    gtk_widget_set_valign (info, GTK_ALIGN_CENTER);
+    gtk_widget_set_margin_top (info, 16);      /* same margins as the section title, so it centres on it */
+    gtk_widget_set_margin_bottom (info, 6);
     return info;
 }
 
@@ -3866,7 +3920,10 @@ static GtkWidget *
 build_compress_opts (void)
 {
     GtkWidget *box = vbox (0);
-    section (box, "SPEED");
+    GtkWidget *speed_head = hbox (4);
+    section (speed_head, "SPEED");
+    gtk_box_append (GTK_BOX (speed_head), build_speed_guide ());
+    gtk_box_append (GTK_BOX (box), speed_head);
     /* the x265 speeds, as in the design; the GPU (VC_PRESETS[0]) is the Use GPU switch below */
     const char *titles[G_N_ELEMENTS (app.speed_btns)];
     guint np = 1;
@@ -3880,19 +3937,25 @@ build_compress_opts (void)
     app.preset = app.speed;
     gtk_box_append (GTK_BOX (box), segmented (titles, np - 1, app.speed - 1, &app.speed_btns[1],
                                               G_CALLBACK (on_speed)));
-    gtk_box_append (GTK_BOX (box), build_speed_guide ());
 
-    section (box, "MAX SIZE");
-    const char *sizes[] = { "Original size", "Max 1080p", "Max 720p", NULL };
+    section (box, "MAX QUALITY");
+    const char *sizes[] = { "Original quality", "Max 1080p", "Max 720p", NULL };
     app.max_size = gtk_drop_down_new_from_strings (sizes);
-    gtk_accessible_update_property (GTK_ACCESSIBLE (app.max_size), GTK_ACCESSIBLE_PROPERTY_LABEL, "Max size", -1);
+    gtk_accessible_update_property (GTK_ACCESSIBLE (app.max_size), GTK_ACCESSIBLE_PROPERTY_LABEL, "Max quality", -1);
     gtk_widget_set_tooltip_text (app.max_size, "Shrink bigger videos so the short side is at most this (a 4K "
                                                "video at 1080p takes about a quarter of the time). Smaller "
                                                "videos are never enlarged.");
     g_signal_connect (app.max_size, "notify::selected", G_CALLBACK (on_estimate_input), NULL);
     gtk_box_append (GTK_BOX (box), app.max_size);
 
-    section (box, "OPTIONS");
+    GtkWidget *adv = vbox (0), *outer = box;
+    GtkWidget *exp = gtk_expander_new (NULL);
+    gtk_expander_set_label_widget (GTK_EXPANDER (exp), styled_label ("ADVANCED SETTINGS", "sect", 0));
+    gtk_expander_set_child (GTK_EXPANDER (exp), adv);
+    gtk_widget_set_margin_top (exp, 16);
+    gtk_widget_set_margin_top (adv, 10);
+    gtk_box_append (GTK_BOX (outer), exp);
+    box = adv;
     app.gpu = option_row (box, "Use _GPU", "Many times faster; files a little bigger.",
                           "Encode on the graphics chip instead of x265. Much faster, the files come out a little "
                           "bigger. Shown only when this computer's GPU encoder works.");
@@ -3908,7 +3971,7 @@ build_compress_opts (void)
     app.trash = option_row (box, "Move originals to _Trash", "Only after each copy is checked. Asks first.",
                             "After each copy is checked: same length and at least 5% smaller. Asks before "
                             "starting.");
-    return box;
+    return outer;
 }
 
 static GtkWidget *
@@ -3920,14 +3983,102 @@ build_web_opts (void)
     gtk_box_append (GTK_BOX (box), app.web_width);
     hint (box, "Narrower videos are never enlarged.");
     section (box, "AUDIO");
-    app.no_audio = option_row (box, "Remove _audio", "No audio track, for muted autoplay backgrounds.",
+    app.no_audio = option_row (box, "Remove _audio", NULL,
                                "No audio track, for muted autoplay backgrounds.");
-    section (box, "EVERY FILE GETS");
-    check_line (box, "object-select-symbolic", "H.264 MP4 · plays in Safari & iOS");
-    check_line (box, "object-select-symbolic", "Fast start · plays while loading");
-    check_line (box, "object-select-symbolic", "HDR converted to SDR");
-    check_line (box, "object-select-symbolic", "Location & metadata removed");
     return box;
+}
+
+/* ---- frames range slider: a Start knob and an End knob on one track ---- */
+#define RANGE_KNOB 20
+
+static gboolean
+range_child_pos (GtkOverlay *o, GtkWidget *child, GdkRectangle *r, gpointer user_data)
+{
+    (void) user_data;
+    int w = gtk_widget_get_width (GTK_WIDGET (o)) - RANGE_KNOB, h = gtk_widget_get_height (GTK_WIDGET (o));
+    double d = app.range_dur;
+    int xs = d > 0 ? (int) lround (app.range_s / d * w) : 0, xe = d > 0 ? (int) lround (app.range_e / d * w) : w;
+    if (child == app.range_fill)
+        *r = (GdkRectangle) { xs + RANGE_KNOB / 2, h / 2 - 2, MAX (xe - xs, 0), 4 };
+    else
+        *r = (GdkRectangle) { child == app.range_knob[0] ? xs : xe, h / 2 - RANGE_KNOB / 2, RANGE_KNOB, RANGE_KNOB };
+    return TRUE;
+}
+
+/* Writes the dragged knob's time into its field; the field's "changed" moves the knob. */
+static void
+range_set_x (double x)
+{
+    int w = MAX (gtk_widget_get_width (app.range) - RANGE_KNOB, 1);
+    double d = app.range_dur, t = floor (CLAMP ((x - RANGE_KNOB / 2.0) / w, 0, 1) * d * 10) / 10;   /* 0.1 s */
+    g_autofree char *text = NULL;
+    if (app.range_drag == 0) {
+        t = MIN (t, app.range_e - 0.1);
+        text = t > 0 ? format_clock (t) : g_strdup ("");
+        gtk_editable_set_text (GTK_EDITABLE (app.frames_start), text);
+    } else {
+        t = MAX (t, app.range_s + 0.1);
+        text = t < d - 0.05 ? format_clock (t) : g_strdup ("");   /* empty = to the end */
+        gtk_editable_set_text (GTK_EDITABLE (app.frames_end), text);
+    }
+}
+
+static void
+on_range_begin (GtkGestureDrag *g, double x, double y, gpointer user_data)
+{
+    (void) y; (void) user_data;
+    if (app.range_dur <= 0) {
+        gtk_gesture_set_state (GTK_GESTURE (g), GTK_EVENT_SEQUENCE_DENIED);
+        return;
+    }
+    int w = gtk_widget_get_width (app.range) - RANGE_KNOB;
+    double xs = app.range_s / app.range_dur * w + RANGE_KNOB / 2.0;
+    double xe = app.range_e / app.range_dur * w + RANGE_KNOB / 2.0;
+    /* the nearer knob; when they touch, the side you grab from */
+    app.range_drag = fabs (x - xs) < fabs (x - xe) || (xs == xe && x < xs) ? 0 : 1;
+    range_set_x (x);
+}
+
+static void
+on_range_update (GtkGestureDrag *g, double dx, double dy, gpointer user_data)
+{
+    (void) dy; (void) user_data;
+    double x0, y0;
+    if (gtk_gesture_drag_get_start_point (g, &x0, &y0))
+        range_set_x (x0 + dx);
+}
+
+static GtkWidget *
+range_slider (void)
+{
+    GtkWidget *trough = vbox (0);
+    gtk_widget_add_css_class (trough, "range-trough");
+    gtk_widget_set_valign (trough, GTK_ALIGN_CENTER);
+    gtk_widget_set_margin_start (trough, RANGE_KNOB / 2);
+    gtk_widget_set_margin_end (trough, RANGE_KNOB / 2);
+    GtkWidget *o = app.range = gtk_overlay_new ();
+    gtk_widget_add_css_class (o, "range");
+    gtk_widget_set_size_request (o, -1, RANGE_KNOB + 4);
+    gtk_overlay_set_child (GTK_OVERLAY (o), trough);
+    app.range_fill = vbox (0);
+    gtk_widget_add_css_class (app.range_fill, "range-fill");
+    gtk_overlay_add_overlay (GTK_OVERLAY (o), app.range_fill);
+    for (guint i = 0; i < 2; i++) {
+        app.range_knob[i] = vbox (0);
+        gtk_widget_add_css_class (app.range_knob[i], "range-knob");
+        gtk_widget_set_cursor_from_name (app.range_knob[i], "grab");
+        gtk_overlay_add_overlay (GTK_OVERLAY (o), app.range_knob[i]);
+    }
+    g_signal_connect (o, "get-child-position", G_CALLBACK (range_child_pos), NULL);
+    GtkGesture *drag = gtk_gesture_drag_new ();
+    g_signal_connect (drag, "drag-begin", G_CALLBACK (on_range_begin), NULL);
+    g_signal_connect (drag, "drag-update", G_CALLBACK (on_range_update), NULL);
+    gtk_widget_add_controller (o, GTK_EVENT_CONTROLLER (drag));
+    gtk_widget_set_tooltip_text (o, "Drag the two handles to pick the part of the video to use. "
+                                    "Type in Start and End to fine-tune.");
+    gtk_widget_set_margin_bottom (o, 8);
+    gtk_widget_set_sensitive (o, FALSE);   /* check_range enables it once the video is probed */
+    return o;
 }
 
 static GtkWidget *
@@ -3935,14 +4086,15 @@ build_frames_opts (void)
 {
     GtkWidget *box = app.frames_opts = vbox (0);
     section (box, "FRAMES PER SECOND");
-    const char *rates[] = { "5", "10", "12", "15", "24", "30", "All" };
+    const char *rates[] = { "5", "10", "12", "15", "24", "30" };
     G_STATIC_ASSERT (G_N_ELEMENTS (rates) == G_N_ELEMENTS (FRAME_RATES));
     app.fps_idx = FRAMES_DEFAULT_RATE;
     GtkWidget *seg = segmented (rates, G_N_ELEMENTS (rates), FRAMES_DEFAULT_RATE, app.fps_btns, G_CALLBACK (on_fps));
-    gtk_widget_set_tooltip_text (seg, "Frames saved per second of video. All keeps the video's own rate.");
+    gtk_widget_set_tooltip_text (seg, "Frames saved per second of video.");
     gtk_box_append (GTK_BOX (box), seg);
 
     section (box, "RANGE");
+    gtk_box_append (GTK_BOX (box), range_slider ());
     GtkWidget *range = gtk_grid_new ();
     gtk_grid_set_column_spacing (GTK_GRID (range), 8);
     gtk_grid_set_row_spacing (GTK_GRID (range), 4);
@@ -3951,7 +4103,7 @@ build_frames_opts (void)
     const char *time_label[] = { "Sta_rt", "_End" };
     const char *time_hint[] = { "0:00", "end" };
     const char *time_tip[] = { "Where to start: empty for the beginning, or 12, 12.5, 1:05, 0:01:05.",
-                               "Where to stop: empty for the end. The same range applies to every video." };
+                               "Where to stop: empty for the end of the video." };
     for (guint i = 0; i < 2; i++) {
         *times[i] = gtk_entry_new ();
         gtk_editable_set_width_chars (GTK_EDITABLE (*times[i]), 6);
@@ -3991,7 +4143,7 @@ build_frames_opts (void)
     gtk_widget_add_css_class (q_label, "opt-title");
     gtk_widget_set_hexpand (q_label, TRUE);
     gtk_label_set_xalign (GTK_LABEL (q_label), 0);
-    app.quality_val = styled_label ("80", "hint", 1);
+    app.quality_val = styled_label ("80%", "hint", 1);
     GtkWidget *q_head = hbox (8);
     gtk_widget_set_margin_top (q_head, 18);
     gtk_box_append (GTK_BOX (q_head), q_label);
@@ -3999,7 +4151,7 @@ build_frames_opts (void)
     gtk_box_append (GTK_BOX (box), q_head);
     app.frames_quality = gtk_scale_new_with_range (GTK_ORIENTATION_HORIZONTAL, 1, 100, 1);
     gtk_range_set_value (GTK_RANGE (app.frames_quality), 80);
-    gtk_widget_set_tooltip_text (app.frames_quality, "1–100. Higher keeps more detail in bigger files.");
+    gtk_widget_set_tooltip_text (app.frames_quality, "1–100%. Higher keeps more detail in bigger files.");
     gtk_label_set_mnemonic_widget (GTK_LABEL (q_label), app.frames_quality);
     gtk_accessible_update_relation (GTK_ACCESSIBLE (app.frames_quality), GTK_ACCESSIBLE_RELATION_LABELLED_BY,
                                     q_label, NULL, -1);
@@ -4007,18 +4159,6 @@ build_frames_opts (void)
     gtk_widget_set_margin_top (app.frames_quality, 6);
     gtk_box_append (GTK_BOX (box), app.frames_quality);
     return box;
-}
-
-static void
-format_line (GtkWidget *box, const char *badge, const char *text)
-{
-    GtkWidget *row = hbox (8);
-    gtk_widget_set_margin_bottom (row, 6);
-    GtkWidget *b = styled_label (badge, "badge", 0.5);
-    gtk_widget_set_valign (b, GTK_ALIGN_CENTER);
-    gtk_box_append (GTK_BOX (row), b);
-    gtk_box_append (GTK_BOX (row), styled_label (text, "check-line", 0));
-    gtk_box_append (GTK_BOX (box), row);
 }
 
 static GtkWidget *
@@ -4032,14 +4172,6 @@ build_images_opts (void)
                                                    "ratio. Narrower images are never enlarged.");
     gtk_box_append (GTK_BOX (box), app.images_width);
     hint (box, "Wider images scale down, never up.");
-    section (box, "YOU GET");
-    format_line (box, "JPG", "→ optimized JPG + WebP");
-    format_line (box, "PNG", "→ quantized PNG + WebP");
-    format_line (box, "WEBP", "→ smaller WebP");
-    format_line (box, "BMP·TIFF", "→ PNG or JPG + WebP");
-    section (box, "PRIVACY");
-    check_line (box, "object-select-symbolic", "GPS & camera data removed");
-    check_line (box, "object-select-symbolic", "Colour profile kept");
     section (box, "ORIGINALS");
     app.img_trash = option_row (box, "Move originals to _Trash", "Only when the same-type copy opens at the "
                                 "right size.",
