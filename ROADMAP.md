@@ -93,9 +93,8 @@ LICENSE
 - [x] `packaging/<appid>.json`, a Flatpak manifest on GNOME 51 (2026-11-13). Tools pinned to the versions the measurements
       used: ffmpeg 8.1.3, x265 4.1 (8+10-bit), x264 b35605ac, zimg 3.0.6, ImageMagick 7.1.2-34, pngquant 3.0.3 (Rust,
       offline crates from `packaging/gen-cargo-sources.py`). Installed size 58.5 MB, `.flatpak` bundle 16 MB.
-      Build: `flatpak run --env=FLATPAK_USER_DIR=$HOME/.local/share/flatpak --command=flatpak-builder org.flatpak.Builder
-      --user --install --force-clean --repo=<dir>/repo <dir>/build packaging/<appid>.json` (dirs under `$HOME`: the
-      builder's sandbox can't see `/tmp`).
+      Build and install: see CONTRIBUTING.md, "Flatpak build" (install with the host's `flatpak`, or the launcher is
+      hidden).
   - Modules: zimg, x264, x265, ffmpeg (`--enable-gpl`, x264, x265, libwebp, zimg, dav1d, VA-API), ImageMagick,
     pngquant, then the app. libwebp, libtiff, lcms2, libjpeg, libpng, dav1d and libva come from the GNOME SDK.
   - x265 4.1 sets two CMake policies to OLD, which CMake 4 refuses; a `sed` in the manifest deletes those lines

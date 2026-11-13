@@ -87,12 +87,20 @@ one click. From the command line, with [`org.flatpak.Builder`](https://flathub.o
 ```sh
 cd "Video Compressor"
 flatpak run --env=FLATPAK_USER_DIR=$HOME/.local/share/flatpak --command=flatpak-builder org.flatpak.Builder \
-    --user --install --force-clean --repo=$HOME/mt-flatpak/repo $HOME/mt-flatpak/build \
+    --force-clean --repo=$HOME/mt-flatpak/repo $HOME/mt-flatpak/build \
     packaging/io.github.Tharindu_Dasantha.MediaTools.json
+flatpak install --user -y --reinstall $HOME/mt-flatpak/repo io.github.Tharindu_Dasantha.MediaTools
 flatpak run io.github.Tharindu_Dasantha.MediaTools
 ```
 
 The first build compiles ffmpeg, x265 and ImageMagick and takes a while; later builds are cached.
+
+Install with the host's `flatpak`, not with `flatpak-builder --install` inside `org.flatpak.Builder`. An install made inside
+the builder's sandbox writes `Exec=/app/bin/flatpak …` into the app's launcher, a path that doesn't exist on the host,
+so the app is installed but missing from the app grid.
+
+To make a bundle to share, after the build: `flatpak build-bundle $HOME/mt-flatpak/repo media-tools.flatpak
+io.github.Tharindu_Dasantha.MediaTools`.
 
 ## 3. Code style
 
