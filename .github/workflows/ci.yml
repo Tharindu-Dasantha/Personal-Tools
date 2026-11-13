@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: Build and test (${{ matrix.tool }})
+    runs-on: ubuntu-latest
+    container: fedora:44
+    strategy:
+      fail-fast: false
+      matrix:
+        tool: ["Video Compressor"]   # add each new tool's folder here
+    env:
+      TOOL: ${{ matrix.tool }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install build dependencies
+        run: dnf -y install gcc cmake pkgconf gtk4-devel libasan libubsan
+
+      - name: Debug build (warnings are errors)
+        run: |
+          cmake -S "$TOOL" -B "$TOOL/build" -DCMAKE_BUILD_TYPE=Debug
+          cmake --build "$TOOL/build" -j
+
+      - name: Unit tests
+        run: ctest --test-dir "$TOOL/build" --output-on-failure
+
+      - name: ASan + UBSan build and unit tests
+        run: |
+          cmake -S "$TOOL" -B "$TOOL/build-asan" -DCMAKE_BUILD_TYPE=Debug \
+                -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer"
+          cmake --build "$TOOL/build-asan" -j
+          ctest --test-dir "$TOOL/build-asan" --output-on-failure

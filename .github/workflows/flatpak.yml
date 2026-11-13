@@ -1,0 +1,47 @@
+name: Flatpak
+
+# Builds the Flatpak bundle. On a tag `media-tools-v*` it also attaches the bundle to a GitHub Release.
+on:
+  push:
+    tags: ["media-tools-v*"]
+  pull_request:
+    paths: ["Video Compressor/packaging/**", ".github/workflows/flatpak.yml"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build bundle
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:gnome-51
+      options: --privileged
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: flatpak/flatpak-github-actions/flatpak-builder@v6.8
+        with:
+          manifest-path: Video Compressor/packaging/io.github.Tharindu_Dasantha.MediaTools.json
+          bundle: media-tools-x86_64.flatpak
+          artifact-name: media-tools-flatpak
+
+  release:
+    name: Attach to GitHub Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/media-tools-v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: media-tools-flatpak
+
+      - name: Create the release, or add the bundle to an existing one
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release view "$TAG" >/dev/null 2>&1 \
+            || gh release create "$TAG" --title "Media Tools ${TAG#media-tools-v}" --generate-notes
+          gh release upload "$TAG" media-tools-x86_64.flatpak --clobber

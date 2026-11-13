@@ -129,7 +129,7 @@
         {
           "type": "dir",
           "path": "../..",
-          "skip": [".git", "Video Compressor/build", "Video Compressor/graphify-out"]
+          "skip": [".git", ".flatpak-builder", "flatpak_app", "repo", "Video Compressor/build", "Video Compressor/graphify-out"]
         }
       ]
     }

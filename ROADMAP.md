@@ -5,8 +5,8 @@
 > in a job interview. These tools are not a business. They stay open source.
 > Market context for Video Compressor: [Video Compressor/docs/MARKET-RESEARCH.md](Video%20Compressor/docs/MARKET-RESEARCH.md).
 
-**Status (2026-11-13):** Phase 0 is done (READMEs, CONTRIBUTING, issue and PR templates, design docs in `docs/`, not
-committed yet). Media Tools has its license, app ID, icon and metainfo, and a Flatpak manifest that builds,
+**Status (2026-11-13):** Phase 0 is done (`b885e7f`). Phase 1: CI workflows written (not pushed yet), sandbox checks
+that need no dialog pass; the portal dialogs still need a run on the real desktop. Media Tools has its license, app ID, icon and metainfo, and a Flatpak manifest that builds,
 installs and runs every mode inside the sandbox. Committed (`caa7b10`), not tagged yet. Next: tag
 `media-tools-v0.1.0`, test the sandbox on the real desktop (Phase 1 list), then choose how updates reach users before
 Flathub (Open decision 5).
@@ -113,18 +113,26 @@ LICENSE
         the probe as they should.
   - [x] Installing from the `.flatpak` bundle file works; the GNOME runtime comes from Flathub automatically.
   - [ ] Choose Folder, Choose Files and drag-and-drop (go through the portals; can't be automated here)
-  - [ ] Writing to `compressed/`, and cleaning up leftover `.part` files
-  - [ ] Move to Trash (should go through the Trash portal)
+  - [ ] Writing to `compressed/` from the UI, and cleaning up leftover `.part` files (the commands already write
+        inside the sandbox, see above)
+  - [x] Move to Trash (2026-11-13): `g_file_trash` from inside the sandbox (`flatpak run --command=gio … trash`) puts
+        the file in the real Trash. Still worth one click-through in the app.
   - [ ] Show in Files
-  - [ ] The GPU (VA-API) test at startup, on Intel and AMD (a hevc_vaapi encode works in the sandbox on this Intel machine)
+  - [ ] The GPU (VA-API) test at startup on AMD (Intel done: a hevc_vaapi encode works in the sandbox on this machine)
   - [ ] Run in Background, notifications and the suspend inhibitor
   - [ ] Phone metadata kept (HDR / 10-bit encodes already pass, above)
-  - [ ] Process priority (`setpriority` and `ioprio_set` in `main.c`) still works
-- [ ] CI (`.github/workflows/`):
-  - [ ] On every PR: CMake build, `ctest`, and an ASan/UBSan build (Fedora container).
-  - [ ] On a tag `<tool>-v*`: build the Flatpak with `flatpak/flatpak-github-actions` and attach the `.flatpak`
-        bundle to the GitHub Release.
-- [ ] CI badges in the README.
+  - [x] Process priority (2026-11-13): the seccomp filter allows both; inside the sandbox `nice -n 10` gives nice 10
+        and `ionice -c3` gives class idle, the same calls `main.c` makes for each encode.
+- [x] CI (`.github/workflows/`, 2026-11-13; runs once pushed):
+  - [x] `ci.yml`, on every PR and push to `main`: Debug build (`-Werror`), `ctest`, and an ASan/UBSan build with its
+        own `ctest` (leak checks on), in `fedora:44`. A matrix over tool folders; add new tools there. The same steps
+        pass locally in a `fedora:44` podman container.
+  - [x] `flatpak.yml`: builds the bundle (`flatpak-github-actions` v6.8, image `gnome-51`) on PRs that touch
+        `packaging/`, by hand, and on a tag `media-tools-v*`, where it also creates the GitHub Release and attaches
+        `media-tools-x86_64.flatpak`. The manifest's `dir` source now skips the action's `flatpak_app`, `repo` and
+        `.flatpak-builder` folders, which sit inside the copied checkout. Not run yet: the first real run is the first
+        push.
+- [x] CI badges in the README.
 - [x] Commit (`65876e3`, `caa7b10`).
 - [ ] Tag `media-tools-v0.1.0` (the metainfo screenshot URL points at that tag).
 - [ ] Updates before Flathub: a bundle installed from a file never updates. See Open decision 5.
@@ -195,7 +203,7 @@ What counts isn't the feature list. It's being able to show:
 | 2 | Final app name and ID | **Decided 2026-11-13: "Media Tools", `io.github.Tharindu_Dasantha.MediaTools`**, kept in this monorepo (a separate `MediaTools` repo was considered and dropped). |
 | 3 | Rename the repo | Open. Recommendation: yes, to something public-facing (e.g. `linux-tools`). Renaming changes the metainfo URLs. |
 | 4 | Sandbox for v1 | **Decided: `--filesystem=home`** plus `/run/media` and `/media`; portals only in Phase 3. |
-| 5 | Updates before Flathub | Open. Recommendation: a self-hosted Flatpak repo on GitHub Pages, built by CI on each tag and signed with your own GPG key. Users add it once and get updates in GNOME Software. Without it, the `.flatpak` bundle from Releases installs but never updates. |
+| 5 | Updates before Flathub | **Deferred 2026-11-13:** v0.1.0 ships as a bundle only; revisit after the desktop tests. Option: a self-hosted Flatpak repo on GitHub Pages, built by CI on each tag and signed with your own GPG key. Users add it once and get updates in GNOME Software. Without it, the `.flatpak` bundle from Releases installs but never updates. |
 
 ## Unverified (check before relying on it)
 

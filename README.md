@@ -1,5 +1,8 @@
 # Personal Tools
 
+[![CI](https://github.com/Tharindu-Dasantha/Personal-Tools/actions/workflows/ci.yml/badge.svg)](https://github.com/Tharindu-Dasantha/Personal-Tools/actions/workflows/ci.yml)
+[![Flatpak](https://github.com/Tharindu-Dasantha/Personal-Tools/actions/workflows/flatpak.yml/badge.svg)](https://github.com/Tharindu-Dasantha/Personal-Tools/actions/workflows/flatpak.yml)
+
 Small, offline desktop apps for Linux, written in C with GTK 4. Each tool is its own app with its own install.
 They are free and open source under the [GPL-3.0-or-later](LICENSE).
 
