@@ -5,7 +5,7 @@
 > in a job interview. These tools are not a business. They stay open source.
 > Market context for Video Compressor: [Video Compressor/docs/MARKET-RESEARCH.md](Video%20Compressor/docs/MARKET-RESEARCH.md).
 
-**Status (2026-11-13):** Phase 0 is done (`b885e7f`). Phase 1: CI workflows written (not pushed yet), sandbox checks
+**Status (2026-11-13):** Phase 0 is done (`b885e7f`). Phase 2: the store screenshots are done; the rest is manual by Flathub policy. Phase 1: CI workflows written (not pushed yet), sandbox checks
 that need no dialog pass; the portal dialogs still need a run on the real desktop. Media Tools has its license, app ID, icon and metainfo, and a Flatpak manifest that builds,
 installs and runs every mode inside the sandbox. Committed (`caa7b10`), not tagged yet. Next: tag
 `media-tools-v0.1.0`, test the sandbox on the real desktop (Phase 1 list), then choose how updates reach users before
@@ -74,7 +74,8 @@ LICENSE
 - [x] Add `LICENSE`.
 - [x] Root `README.md`: what the repo is, a table of tools, install instructions, build instructions.
 - [x] `Video Compressor/README.md` with 3 screenshots (2026-11-13, Xvfb, generated test clips; the README says so):
-      `data/screenshots/estimates.png`, `results.png`, `web-video-dark.png`. The metainfo still uses `main.png` (Phase 2).
+      `data/screenshots/estimates.png`, `results.png`, `web-video-dark.png`. The metainfo uses `main.png` and
+      `main-dark.png` (Phase 2).
 - [x] `CONTRIBUTING.md`: dependencies (`gtk4-devel`, `cmake`, `ffmpeg` with libx265, `pngquant`, `ImageMagick`),
       the build and test commands from SPEC.md, the ASan debug build, and how to run the fixtures script.
 - [x] Issue templates (bug, feature; GitHub issue forms in `.github/ISSUE_TEMPLATE/`) and a PR template.
@@ -153,8 +154,15 @@ nothing else installed.
   - **App ID vs. repo:** for `io.github.*` the last part should match the repo (`.../Personal-Tools`). A monorepo ID
     like `MediaTools` needs a reviewer exception, which the rules allow. Ask in the PR.
   - Screenshot URLs must point at a tag or commit, not a branch. The metainfo and desktop file need complete English.
-- [ ] Replace the screenshot with a real one: files in the list, window shadow and rounded corners, 1000×700 or smaller.
-      Today's `data/screenshots/main.png` is the empty start screen from Xvfb.
+- [x] Replace the screenshot with a real one (2026-11-13): `main.png` (light, default) and `main-dark.png`, both in the
+      metainfo. A 1000×700 window with six videos listed, captured by GNOME Shell 50 itself (`ScreenshotWindow` in a
+      headless `gnome-shell --headless --wayland` session with fresh settings), so the rounded corners and shadow are real
+      and transparent. Throwaway patch for the capture only: window size 1000×700 and a folder loaded at startup.
+      Uses the generated test clips, so the estimates (−97 %) are far better than real footage would get; retake with
+      real videos if a reviewer objects.
+- [ ] **Everything below is yours to do by hand** (AI policy above): the Flathub manifest, the PR, and all replies.
+- [ ] Before submitting: tag `media-tools-v0.1.0` and push it (screenshot URLs need it), finish the Phase 1 desktop
+      tests, and let some history build up (tagged releases, commits over weeks).
 - [ ] Submit a PR to `flathub/flathub`. Review can take weeks. Reviewers may question `--filesystem=home`: either explain
       why it's needed (batch processing of whole folders) or tighten it first.
 - [ ] After acceptance, updates are PRs to the `flathub/<appid>` repo (Flathub's bot can open them for new tags).
