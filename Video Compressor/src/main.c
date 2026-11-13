@@ -4237,7 +4237,7 @@ load_fonts (void)
     if (g_mkdir_with_parents (dir, 0755) != 0)
         return;
     for (gsize i = 0; i < G_N_ELEMENTS (names); i++) {
-        g_autofree char *res = g_strconcat ("/io/github/dasantha/VideoCompressor/fonts/", names[i], NULL);
+        g_autofree char *res = g_strconcat ("/io/github/Tharindu_Dasantha/MediaTools/fonts/", names[i], NULL);
         g_autoptr (GBytes) data = g_resources_lookup_data (res, G_RESOURCE_LOOKUP_FLAGS_NONE, NULL);
         g_autofree char *path = g_build_filename (dir, names[i], NULL);
         GStatBuf st;
@@ -4463,7 +4463,7 @@ activate (GtkApplication *gapp, gpointer user_data)
 int
 main (int argc, char **argv)
 {
-    g_autoptr (GtkApplication) gapp = gtk_application_new ("io.github.dasantha.VideoCompressor",
+    g_autoptr (GtkApplication) gapp = gtk_application_new ("io.github.Tharindu_Dasantha.MediaTools",
                                                            G_APPLICATION_DEFAULT_FLAGS);
     g_signal_connect (gapp, "activate", G_CALLBACK (activate), NULL);
     return g_application_run (G_APPLICATION (gapp), argc, argv);

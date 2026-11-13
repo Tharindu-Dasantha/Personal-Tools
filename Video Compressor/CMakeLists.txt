@@ -52,7 +52,10 @@ add_test(NAME test_images COMMAND test_images)
 # find. For a user install: cmake -B build --install-prefix ~/.local && cmake --install build
 include(GNUInstallDirs)
 install(TARGETS video-compressor)
-configure_file(data/io.github.dasantha.VideoCompressor.desktop.in
-               io.github.dasantha.VideoCompressor.desktop @ONLY)
-install(FILES ${CMAKE_CURRENT_BINARY_DIR}/io.github.dasantha.VideoCompressor.desktop
+set(APP_ID io.github.Tharindu_Dasantha.MediaTools)
+install(FILES data/${APP_ID}.desktop
         DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
+install(FILES data/${APP_ID}.metainfo.xml DESTINATION ${CMAKE_INSTALL_DATADIR}/metainfo)
+install(FILES data/icons/hicolor/scalable/apps/${APP_ID}.svg
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps)
+install(FILES ../LICENSE DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/${APP_ID})

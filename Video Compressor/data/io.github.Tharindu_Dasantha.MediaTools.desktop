@@ -1,9 +1,10 @@
 [Desktop Entry]
 Type=Application
-Name=Video Compressor
-Comment=Make videos smaller without losing quality
-Exec=@CMAKE_INSTALL_FULL_BINDIR@/video-compressor
-Icon=video-x-generic
+Name=Media Tools
+Comment=Make videos and images smaller without losing quality
+Exec=video-compressor
+Icon=io.github.Tharindu_Dasantha.MediaTools
 Terminal=false
 Categories=AudioVideo;Video;
+Keywords=compress;video;image;ffmpeg;webp;frames;
 StartupNotify=true

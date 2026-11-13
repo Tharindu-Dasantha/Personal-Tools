@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- GtkApplication adds <resource base path>/icons to the icon theme, so these load by name. -->
 <gresources>
-  <gresource prefix="/io/github/dasantha/VideoCompressor/icons/scalable/actions">
+  <gresource prefix="/io/github/Tharindu_Dasantha/MediaTools/icons/scalable/actions">
     <file alias="mt-globe-symbolic.svg">icons/scalable/actions/mt-globe-symbolic.svg</file>
     <file alias="mt-bolt-symbolic.svg">icons/scalable/actions/mt-bolt-symbolic.svg</file>
     <file alias="mt-external-symbolic.svg">icons/scalable/actions/mt-external-symbolic.svg</file>
@@ -12,7 +12,7 @@
        Subset to Latin plus the UI's symbols (PERFORMANCE.md item 6); to add a glyph, subset the originals again:
        pyftsubset Inter-X.ttf - -unicodes="U+0020-007E,U+00A0-017F,U+2010-2027,U+2030-203A,U+20AC,U+2190-2199,U+2212,U+221E,U+2248,U+26A0,U+2713" - -layout-features+=tnum
        ("- -" is two hyphens: XML comments can't hold them.) -->
-  <gresource prefix="/io/github/dasantha/VideoCompressor/fonts">
+  <gresource prefix="/io/github/Tharindu_Dasantha/MediaTools/fonts">
     <file alias="Inter-Regular.ttf">fonts/Inter-Regular.ttf</file>
     <file alias="Inter-Medium.ttf">fonts/Inter-Medium.ttf</file>
     <file alias="Inter-SemiBold.ttf">fonts/Inter-SemiBold.ttf</file>

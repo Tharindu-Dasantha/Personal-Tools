@@ -1,0 +1,137 @@
+{
+  "id": "io.github.Tharindu_Dasantha.MediaTools",
+  "runtime": "org.gnome.Platform",
+  "runtime-version": "51",
+  "sdk": "org.gnome.Sdk",
+  "sdk-extensions": ["org.freedesktop.Sdk.Extension.rust-stable"],
+  "command": "video-compressor",
+  "finish-args": [
+    "--share=ipc",
+    "--socket=wayland",
+    "--socket=fallback-x11",
+    "--device=dri",
+    "--filesystem=home",
+    "--filesystem=/run/media",
+    "--filesystem=/media"
+  ],
+  "cleanup": ["/include", "/lib/pkgconfig", "/lib/cmake", "/share/doc", "/share/man", "/share/ffmpeg", "*.la", "*.a"],
+  "modules": [
+    {
+      "name": "zimg",
+      "buildsystem": "autotools",
+      "config-opts": ["--disable-static"],
+      "sources": [
+        {
+          "type": "archive",
+          "url": "https://github.com/sekrit-twc/zimg/archive/refs/tags/release-3.0.6.tar.gz",
+          "sha256": "be89390f13a5c9b2388ce0f44a5e89364a20c1c57ce46d382b1fcc3967057577"
+        }
+      ]
+    },
+    {
+      "name": "x264",
+      "config-opts": ["--enable-shared", "--enable-pic", "--disable-cli"],
+      "sources": [
+        {
+          "type": "git",
+          "url": "https://code.videolan.org/videolan/x264.git",
+          "commit": "b35605ace3ddf7c1a5d67a2eb553f034aef41d55"
+        }
+      ]
+    },
+    {
+      "name": "x265",
+      "buildsystem": "simple",
+      "build-commands": [
+        "sed -i '/cmake_policy(SET CMP00\\(25\\|54\\) OLD)/d' source/CMakeLists.txt",
+        "cmake -S source -B b10 -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DHIGH_BIT_DEPTH=ON -DEXPORT_C_API=OFF -DENABLE_SHARED=OFF -DENABLE_CLI=OFF",
+        "ninja -C b10",
+        "mkdir -p b8 && cp b10/libx265.a b8/libx265_main10.a",
+        "cmake -S source -B b8 -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_INSTALL_PREFIX=/app -DCMAKE_INSTALL_LIBDIR=lib -DENABLE_SHARED=ON -DENABLE_CLI=OFF -DEXTRA_LIB=x265_main10.a -DEXTRA_LINK_FLAGS=-L. -DLINKED_10BIT=ON",
+        "ninja -C b8 install"
+      ],
+      "sources": [
+        {
+          "type": "archive",
+          "url": "https://download.videolan.org/videolan/x265/x265_4.1.tar.gz",
+          "sha256": "a31699c6a89806b74b0151e5e6a7df65de4b49050482fe5ebf8a4379d7af8f29"
+        }
+      ]
+    },
+    {
+      "name": "ffmpeg",
+      "config-opts": [
+        "--enable-gpl",
+        "--enable-shared",
+        "--disable-static",
+        "--disable-doc",
+        "--disable-debug",
+        "--disable-ffplay",
+        "--enable-libx264",
+        "--enable-libx265",
+        "--enable-libwebp",
+        "--enable-libzimg",
+        "--enable-libdav1d",
+        "--enable-vaapi"
+      ],
+      "sources": [
+        {
+          "type": "archive",
+          "url": "https://ffmpeg.org/releases/ffmpeg-8.1.3.tar.xz",
+          "sha256": "7138d28c96d9d3e3af4ee3d8cad72741f8ffb40da90c1112235dea3ecd3178a3"
+        }
+      ]
+    },
+    {
+      "name": "imagemagick",
+      "config-opts": [
+        "--disable-static",
+        "--disable-docs",
+        "--without-x",
+        "--without-perl",
+        "--without-magick-plus-plus"
+      ],
+      "sources": [
+        {
+          "type": "archive",
+          "url": "https://github.com/ImageMagick/ImageMagick/archive/refs/tags/7.1.2-34.tar.gz",
+          "sha256": "f5163a573a1c1bff16358d0a592b2fb168ad0fd3b9dc5ff57dc7820eebc5cf79"
+        }
+      ]
+    },
+    {
+      "name": "pngquant",
+      "buildsystem": "simple",
+      "build-options": {
+        "append-path": "/usr/lib/sdk/rust-stable/bin",
+        "env": { "CARGO_HOME": "/run/build/pngquant/cargo" }
+      },
+      "build-commands": [
+        "cargo --offline build --release",
+        "install -Dm755 target/release/pngquant /app/bin/pngquant"
+      ],
+      "sources": [
+        {
+          "type": "archive",
+          "archive-type": "tar-gzip",
+          "url": "https://static.crates.io/crates/pngquant/pngquant-3.0.3.crate",
+          "sha256": "68a12bdd8825f9989f4ee9a6ab0b42727dae57728b939ef63453366697a07232"
+        },
+        "pngquant-cargo-sources.json"
+      ]
+    },
+    {
+      "name": "media-tools",
+      "buildsystem": "cmake-ninja",
+      "subdir": "Video Compressor",
+      "config-opts": ["-DCMAKE_BUILD_TYPE=Release"],
+      "sources": [
+        {
+          "type": "dir",
+          "path": "../..",
+          "skip": [".git", "Video Compressor/build", "Video Compressor/graphify-out"]
+        }
+      ]
+    }
+  ]
+}

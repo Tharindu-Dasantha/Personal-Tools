@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <!-- Media Tools app icon: a video frame squeezed by two arrows, in the app's accent blue (#0a84ff). -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#4aa6ff"/>
+      <stop offset="1" stop-color="#0a6fe0"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="12" width="112" height="108" rx="24" fill="#0757b0"/>
+  <rect x="8" y="8" width="112" height="108" rx="24" fill="url(#bg)"/>
+  <rect x="30" y="40" width="68" height="44" rx="9" fill="#fff"/>
+  <path d="M56 51 L75 62 L56 73 Z" fill="#0a84ff"/>
+  <g fill="none" stroke="#fff" stroke-width="7" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M52 17 L64 28 L76 17"/>
+    <path d="M52 107 L64 96 L76 107"/>
+  </g>
+</svg>
