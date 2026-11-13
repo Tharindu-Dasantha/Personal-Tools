@@ -10,9 +10,9 @@
     "--socket=wayland",
     "--socket=fallback-x11",
     "--device=dri",
-    "--filesystem=home",
-    "--filesystem=/run/media",
-    "--filesystem=/media"
+    "--filesystem=xdg-videos",
+    "--filesystem=xdg-pictures",
+    "--filesystem=xdg-download"
   ],
   "cleanup": ["/include", "/lib/pkgconfig", "/lib/cmake", "/share/doc", "/share/man", "/share/ffmpeg", "*.la", "*.a"],
   "modules": [

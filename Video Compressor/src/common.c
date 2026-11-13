@@ -163,11 +163,25 @@ check_range (void)
     return !s_ok ? "Start" : !e_ok ? "End" : NULL;
 }
 
+/* Flatpak: where a file or folder shared through the document portal really is, or NULL for any
+ * other path. Inside the sandbox it is /run/user/1000/doc/<id>/…, which means nothing to people. */
+char *
+host_path (const char *path)
+{
+    char buf[4096];
+    ssize_t n = getxattr (path, "user.document-portal.host-path", buf, sizeof buf - 1);
+    if (n <= 0)
+        return NULL;
+    buf[n] = '\0';
+    return g_strdup (buf);
+}
+
 /* A path for display, with the home folder as ~: "~/Videos/Phone 2026" */
 char *
 home_relative (const char *path)
 {
-    g_autofree char *display = g_filename_display_name (path);
+    g_autofree char *host = host_path (path);
+    g_autofree char *display = g_filename_display_name (host != NULL ? host : path);
     const char *home = g_get_home_dir ();
     gsize hl = strlen (home);
     return strncmp (display, home, hl) == 0 && (display[hl] == '/' || !display[hl])

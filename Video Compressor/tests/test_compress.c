@@ -175,6 +175,17 @@ test_output_path (void)
 }
 
 static void
+test_lone_document (void)
+{
+    const char *root = "/run/user/1000/doc";
+    g_assert_true (vc_is_lone_document ("/run/user/1000/doc/AbC12/clip.mp4", root));
+    g_assert_false (vc_is_lone_document ("/run/user/1000/doc/AbC12/Holiday/clip.mp4", root));   /* shared folder */
+    g_assert_false (vc_is_lone_document ("/run/user/1000/doc/clip.mp4", root));
+    g_assert_false (vc_is_lone_document ("/home/me/Videos/clip.mp4", root));
+    g_assert_false (vc_is_lone_document ("/run/user/1000/docs/AbC12/clip.mp4", root));
+}
+
+static void
 test_ffmpeg_argv_8bit (void)
 {
     const char *name = "/v/it's a \"test\" $HOME ünïcødé 🎬.mov";
@@ -770,6 +781,7 @@ main (int argc, char **argv)
     g_test_add_func ("/probe/bad", test_parse_probe_bad);
     g_test_add_func ("/probe/first-video-wins", test_parse_probe_first_video_wins);
     g_test_add_func ("/output/path", test_output_path);
+    g_test_add_func ("/output/lone-document", test_lone_document);
     g_test_add_func ("/ffmpeg/argv-8bit", test_ffmpeg_argv_8bit);
     g_test_add_func ("/ffmpeg/argv-10bit-hlg", test_ffmpeg_argv_10bit_hlg);
     g_test_add_func ("/ffmpeg/argv-presets", test_ffmpeg_argv_presets);

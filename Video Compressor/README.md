@@ -34,6 +34,11 @@ double-click it, or run `flatpak install --user media-tools-*.flatpak`. The bund
 ImageMagick and pngquant, so nothing else is needed. If Flatpak isn't set up yet, follow <https://flathub.org/setup>
 first.
 
+The Flatpak can see your Videos, Pictures and Downloads folders. Anything else you open through the app's own
+dialogs or by dragging a folder onto it. If you pick single files from another folder, the app asks you to choose that
+folder too, so it can save `compressed/` next to them. Move to Trash works only in Videos, Pictures and Downloads.
+Elsewhere the original is kept, the row says "trash failed", and the compressed copy is still saved.
+
 ## Build
 
 ```sh

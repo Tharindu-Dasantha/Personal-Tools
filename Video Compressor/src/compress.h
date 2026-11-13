@@ -87,6 +87,10 @@ double vc_output_pixel_frames (const VcProbe *probe, const VcOptions *opt);
  * second: x265 at medium, and the GPU (0 = not measured yet: x265's speed × the GPU time factor).
  * 0 when the duration is unknown. */
 double vc_estimate_seconds (const VcProbe *probe, const VcOptions *opt, double medium_pps, double gpu_pps);
+/* Flatpak: TRUE for a file the document portal shared on its own, `<doc_root>/<id>/name`, as it
+ * does for files picked outside the folders the app may see. Its folder can't be written, so no
+ * compressed/ can go beside it. A file inside a shared folder (`<doc_root>/<id>/dir/name`) is FALSE. */
+gboolean vc_is_lone_document (const char *path, const char *doc_root);
 /* "h264" → "H.264", "hevc" → "HEVC"; unknown names are upper-cased. */
 char *vc_codec_label (const char *codec);
 /* "Less than a minute left", "About 9 min left", "About 1 h left", "About 1 h 20 min left". */

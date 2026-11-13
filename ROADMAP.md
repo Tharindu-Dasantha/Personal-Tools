@@ -103,8 +103,8 @@ LICENSE
   - `flatpak-builder-lint`: the manifest passes except `appid-url-not-reachable` (the ID names a repo that doesn't
     exist, see Phase 2) and the screenshot 404 (fixed by the tag).
   - `finish-args`: `--share=ipc`, `--socket=wayland`, `--socket=fallback-x11`, `--device=dri` (VA-API),
-    `--filesystem=home` (shortcut: simplest way for folders and `compressed/` output to work; tightened in Phase 3),
-    `--filesystem=/run/media` and `/media` (external drives).
+    `--filesystem=home` and `/run/media`, `/media` at first; since Phase 3 only `xdg-videos`, `xdg-pictures` and
+    `xdg-download`, the rest through the portals.
 - [ ] Test inside the sandbox, since this is where it can behave differently from a normal install:
   - [x] The app starts in the sandbox (2026-11-13, Xvfb): bundled ffmpeg, ImageMagick and pngquant are found (no
         missing-tool banner), and the embedded Inter font and icons load from the renamed resource path.
@@ -163,8 +163,8 @@ nothing else installed.
 - [ ] **Everything below is yours to do by hand** (AI policy above): the Flathub manifest, the PR, and all replies.
 - [ ] Before submitting: tag `media-tools-v0.1.0` and push it (screenshot URLs need it), finish the Phase 1 desktop
       tests, and let some history build up (tagged releases, commits over weeks).
-- [ ] Submit a PR to `flathub/flathub`. Review can take weeks. Reviewers may question `--filesystem=home`: either explain
-      why it's needed (batch processing of whole folders) or tighten it first.
+- [ ] Submit a PR to `flathub/flathub`. Review can take weeks. `--filesystem=home` is gone (Phase 3); the static
+      access left is Videos, Pictures and Downloads, which is usual for a media app.
 - [ ] After acceptance, updates are PRs to the `flathub/<appid>` repo (Flathub's bot can open them for new tags).
 - [ ] "Get it on Flathub" badge in the README.
 
@@ -174,7 +174,18 @@ nothing else installed.
 
 Ordered roughly by value. Each item is a release on its own.
 
-- [ ] **Tighter sandbox:** use only the file chooser and document portals, and drop `--filesystem=home`.
+- [x] **Tighter sandbox** (2026-11-13): `--filesystem=home`, `/run/media` and `/media` replaced by `xdg-videos`,
+      `xdg-pictures` and `xdg-download`; everything else goes through the file chooser and document portals.
+  - Tested in the sandbox against the real document portal: a folder shared by the portal can be written
+    (mkdir `compressed/`, write, rename all work); a single shared file's folder can't (`Operation not permitted`).
+    So files picked outside those three folders make the app ask for their folder (`vc_is_lone_document`, unit
+    tested), then list the same files inside it. Shown in a headless GNOME Shell: the dialog appears for a lone
+    portal file, and a portal folder's header shows its real path (`user.document-portal.host-path` xattr).
+  - **Known limit:** the Trash portal fails on portal-shared files (tested, also for folders in home), so Move to
+    Trash works only in Videos, Pictures and Downloads. Elsewhere the existing fallback applies: original kept,
+    "trash failed", compressed copy saved. Said in the README.
+  - Not tested (needs clicks on the desktop): the folder dialog after "Choose Folder…" and the file list it rebuilds;
+    dropping a folder from Files; Show in Files on a portal folder.
 - [x] **Split `src/main.c`** (2026-11-13): 4,470 lines became 11 files of 120 to 830 lines sharing `src/app.h`
       (only functions used across files are non-static). Done by a script that checks every original line lands
       in exactly one file; the sorted lines match the old file apart from declarations. Debug `-Werror`, ctest and
@@ -213,7 +224,7 @@ What counts isn't the feature list. It's being able to show:
 | 1 | License | **Decided 2026-11-13: GPL-3.0-or-later.** |
 | 2 | Final app name and ID | **Decided 2026-11-13: "Media Tools", `io.github.Tharindu_Dasantha.MediaTools`**, kept in this monorepo (a separate `MediaTools` repo was considered and dropped). |
 | 3 | Rename the repo | Open. Recommendation: yes, to something public-facing (e.g. `linux-tools`). Renaming changes the metainfo URLs. |
-| 4 | Sandbox for v1 | **Decided: `--filesystem=home`** plus `/run/media` and `/media`; portals only in Phase 3. |
+| 4 | Sandbox | **Decided 2026-11-13: `xdg-videos`, `xdg-pictures`, `xdg-download` plus portals** (was `--filesystem=home`, `/run/media`, `/media`). |
 | 5 | Updates before Flathub | **Deferred 2026-11-13:** v0.1.0 ships as a bundle only; revisit after the desktop tests. Option: a self-hosted Flatpak repo on GitHub Pages, built by CI on each tag and signed with your own GPG key. Users add it once and get updates in GNOME Software. Without it, the `.flatpak` bundle from Releases installs but never updates. |
 
 ## Unverified (check before relying on it)

@@ -264,6 +264,14 @@ vc_probe_is_hdr (const VcProbe *probe)
         || g_strcmp0 (probe->color_transfer, "smpte2084") == 0;         /* PQ / HDR10 */
 }
 
+gboolean
+vc_is_lone_document (const char *path, const char *doc_root)
+{
+    g_autofree char *dir = g_path_get_dirname (path);
+    g_autofree char *above = g_path_get_dirname (dir);
+    return strcmp (above, doc_root) == 0;
+}
+
 char *
 vc_output_path (const char *input, gboolean keep_subs, char **part_path)
 {

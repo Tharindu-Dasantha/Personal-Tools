@@ -252,6 +252,75 @@ on_choose (void)
     gtk_file_dialog_select_folder (d, app.win, NULL, folder_chosen, NULL);
 }
 
+/* Flatpak: files picked outside Videos, Pictures and Downloads come one by one through the document
+ * portal, and their folder can't be written, so no compressed/ could go beside them. Ask for that
+ * folder, then list the same files inside it. */
+static char **pending_files;
+
+static void
+folder_granted (GObject *source, GAsyncResult *res, gpointer user_data)
+{
+    (void) user_data;
+    g_autoptr (GFile) file = gtk_file_dialog_select_folder_finish (GTK_FILE_DIALOG (source), res, NULL);
+    g_autofree char *folder = file != NULL ? g_file_get_path (file) : NULL;
+    g_auto (GStrv) files = g_steal_pointer (&pending_files);
+    if (folder == NULL || files == NULL)
+        return;
+    /* shortcut: files from another folder are dropped silently; the file dialog picks from one folder */
+    g_autoptr (GStrvBuilder) b = g_strv_builder_new ();
+    for (char **f = files; *f != NULL; f++) {
+        g_autofree char *base = g_path_get_basename (*f);
+        g_autofree char *inside = g_build_filename (folder, base, NULL);
+        if (g_file_test (inside, G_FILE_TEST_IS_REGULAR))
+            g_strv_builder_add (b, inside);
+    }
+    g_auto (GStrv) found = g_strv_builder_end (b);
+    if (found[0] != NULL) {
+        load_source (NULL, found);
+        return;
+    }
+    g_autofree char *name = basename_display (files[0]);
+    g_autofree char *detail = g_strdup_printf ("Choose the folder that holds “%s”.", name);
+    alert ("The files aren't in that folder", detail, NULL);
+}
+
+static void
+folder_asked (GObject *source, GAsyncResult *res, gpointer user_data)
+{
+    (void) user_data;
+    if (gtk_alert_dialog_choose_finish (GTK_ALERT_DIALOG (source), res, NULL) != 1) {
+        g_clear_pointer (&pending_files, g_strfreev);
+        return;
+    }
+    g_autoptr (GtkFileDialog) d = gtk_file_dialog_new ();
+    gtk_file_dialog_set_title (d, "Choose the folder the files are in");
+    g_autofree char *host = pending_files != NULL ? host_path (pending_files[0]) : NULL;
+    if (host != NULL) {   /* open the dialog where the files are */
+        g_autofree char *dir = g_path_get_dirname (host);
+        g_autoptr (GFile) start = g_file_new_for_path (dir);
+        gtk_file_dialog_set_initial_folder (d, start);
+    }
+    gtk_file_dialog_select_folder (d, app.win, NULL, folder_granted, NULL);
+}
+
+static void
+load_files (char **files)
+{
+    g_autofree char *root = g_build_filename (g_get_user_runtime_dir (), "doc", NULL);
+    for (char **f = files; *f != NULL; f++) {
+        if (vc_is_lone_document (*f, root)) {
+            g_strfreev (pending_files);
+            pending_files = g_strdupv (files);
+            g_autofree char *detail = g_strdup_printf (
+                "Media Tools can read the files you picked, but to save %s/ next to them it needs their "
+                "folder too. Choose the folder they're in.", vc_mode_out_dir (app.mode));
+            confirm ("Allow saving next to these files?", detail, "Choose Folder…", folder_asked);
+            return;
+        }
+    }
+    load_source (NULL, files);
+}
+
 static void
 files_chosen (GObject *source, GAsyncResult *res, gpointer user_data)
 {
@@ -269,7 +338,7 @@ files_chosen (GObject *source, GAsyncResult *res, gpointer user_data)
     }
     g_auto (GStrv) files = g_strv_builder_end (b);
     if (files[0] != NULL)
-        load_source (NULL, files);
+        load_files (files);
 }
 
 static void
@@ -280,7 +349,7 @@ file_chosen (GObject *source, GAsyncResult *res, gpointer user_data)
     g_autofree char *path = f != NULL ? g_file_get_path (f) : NULL;
     char *files[] = { path, NULL };
     if (path != NULL)
-        load_source (NULL, files);
+        load_files (files);
 }
 
 void
@@ -321,7 +390,7 @@ on_drop (GtkDropTarget *t, const GValue *value, double x, double y, gpointer use
         char *files[] = { path, NULL };
         if (!g_file_test (path, G_FILE_TEST_IS_REGULAR) || !vc_mode_accepts (app.mode, base))
             return FALSE;
-        load_source (NULL, files);
+        load_files (files);
         return TRUE;
     }
     if (!g_file_test (path, G_FILE_TEST_IS_DIR))

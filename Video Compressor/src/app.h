@@ -14,6 +14,7 @@
 #include <string.h>
 #include <sys/resource.h>
 #include <sys/syscall.h>
+#include <sys/xattr.h>
 #include <unistd.h>
 
 typedef enum {
@@ -172,6 +173,7 @@ char *change_text (guint64 before, guint64 after);
 VcOptions current_options (void);
 char *format_clock (double t);
 const char *check_range (void);
+char *host_path (const char *path);
 char *home_relative (const char *path);
 char *preset_title (guint i);
 char *basename_display (const char *path);
