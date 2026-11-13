@@ -61,12 +61,27 @@ compress_steps (const char *input, const VcProbe *probe, const VcOptions *opt, c
         g_free (part);
         return NULL;
     }
+    GPtrArray *steps = g_ptr_array_new_with_free_func ((GDestroyNotify) vc_step_free);
+    g_autofree char *passlog = NULL;
+    if (vc_target_video_kbps (probe, opt) > 0 && g_strcmp0 (opt->preset, VC_PRESET_GPU) != 0) {
+        /* x265 two-pass: pass 1's stats go in a hidden folder the runner removes with the job */
+        g_autofree char *dir = g_path_get_dirname (out);
+        g_autofree char *base = g_path_get_basename (out);
+        *strrchr (base, '.') = '\0';
+        g_autofree char *name = g_strdup_printf (".%s.2pass.part", base);
+        VcStep *p1 = g_new0 (VcStep, 1);
+        p1->part = g_build_filename (dir, name, NULL);
+        p1->part_is_dir = TRUE;
+        p1->progress = TRUE;
+        passlog = g_build_filename (p1->part, "x265", NULL);
+        p1->argv = vc_build_ffmpeg_pass_argv (input, NULL, probe, opt, 1, passlog);
+        g_ptr_array_add (steps, p1);
+    }
     VcStep *s = g_new0 (VcStep, 1);
-    s->argv = vc_build_ffmpeg_argv (input, part, probe, opt);
+    s->argv = vc_build_ffmpeg_pass_argv (input, part, probe, opt, passlog != NULL ? 2 : 0, passlog);
     s->part = part;
     s->output = out;
     s->progress = TRUE;
-    GPtrArray *steps = g_ptr_array_new_with_free_func ((GDestroyNotify) vc_step_free);
     g_ptr_array_add (steps, s);
     return steps;
 }

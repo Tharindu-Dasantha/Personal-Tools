@@ -94,7 +94,9 @@ VcOptions
 current_options (void)
 {
     static const int sizes[] = { 0, 1080, 720 };   /* the Max size dropdown, in order */
+    static const guint64 targets[] = { 0, 10000000, 25000000, 50000000, 100000000 };   /* Target size */
     guint size = gtk_drop_down_get_selected (GTK_DROP_DOWN (app.max_size));
+    guint target = gtk_drop_down_get_selected (GTK_DROP_DOWN (app.target));
     GtkWidget *width_dd = app.mode == VC_MODE_FRAMES ? app.frames_width
                           : app.mode == VC_MODE_IMAGES ? app.images_width : app.web_width;
     guint width = gtk_drop_down_get_selected (GTK_DROP_DOWN (width_dd));
@@ -114,6 +116,7 @@ current_options (void)
         .end = end,
         .webp = app.webp,
         .quality = (int) gtk_range_get_value (GTK_RANGE (app.frames_quality)),
+        .target_bytes = app.mode == VC_MODE_COMPRESS && target < G_N_ELEMENTS (targets) ? targets[target] : 0,
     };
 }
 

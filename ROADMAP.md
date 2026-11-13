@@ -193,10 +193,21 @@ Ordered roughly by value. Each item is a release on its own.
 - [ ] **Libadwaita look** and the GNOME Human Interface Guidelines.
 - [ ] **Translations** (gettext and a `po/` folder), so contributors can add languages.
 - [ ] **Apply to GNOME Circle** once the two items above are done. It's the strongest credibility signal on Linux.
-- [ ] **AV1 option** (SVT-AV1): smaller files than H.265.
+- [ ] **AV1 option** (SVT-AV1): smaller files than H.265 (decided: an H.265 / AV1 choice under Advanced settings,
+      H.265 by default). Needs VMAF measurements on real footage to pick CRFs that match today's quality.
 - [ ] **NVIDIA encoding** (NVENC). Today only VA-API (Intel, possibly AMD) is used.
-- [ ] **Target size mode** ("fit under 10 MB", like Constrict).
-- [ ] **AVIF output** for images.
+- [x] **Target size mode** (2026-11-13): a Target size dropdown in Compress video (No limit, under 10/25/50/100 MB).
+      x265 runs two passes at the bitrate that fits (size × 0.96 / duration − audio, at least 100 kbps); the GPU runs
+      one VBR pass capped at that bitrate. Pass 1's stats sit in a hidden `.part` folder removed with the job. Videos
+      already under the size, too long for it, or of unknown length get a status pill instead of an encode, and any
+      smaller copy is kept (the 5% rule doesn't apply). Unit tested; the ASan app ran it end to end in a headless GNOME
+      Shell. Measured: x265 two-pass came out +1% over the bitrate on the 720p fixture; the GPU's VBR stayed under on
+      every fixture. The generated clips can't use a 10 MB budget, so real footage should land closer to the target
+      than these runs did; worth one check with real videos.
+  - Still open: the footer's "select to compress anyway" also counts videos that are already under the target, and
+    selecting those doesn't encode them.
+- [ ] **AVIF output** for images (decided: an optional "Also AVIF" switch, off by default). Shares the AV1
+      encoder library with the AV1 option, so both get built into the Flatpak together.
 - [ ] **Smaller package:** replace ImageMagick with lighter tools where they're good enough.
 - [ ] Optional: Fedora COPR, so Fedora users can `dnf install`.
 

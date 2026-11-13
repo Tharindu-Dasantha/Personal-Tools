@@ -61,6 +61,17 @@ do_start (Item *one, gboolean sel)
         }
         if (!can_start (it))
             continue;
+        VcOptions o = current_options ();
+        const char *why = app.mode == VC_MODE_COMPRESS && it->probe != NULL
+                          ? vc_target_problem (it->probe, it->size, &o) : NULL;
+        if (why != NULL) {
+            set_status (it, why, g_str_has_prefix (why, "Already")
+                                     ? "It is already under the target size, so it was left alone."
+                                 : g_str_has_prefix (why, "Too long")
+                                     ? "At this size the picture would fall apart. Pick a bigger target."
+                                     : "Its length is unknown, so no bitrate can be worked out.");
+            continue;
+        }
         if (one == NULL && !sel && skip_in_bulk (it)) {
             set_status (it, "No saving · skipped",
                         "Likely no saving. Select it and press Start to compress it anyway.");
@@ -383,8 +394,11 @@ finish_job (Item *it, gboolean ok)
          * dropped with the other parts below; web video keeps every output (its point is
          * compatibility, SPEC-web-video.md D2). */
         gboolean shrinks = app.mode == VC_MODE_COMPRESS || app.mode == VC_MODE_IMAGES;
+        /* with a target size, any copy that is smaller is what was asked for, even by under 5% */
+        gboolean to_target = app.mode == VC_MODE_COMPRESS && current_options ().target_bytes > 0;
         if (s->output == NULL || g_stat (s->part, &st) != 0
-            || (shrinks && !vc_output_is_worth_keeping (it->size, st.st_size)))
+            || (shrinks && !(to_target ? (guint64) st.st_size < it->size
+                                       : vc_output_is_worth_keeping (it->size, st.st_size))))
             continue;
         g_autoptr (GFile) src = g_file_new_for_path (s->part);
         g_autoptr (GFile) dst = g_file_new_for_path (s->output);
@@ -812,8 +826,8 @@ learn_speed (Item *it)
     VcOptions o = current_options ();   /* settings are locked while busy: these encoded it */
     double secs = (g_get_monotonic_time () - it->t0 - it->paused_total) / 1e6;
     double pf = vc_output_pixel_frames (it->probe, &o);
-    if (secs < 3 || pf <= 0)
-        return;   /* too short to time well */
+    if (secs < 3 || pf <= 0 || o.target_bytes > 0)
+        return;   /* too short to time well, or two passes that would halve the learned speed */
     double t, sz;
     vc_preset_factors (o.preset, &t, &sz);
     gboolean gpu = strcmp (o.preset, VC_PRESET_GPU) == 0;

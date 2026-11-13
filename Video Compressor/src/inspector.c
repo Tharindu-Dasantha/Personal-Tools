@@ -142,6 +142,18 @@ build_compress_opts (void)
     g_signal_connect (app.max_size, "notify::selected", G_CALLBACK (on_estimate_input), NULL);
     gtk_box_append (GTK_BOX (box), app.max_size);
 
+    section (box, "TARGET SIZE");
+    const char *targets[] = { "No limit (same quality)", "Under 10 MB", "Under 25 MB", "Under 50 MB",
+                              "Under 100 MB", NULL };   /* current_options() has the sizes */
+    app.target = gtk_drop_down_new_from_strings (targets);
+    gtk_accessible_update_property (GTK_ACCESSIBLE (app.target), GTK_ACCESSIBLE_PROPERTY_LABEL, "Target size", -1);
+    gtk_widget_set_tooltip_text (app.target, "Fit each video under this size, for chat apps and email, at the "
+                                             "best quality that fits: the copy uses most of the size. Without the "
+                                             "GPU it takes two passes, so about twice as long. Videos already "
+                                             "smaller are left alone.");
+    g_signal_connect (app.target, "notify::selected", G_CALLBACK (on_estimate_input), NULL);
+    gtk_box_append (GTK_BOX (box), app.target);
+
     GtkWidget *adv = vbox (0), *outer = box;
     GtkWidget *exp = gtk_expander_new (NULL);
     gtk_expander_set_label_widget (GTK_EXPANDER (exp), styled_label ("ADVANCED SETTINGS", "sect", 0));

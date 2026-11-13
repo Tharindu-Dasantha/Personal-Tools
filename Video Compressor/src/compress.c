@@ -343,7 +343,9 @@ add_video_output (GStrvBuilder *b, const VcProbe *probe, const VcOptions *opt, g
     gboolean ten = vc_probe_is_10bit (probe);
     int side = out_short_side (probe, opt);
     const char *transpose = gpu_transpose (probe);
-    char num[16];
+    char num[16], rate[16];
+    int kbps = vc_target_video_kbps (probe, opt);
+    g_snprintf (rate, sizeof rate, "%dk", kbps);
 
     /* Scale by the short side so portrait and rotated video work; -2 keeps the other side even. */
     GString *vf = g_string_new (NULL);
@@ -366,8 +368,11 @@ add_video_output (GStrvBuilder *b, const VcProbe *probe, const VcOptions *opt, g
     if (gpu) {
         g_snprintf (num, sizeof num, "%d", cls->gpu_qp);
         /* low_power is the GPU's fixed-function encoder: ~12x x265 medium (LOG.md) */
-        g_strv_builder_add_many (b, "-c:v", "hevc_vaapi", "-low_power", "1", "-rc_mode", "CQP",
-                                 "-qp", num, NULL);
+        g_strv_builder_add_many (b, "-c:v", "hevc_vaapi", "-low_power", "1", NULL);
+        if (kbps > 0)   /* one pass: the GPU's VBR stayed under the target on every test clip */
+            g_strv_builder_add_many (b, "-rc_mode", "VBR", "-b:v", rate, "-maxrate", rate, NULL);
+        else
+            g_strv_builder_add_many (b, "-rc_mode", "CQP", "-qp", num, NULL);
         if (ten)
             g_strv_builder_add_many (b, "-profile:v", "main10", NULL);
     } else {
@@ -383,7 +388,8 @@ add_video_output (GStrvBuilder *b, const VcProbe *probe, const VcOptions *opt, g
         /* HandBrake's x265 tuning: rectangular partitions are ~1/3 of slow's time for no VMAF gain. */
         if (g_strcmp0 (opt->preset, "slow") == 0 || g_strcmp0 (opt->preset, "slower") == 0)
             g_string_append (xp, ":rect=0:rskip=2");
-        g_strv_builder_add_many (b, "-c:v", "libx265", "-preset", opt->preset, "-crf", num,
+        g_strv_builder_add_many (b, "-c:v", "libx265", "-preset", opt->preset,
+                                 kbps > 0 ? "-b:v" : "-crf", kbps > 0 ? rate : num,
                                  "-x265-params", xp->str,
                                  "-pix_fmt", ten ? "yuv420p10le" : "yuv420p", NULL);
         g_string_free (xp, TRUE);
@@ -405,6 +411,13 @@ char **
 vc_build_ffmpeg_argv (const char *input, const char *output, const VcProbe *probe,
                       const VcOptions *opt)
 {
+    return vc_build_ffmpeg_pass_argv (input, output, probe, opt, 0, NULL);
+}
+
+char **
+vc_build_ffmpeg_pass_argv (const char *input, const char *output, const VcProbe *probe,
+                           const VcOptions *opt, int pass, const char *passlog)
+{
     const VcClass *cls = vc_output_class (probe, opt);
     gboolean gpu = g_strcmp0 (opt->preset, VC_PRESET_GPU) == 0;
     GStrvBuilder *b = g_strv_builder_new ();
@@ -422,6 +435,16 @@ vc_build_ffmpeg_argv (const char *input, const char *output, const VcProbe *prob
     /* ffmpeg 8 drops the source's creation_time unless metadata is mapped explicitly. */
     g_strv_builder_add_many (b, "-map_metadata", "0", NULL);
     add_video_output (b, probe, opt, gpu);
+    if (pass > 0) {
+        /* ffmpeg's own -passlogfile, not x265-params stats=: that would break on a ':' in the path */
+        g_strv_builder_add_many (b, "-pass", pass == 1 ? "1" : "2", "-passlogfile", passlog, NULL);
+        if (pass == 1) {
+            g_strv_builder_add_many (b, "-an", "-sn", "-f", "null", "-", NULL);
+            char **argv = g_strv_builder_end (b);
+            g_strv_builder_unref (b);
+            return argv;
+        }
+    }
 
     if (copies_audio (probe, cls)) {
         g_strv_builder_add_many (b, "-c:a", "copy", NULL);
@@ -558,6 +581,45 @@ vc_output_pixel_frames (const VcProbe *probe, const VcOptions *opt)
     return probe->width * scale * probe->height * scale * fps * probe->duration;
 }
 
+/* Below this the picture falls apart; saying "too long for the size" is more honest. */
+#define TARGET_MIN_VIDEO_KBPS 100
+/* Room for the MP4 container and rate-control overshoot (x265 two-pass came out +1%, the GPU under). */
+#define TARGET_MARGIN 0.96
+
+int
+vc_target_video_kbps (const VcProbe *probe, const VcOptions *opt)
+{
+    if (opt->target_bytes == 0 || probe->duration <= 0)
+        return 0;
+    const VcClass *cls = vc_output_class (probe, opt);
+    /* shortcut: counts one audio track; a file with several overshoots by the others' bitrate */
+    double audio_kbps = copies_audio (probe, cls) ? probe->aac_kbps : cls->audio_kbps;
+    double video_kbps = opt->target_bytes * 8 / 1000.0 * TARGET_MARGIN / probe->duration - audio_kbps;
+    return video_kbps >= TARGET_MIN_VIDEO_KBPS ? (int) video_kbps : 0;
+}
+
+const char *
+vc_target_problem (const VcProbe *probe, guint64 src_bytes, const VcOptions *opt)
+{
+    if (opt->target_bytes == 0)
+        return NULL;
+    if (src_bytes <= opt->target_bytes)
+        return "Already smaller";
+    if (probe->duration <= 0)
+        return "Length unknown";
+    return vc_target_video_kbps (probe, opt) == 0 ? "Too long for the size" : NULL;
+}
+
+/* The size a target-size encode aims at: its bitrates over the duration. */
+static guint64
+target_estimate (const VcProbe *probe, guint64 src_bytes, const VcOptions *opt)
+{
+    const VcClass *cls = vc_output_class (probe, opt);
+    double audio_kbps = copies_audio (probe, cls) ? probe->aac_kbps : cls->audio_kbps;
+    double bytes = (vc_target_video_kbps (probe, opt) + audio_kbps) * 1000.0 / 8.0 * probe->duration;
+    return MIN ((guint64) bytes, src_bytes);
+}
+
 double
 vc_estimate_seconds (const VcProbe *probe, const VcOptions *opt, double medium_pps, double gpu_pps)
 {
@@ -565,7 +627,9 @@ vc_estimate_seconds (const VcProbe *probe, const VcOptions *opt, double medium_p
     vc_preset_factors (opt->preset, &time, &size);
     if (g_strcmp0 (opt->preset, VC_PRESET_GPU) == 0 && gpu_pps > 0)
         return pf / gpu_pps;
-    return medium_pps > 0 ? pf / medium_pps * time : 0;
+    /* two-pass x265: pass 1 took about as long as pass 2 (8.8 s vs 7.8 s on the 720p fixture) */
+    double passes = opt->target_bytes > 0 && g_strcmp0 (opt->preset, VC_PRESET_GPU) != 0 ? 2 : 1;
+    return medium_pps > 0 ? pf / medium_pps * time * passes : 0;
 }
 
 guint64
@@ -573,6 +637,8 @@ vc_estimate_size (const VcProbe *probe, guint64 src_bytes, const VcOptions *opt)
 {
     if (probe->duration <= 0 || src_bytes == 0)
         return 0;
+    if (vc_target_video_kbps (probe, opt) > 0)
+        return target_estimate (probe, src_bytes, opt);
     const VcClass *cls = vc_output_class (probe, opt);
     double time, size, cap = SOURCE_CAP_DEFAULT;
     vc_preset_factors (opt->preset, &time, &size);
@@ -596,6 +662,8 @@ vc_estimate_from_sample (const VcProbe *probe, guint64 src_bytes, const VcOption
 {
     if (probe->duration <= 0 || src_bytes == 0 || gpu_video_kbps <= 0)
         return 0;
+    if (vc_target_video_kbps (probe, opt) > 0)
+        return target_estimate (probe, src_bytes, opt);
     const VcClass *cls = vc_output_class (probe, opt);
     double t, size, gpu_size;
     vc_preset_factors (opt->preset, &t, &size);

@@ -135,6 +135,37 @@ test_compress_steps (void)
 }
 
 static void
+test_compress_target_steps (void)
+{
+    g_autofree char *dir = g_dir_make_tmp ("vc-modes-XXXXXX", NULL);
+    g_autofree char *input = g_build_filename (dir, "my clip.mov", NULL);
+    g_autoptr (VcProbe) p = vc_parse_probe (PROBE_8BIT_SUBS, NULL);
+    VcOptions o = { .preset = "medium", .target_bytes = 10000000 };
+    g_autofree char *reason = NULL;
+    g_autoptr (GPtrArray) steps = vc_mode_steps (VC_MODE_COMPRESS, input, p, &o, &reason);
+    g_assert_cmpuint (steps->len, ==, 2);
+    VcStep *p1 = steps->pdata[0], *p2 = steps->pdata[1];
+    g_autofree char *log_dir = g_build_filename (dir, "compressed", ".my clip.2pass.part", NULL);
+    g_autofree char *passlog = g_build_filename (log_dir, "x265", NULL);
+    g_assert_cmpstr (p1->part, ==, log_dir);   /* removed with the job, and by remove_stale_parts */
+    g_assert_true (p1->part_is_dir);
+    g_assert_null (p1->output);
+    g_autofree char *part = NULL;
+    g_autofree char *out = vc_output_path (input, FALSE, &part);
+    g_auto (GStrv) a1 = vc_build_ffmpeg_pass_argv (input, NULL, p, &o, 1, passlog);
+    g_auto (GStrv) a2 = vc_build_ffmpeg_pass_argv (input, part, p, &o, 2, passlog);
+    assert_strv_equal (p1->argv, a1);
+    assert_strv_equal (p2->argv, a2);
+    g_assert_cmpstr (p2->output, ==, out);
+
+    /* the GPU stays one step */
+    o.preset = VC_PRESET_GPU;
+    g_autoptr (GPtrArray) gpu = vc_mode_steps (VC_MODE_COMPRESS, input, p, &o, &reason);
+    g_assert_cmpuint (gpu->len, ==, 1);
+    g_rmdir (dir);
+}
+
+static void
 test_remove_part (void)
 {
     g_autofree char *dir = g_dir_make_tmp ("vc-part-XXXXXX", NULL);
@@ -193,6 +224,7 @@ main (int argc, char **argv)
     g_test_add_func ("/modes/out-dir-and-trash", test_out_dir_and_trash);
     g_test_add_func ("/modes/missing-tool", test_missing_tool);
     g_test_add_func ("/modes/compress-steps", test_compress_steps);
+    g_test_add_func ("/modes/compress-target-steps", test_compress_target_steps);
     g_test_add_func ("/modes/remove-part", test_remove_part);
     return g_test_run ();
 }

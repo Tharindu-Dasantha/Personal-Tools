@@ -174,6 +174,73 @@ test_output_path (void)
     g_assert_cmpstr (out3, ==, "/v/compressed/x.mp4");
 }
 
+static gssize
+strv_find (char **argv, const char *word)
+{
+    for (gssize i = 0; argv[i] != NULL; i++)
+        if (strcmp (argv[i], word) == 0)
+            return i;
+    return -1;
+}
+
+static void
+test_target_size (void)
+{
+    VcProbe p = { .width = 1280, .height = 720, .duration = 60.0 };   /* 720p class: 128 kbps AAC */
+    VcOptions o = { .preset = "medium", .target_bytes = 10000000 };
+    /* 10 MB × 8 / 60 s × 0.96 margin = 1280 kbps, minus 128 for the audio */
+    g_assert_cmpint (vc_target_video_kbps (&p, &o), ==, 1152);
+    g_assert_null (vc_target_problem (&p, 60000000, &o));
+    g_assert_cmpstr (vc_target_problem (&p, 9000000, &o), ==, "Already smaller");
+    VcProbe hour = p;   /* 10 MB for an hour is 21 kbps in all: below the floor */
+    hour.duration = 3600;
+    g_assert_cmpint (vc_target_video_kbps (&hour, &o), ==, 0);
+    g_assert_cmpstr (vc_target_problem (&hour, 900000000, &o), ==, "Too long for the size");
+    VcProbe unknown = p;
+    unknown.duration = 0;
+    g_assert_cmpstr (vc_target_problem (&unknown, 60000000, &o), ==, "Length unknown");
+    /* the estimate is what the bitrates add up to, and stays under the target */
+    guint64 est = vc_estimate_size (&p, 60000000, &o);
+    g_assert_cmpuint (est, ==, (guint64) ((1152 + 128) * 1000.0 / 8.0 * 60.0));
+    g_assert_cmpuint (est, <=, o.target_bytes);
+    g_assert_cmpuint (vc_estimate_from_sample (&p, 60000000, &o, 3000), ==, est);   /* not the sample's */
+
+    /* pass 1: bitrate instead of CRF, stats to the log, no audio, nothing written */
+    g_auto (GStrv) a1 = vc_build_ffmpeg_pass_argv ("/v/in.mov", NULL, &p, &o, 1, "/v/c/.in.2pass.part/x265");
+    gssize b = strv_find (a1, "-b:v");
+    g_assert_cmpint (b, >, 0);
+    g_assert_cmpstr (a1[b + 1], ==, "1152k");
+    g_assert_cmpint (strv_find (a1, "-crf"), ==, -1);
+    g_assert_cmpstr (a1[strv_find (a1, "-pass") + 1], ==, "1");
+    g_assert_cmpstr (a1[strv_find (a1, "-passlogfile") + 1], ==, "/v/c/.in.2pass.part/x265");
+    g_assert_cmpint (strv_find (a1, "-an"), >, 0);
+    guint n1 = g_strv_length (a1);
+    g_assert_cmpstr (a1[n1 - 3], ==, "-f");
+    g_assert_cmpstr (a1[n1 - 2], ==, "null");
+    g_assert_cmpstr (a1[n1 - 1], ==, "-");
+    /* pass 2: same bitrate, reads the log, writes the output with audio */
+    g_auto (GStrv) a2 = vc_build_ffmpeg_pass_argv ("/v/in.mov", "/v/c/.in.part.mp4", &p, &o, 2, "/v/c/.in.2pass.part/x265");
+    g_assert_cmpstr (a2[strv_find (a2, "-pass") + 1], ==, "2");
+    g_assert_cmpint (strv_find (a2, "-c:a"), >, 0);
+    g_assert_cmpstr (a2[g_strv_length (a2) - 1], ==, "/v/c/.in.part.mp4");
+    /* the GPU: one pass, VBR capped at the bitrate */
+    VcOptions g = o;
+    g.preset = VC_PRESET_GPU;
+    g_auto (GStrv) ag = vc_build_ffmpeg_argv ("/v/in.mov", "/v/out.mp4", &p, &g);
+    g_assert_cmpstr (ag[strv_find (ag, "-rc_mode") + 1], ==, "VBR");
+    g_assert_cmpstr (ag[strv_find (ag, "-maxrate") + 1], ==, "1152k");
+    g_assert_cmpint (strv_find (ag, "-qp"), ==, -1);
+
+    /* off: CRF as before, no bitrate, no problem */
+    o.target_bytes = 0;
+    g_assert_cmpint (vc_target_video_kbps (&p, &o), ==, 0);
+    g_assert_null (vc_target_problem (&p, 9000000, &o));
+    g_auto (GStrv) a0 = vc_build_ffmpeg_argv ("/v/in.mov", "/v/out.mp4", &p, &o);
+    g_assert_cmpint (strv_find (a0, "-crf"), >, 0);
+    g_assert_cmpint (strv_find (a0, "-b:v"), ==, -1);
+    g_assert_cmpint (strv_find (a0, "-pass"), ==, -1);
+}
+
 static void
 test_lone_document (void)
 {
@@ -782,6 +849,7 @@ main (int argc, char **argv)
     g_test_add_func ("/probe/first-video-wins", test_parse_probe_first_video_wins);
     g_test_add_func ("/output/path", test_output_path);
     g_test_add_func ("/output/lone-document", test_lone_document);
+    g_test_add_func ("/target/size", test_target_size);
     g_test_add_func ("/ffmpeg/argv-8bit", test_ffmpeg_argv_8bit);
     g_test_add_func ("/ffmpeg/argv-10bit-hlg", test_ffmpeg_argv_10bit_hlg);
     g_test_add_func ("/ffmpeg/argv-presets", test_ffmpeg_argv_presets);

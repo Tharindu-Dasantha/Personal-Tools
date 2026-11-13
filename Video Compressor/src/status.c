@@ -375,6 +375,7 @@ update_controls (void)
     gtk_widget_set_sensitive (app.trash, !busy);
     gtk_widget_set_sensitive (app.fps30, !busy);
     gtk_widget_set_sensitive (app.max_size, !busy);
+    gtk_widget_set_sensitive (app.target, !busy);
     gtk_widget_set_sensitive (app.web_width, !busy);
     gtk_widget_set_sensitive (app.no_audio, !busy);
     gtk_widget_set_sensitive (app.frames_opts, !busy);

@@ -72,7 +72,7 @@ typedef struct {
     GtkWidget *summary, *sum_icon, *sum_title, *sum_sub, *sum_before, *sum_after, *sum_pct;
     GtkWidget *start_btn, *pause_btn, *stop_btn, *show_btn, *tool_sep;
     GtkWidget *speed_btns[8], *guide_rows, *subs, *trash, *gpu;   /* speed_btns[0] (GPU) is the gpu switch */
-    GtkWidget *fps30, *max_size, *empty_icon, *hero, *empty_sub;
+    GtkWidget *fps30, *max_size, *target, *empty_icon, *hero, *empty_sub;
     GtkWidget *mode_list, *mode_row[4], *mode_count[4], *mode_lock[4], *mode_dot[4];
     GtkWidget *banner, *banner_title, *banner_sub, *banner_code, *size_head;
     GtkWidget *insp_icon, *insp_title, *insp_sub, *insp_note, *insp_stack;

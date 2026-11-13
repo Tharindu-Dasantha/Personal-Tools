@@ -44,6 +44,7 @@ typedef struct {
     double start, end;    /* frames: seconds; end 0 = to the end */
     gboolean webp;        /* frames: WebP, else JPG */
     int quality;          /* frames: 1..100 */
+    guint64 target_bytes; /* compress: 0 = same quality (CRF); else fit under this size (two-pass x265) */
 } VcOptions;
 
 const VcClass *vc_class_for (int width, int height);
@@ -61,6 +62,16 @@ char *vc_output_path (const char *input, gboolean keep_subs, char **part_path);
 const VcClass *vc_output_class (const VcProbe *probe, const VcOptions *opt);
 char **vc_build_ffmpeg_argv (const char *input, const char *output, const VcProbe *probe,
                              const VcOptions *opt);
+/* Pass 1 or 2 of a two-pass encode (opt->target_bytes set): pass 1 only writes x265's stats to
+ * `passlog`, pass 2 reads them and writes `output`. Pass 0 is vc_build_ffmpeg_argv. */
+char **vc_build_ffmpeg_pass_argv (const char *input, const char *output, const VcProbe *probe,
+                                  const VcOptions *opt, int pass, const char *passlog);
+/* The video bitrate (kbps) that fits opt->target_bytes after the audio and a margin; 0 when the
+ * target is off, the duration is unknown, or the bitrate would be too low to watch. */
+int vc_target_video_kbps (const VcProbe *probe, const VcOptions *opt);
+/* Why a video can't be aimed at opt->target_bytes ("Already smaller", "Too long for the size",
+ * "Length unknown"), or NULL when it can, or the target is off. */
+const char *vc_target_problem (const VcProbe *probe, guint64 src_bytes, const VcOptions *opt);
 /* Argv for a short GPU test encode of `probe`'s video at `opt`'s size and frame rate; raw HEVC goes
  * to stdout, so its byte count over `*seconds` gives the real bitrate for vc_estimate_from_sample. */
 char **vc_build_sample_argv (const char *input, const VcProbe *probe, const VcOptions *opt,
