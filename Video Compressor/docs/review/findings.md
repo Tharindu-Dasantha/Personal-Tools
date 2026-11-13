@@ -31,16 +31,16 @@ No memory leaks were found (see "Memory" at the end).
 ## Bugs
 
 ### 1. A filename that isn't valid UTF-8 crashes the app on folder load
-[src/main.c:1069](../src/main.c#L1069)
+[src/main.c:1069](../../src/main.c#L1069)
 
 `compare_items()` sorts the list with `g_utf8_collate()` on raw paths. When a string isn't valid UTF-8, GLib's normalise step returns NULL and the following `strcoll()` dereferences it.
 
 - **When:** any folder (or file selection) with at least two matching files, one of them named in Latin-1 or another legacy encoding. These names are common in old camera folders, Windows zip extracts and Samba shares.
 - **Verified:** a test program calling `g_utf8_collate("/v/caf\xe9.mp4", "/v/b.mp4")` under `en_US.UTF-8` died with SIGSEGV (exit 139).
-- **Related:** `set_status(it, NULL, it->out)` ([main.c:1256](../src/main.c#L1256), 1474, 1476, 1488) uses the raw output path as tooltip text. Pango prints "Invalid UTF-8" warnings for such names, and those warnings abort the app under `G_DEBUG=fatal-criticals`.
+- **Related:** `set_status(it, NULL, it->out)` ([main.c:1256](../../src/main.c#L1256), 1474, 1476, 1488) uses the raw output path as tooltip text. Pango prints "Invalid UTF-8" warnings for such names, and those warnings abort the app under `G_DEBUG=fatal-criticals`.
 
 ### 2. Video → frames fails for any video with `%` in its name
-[src/frames.c:446](../src/frames.c#L446)
+[src/frames.c:446](../../src/frames.c#L446)
 
 The frames folder is named after the video (`frames/.<stem>.part/`) and becomes part of ffmpeg's output pattern `…/frame_%04d.webp`. ffmpeg reads `%` sequences anywhere in that path. When one of them is invalid (`% o` in `50% off`), it treats the path as a plain filename instead of a pattern.
 
@@ -50,7 +50,7 @@ The frames folder is named after the video (`frames/.<stem>.part/`) and becomes 
 ## Data safety
 
 ### 3. Two videos with the same name and different extensions share one output
-[src/compress.c:267](../src/compress.c#L267), [src/web_video.c:279](../src/web_video.c#L279), [src/frames.c:386](../src/frames.c#L386), [src/main.c:1797-1806](../src/main.c#L1797-L1806)
+[src/compress.c:267](../../src/compress.c#L267), [src/web_video.c:279](../../src/web_video.c#L279), [src/frames.c:386](../../src/frames.c#L386), [src/main.c:1797-1806](../../src/main.c#L1797-L1806)
 
 `clip.mov` and `clip.mp4` both map to `compressed/clip.mp4`. The same happens with `web/clip.mp4` and `frames/clip/`.
 
@@ -62,7 +62,7 @@ The frames folder is named after the video (`frames/.<stem>.part/`) and becomes 
 Images already avoid this with `has_twin()` (`photo.png` → `photo.png.webp`). Videos have no equivalent.
 
 ### 4. The check before trashing reads headers only
-[src/main.c:1288-1301](../src/main.c#L1288-L1301)
+[src/main.c:1288-1301](../../src/main.c#L1288-L1301)
 
 ffprobe reads the length (video) or the stored size (image) from the container header without decoding any frames. A file truncated after its header would pass. In practice two things cover this: ffmpeg/magick must exit 0, and the `.part` file is renamed atomically. The remaining gap is small.
 
@@ -77,7 +77,7 @@ What is already sound, checked during this review:
 - Every async callback is guarded by a cancellable, the `closing` flag, or the busy lock that keeps the list from reloading.
 
 ### 5. No size cap on images before `magick` and `pngquant`
-[src/images.c:612](../src/images.c#L612)
+[src/images.c:612](../../src/images.c#L612)
 
 A PNG of a few kilobytes can declare 50,000 × 50,000 pixels.
 - `pngquant` decodes the whole image into memory: 4 bytes × 2.5 billion pixels = about 10 GB.
@@ -86,7 +86,7 @@ A PNG of a few kilobytes can declare 50,000 × 50,000 pixels.
 The probe already knows the width and height before any step runs, but nothing checks them.
 
 ### 6. ImageMagick's policy is fully open, and inputs don't name their format
-[src/images.c:598](../src/images.c#L598)
+[src/images.c:598](../../src/images.c#L598)
 
 `/etc/ImageMagick-7/policy.xml` has every rule commented out, so all coders are allowed, and Ghostscript is installed at `/usr/bin/gs`. `magick` picks the decoder from the file's contents, not its extension.
 
@@ -95,25 +95,25 @@ The probe already knows the width and height before any step runs, but nothing c
 
 ### 7. Smaller hardening gaps
 - **ffmpeg protocols:** inputs are untrusted media, and ffmpeg runs with no `-protocol_whitelist`. A crafted file (an HLS playlist saved as `.mp4`, for example) can make ffmpeg open other local files or network URLs. ffmpeg 8 restricts the known cases. A whitelist would close the rest.
-- **Build:** `~/.local/bin/video-compressor` was installed from `build/` (`CMAKE_BUILD_TYPE=Debug`): `-O0`, no `_FORTIFY_SOURCE`, no `-fstack-protector-strong`. [CMakeLists.txt](../CMakeLists.txt) sets no flags for other build types either.
+- **Build:** `~/.local/bin/video-compressor` was installed from `build/` (`CMAKE_BUILD_TYPE=Debug`): `-O0`, no `_FORTIFY_SOURCE`, no `-fstack-protector-strong`. [CMakeLists.txt](../../CMakeLists.txt) sets no flags for other build types either.
 
 ## Performance and algorithms
 
 ### 8. Image output paths: planning time grows with the square of folder size
-[src/images.c:518](../src/images.c#L518) (`has_twin`), called from `out_path()`
+[src/images.c:518](../../src/images.c#L518) (`has_twin`), called from `out_path()`
 
-Every output path reads the whole folder to look for a twin. One image costs about 7 folder scans: `vc_image_steps()` makes 2 to 5 and `image_result()` makes 2. With Move to Trash on, `act_start()` ([main.c:1170](../src/main.c#L1170)) scans once per item, all at once, on the UI thread, before the confirm dialog appears.
+Every output path reads the whole folder to look for a twin. One image costs about 7 folder scans: `vc_image_steps()` makes 2 to 5 and `image_result()` makes 2. With Move to Trash on, `act_start()` ([main.c:1170](../../src/main.c#L1170)) scans once per item, all at once, on the UI thread, before the confirm dialog appears.
 
 - **Verified (`-O2`, `vc_image_steps` + `vc_image_outputs` per image):** 1,000 images took **0.39 s** and 4,000 took **7.56 s**. That is 4× the files for 19× the time.
 - **Effect:** with 20,000 photos and Trash on, Start freezes the window for tens of seconds.
 
 ### 9. The GPU size sample keeps its whole output in RAM
-[src/main.c:1762](../src/main.c#L1762)
+[src/main.c:1762](../../src/main.c#L1762)
 
 `g_subprocess_communicate_async()` collects all of the sample's raw HEVC (up to 12 s of video) into one `GBytes`, only to read its length. That can be tens of MB per sample at 4K. It is freed right away, but each sample still allocates it all.
 
 ### 10. Each keystroke or setting change redraws every row, at a cost that grows with the square of the row count
-[src/main.c:2351](../src/main.c#L2351) (`on_estimate_input`), wired to the frames Start/End `changed` signal ([main.c:3086](../src/main.c#L3086)), the speed buttons, Max size, Max 30 fps and the frames FPS dropdown.
+[src/main.c:2351](../../src/main.c#L2351) (`on_estimate_input`), wired to the frames Start/End `changed` signal ([main.c:3086](../../src/main.c#L3086)), the speed buttons, Max size, Max 30 fps and the frames FPS dropdown.
 
 - It calls `render_row()` for every item. `render_row()` → `render_actions()` → `is_busy()` loops over every item again.
 - Each row also calls `current_options()`, which reads about 10 widgets and parses both time fields.
@@ -122,12 +122,12 @@ Every output path reads the whole folder to look for a twin. One image costs abo
 This is unnoticeable at 100 rows and laggy at a few thousand.
 
 ### 11. Every row's widgets are created up front
-[src/main.c:2265](../src/main.c#L2265)
+[src/main.c:2265](../../src/main.c#L2265)
 
 `GtkListBox` doesn't recycle rows. `make_row()` builds about 25 widgets per item at load, so a 5,000-image folder means about 125,000 widgets: slow to load and heavy on memory. `GtkListView` creates widgets only for the rows on screen.
 
 ### 12. Switching folders doesn't stop ffprobes already running
-[src/main.c:1029](../src/main.c#L1029)
+[src/main.c:1029](../../src/main.c#L1029)
 
 `g_cancellable_cancel(app.probe_cancel)` cancels the *read* of ffprobe's output, but the child process keeps running. Each folder switch can leave up to 4 ffprobes running until they finish, which takes a while on slow or network drives.
 
@@ -142,6 +142,6 @@ There is no garbage collector: this is C with GLib reference counting. Every all
 - What is still allocated at exit (the static `ffmpeg` path, `app.items`) lives for the whole app and is reclaimed by the OS.
 
 ### 13. A pointer to an old row survives a list reload while the Start dialog is open
-[src/main.c:1182](../src/main.c#L1182)
+[src/main.c:1182](../../src/main.c#L1182)
 
 `act_start()` stores `app.ask_one` and then opens the "Move to Trash?" confirm dialog. If the list reloads before you answer (a folder dropped onto the window, if the compositor allows a drop while the dialog is up), the pointer refers to a freed item. `do_start()` only compares it by address, so nothing crashes. The worst case is the action applying to a new item that happens to reuse that memory.

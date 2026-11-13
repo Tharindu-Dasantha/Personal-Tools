@@ -1,0 +1,30 @@
+name: Feature request
+description: Suggest an idea or an improvement
+labels: [enhancement]
+body:
+  - type: dropdown
+    id: tool
+    attributes:
+      label: Tool
+      options:
+        - Media Tools
+        - A new tool
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: Describe the task or the problem, not only the solution. For example, "I need videos under 10 MB to send on chat."
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would help
+      description: How you imagine it working, if you have an idea.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you do today
+      description: Other apps or commands you use for this now.

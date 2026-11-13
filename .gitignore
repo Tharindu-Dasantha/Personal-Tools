@@ -1,0 +1,10 @@
+# graphify's local knowledge graph (any tool)
+graphify-out/
+
+# CMake build trees (build/, build-dbg/, build-rel/, ...)
+build/
+build-*/
+
+# Flatpak builds
+.flatpak-builder/
+*.flatpak

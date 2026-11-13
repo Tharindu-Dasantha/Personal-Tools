@@ -1,0 +1,71 @@
+name: Bug report
+description: Something doesn't work as it should
+labels: [bug]
+body:
+  - type: dropdown
+    id: tool
+    attributes:
+      label: Tool
+      options:
+        - Media Tools
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Mode
+      options:
+        - Compress video
+        - Web video
+        - Video → frames
+        - Compress images
+        - Not mode-specific
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What did you do, what did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Choose Folder with three .mov files from an iPhone
+        2. Press Start
+        3. ...
+  - type: textarea
+    id: file
+    attributes:
+      label: About the input file
+      description: |
+        If it's about one file, paste the output of `ffprobe -hide_banner <file>` (videos) or
+        `magick identify <file>` (images). Please don't attach private videos.
+      render: text
+  - type: dropdown
+    id: install
+    attributes:
+      label: How you installed it
+      options:
+        - Flatpak bundle from Releases
+        - Flathub
+        - Built from source
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      placeholder: 0.1.0, or the output of `git rev-parse --short HEAD`
+  - type: input
+    id: system
+    attributes:
+      label: Distro, desktop and GPU
+      placeholder: Fedora 44, GNOME 51, Intel Iris Xe
+  - type: textarea
+    id: log
+    attributes:
+      label: Terminal output
+      description: Run the app from a terminal (`flatpak run io.github.Tharindu_Dasantha.MediaTools`) and paste anything it prints.
+      render: text

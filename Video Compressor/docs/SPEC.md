@@ -128,10 +128,10 @@ Debug:     cmake -S "Video Compressor" -B "Video Compressor/build-dbg" -DCMAKE_B
 ## Project Structure
 ```
 Video Compressor/
-  LOG.md                → history, decisions and measurements
-  PERFORMANCE.md        → planned speed and install-size work
-  SPEC.md               → this file (video-compress + shared rules)
-  SPEC-*.md             → one spec per further module (app-shell, web-video, video-frames, image-compress)
+  docs/LOG.md           → history, decisions and measurements
+  docs/PERFORMANCE.md   → planned speed and install-size work
+  docs/SPEC.md          → this file (video-compress + shared rules)
+  docs/SPEC-*.md        → one spec per further module (app-shell, web-video, video-frames, image-compress)
   CMakeLists.txt        → app target + test target
   src/main.c            → GTK window: folder chooser, file list, Start/Cancel, progress
   src/compress.c/.h     → GTK-free logic: scan folder, parse ffprobe output,

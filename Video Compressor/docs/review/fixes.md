@@ -23,7 +23,7 @@ simply than below: `probe_done` force-exits the ffprobe when its read is cancell
 
 ## 1. Crash on non-UTF-8 filenames
 
-**Sort** ([main.c:1066-1070](../src/main.c#L1066-L1070)): compare display names, which are always valid UTF-8. This makes O(n log n) small allocations, which is fine at these list sizes.
+**Sort** ([main.c:1066-1070](../../src/main.c#L1066-L1070)): compare display names, which are always valid UTF-8. This makes O(n log n) small allocations, which is fine at these list sizes.
 
 ```c
 static int
@@ -36,7 +36,7 @@ compare_items (gconstpointer a, gconstpointer b)
 }
 ```
 
-**Tooltips** ([main.c:374-381](../src/main.c#L374-L381)): fix it once in `set_status()` instead of at the four call sites that pass a path.
+**Tooltips** ([main.c:374-381](../../src/main.c#L374-L381)): fix it once in `set_status()` instead of at the four call sites that pass a path.
 
 ```c
 it->tip = tip != NULL ? g_utf8_make_valid (tip, -1) : NULL;
@@ -46,7 +46,7 @@ it->tip = tip != NULL ? g_utf8_make_valid (tip, -1) : NULL;
 
 ## 2. `%` in the frames pattern
 
-[frames.c:445-446](../src/frames.c#L445-L446): ffmpeg reads every `%` in the output path, so double the ones that come from the folder name.
+[frames.c:445-446](../../src/frames.c#L445-L446): ffmpeg reads every `%` in the output path, so double the ones that come from the folder name.
 
 ```c
 g_autofree char *pattern_name = g_strdup_printf ("frame_%%04d.%s", ext);
@@ -65,7 +65,7 @@ Two options. **A** is the recommendation because it changes no output names.
 
 **A. Flag the clash and keep the original safe.**
 1. Add `gboolean vc_video_has_twin (const char *input)` to `compress.c`. It is TRUE when another video in the same folder has the same stem (`clip.mov` + `clip.mp4`). It is the same scan as `has_twin()` in `images.c`, using `vc_is_video_name()`.
-2. In `encode_next()` ([main.c:1797](../src/main.c#L1797)), when `steps == NULL` in a video mode and the input has a twin, don't point `it->out` at someone else's copy:
+2. In `encode_next()` ([main.c:1797](../../src/main.c#L1797)), when `steps == NULL` in a video mode and the input has a twin, don't point `it->out` at someone else's copy:
 
 ```c
 if (steps == NULL && app.mode != VC_MODE_IMAGES && vc_video_has_twin (it->path)) {
@@ -91,7 +91,7 @@ If you want it, decode the last 2 seconds of the copy before trashing. That catc
 ## 5. Image size cap and ImageMagick limits
 
 1. Add `gboolean vc_image_too_large (const VcProbe *probe)` to `images.c`, comparing `(guint64) width * height` against `VC_IMAGE_MAX_PIXELS` (200 MP proposed, see Q2). `pngquant` needs 4 bytes per pixel, so 200 MP is about 800 MB.
-2. In `probe_done()` ([main.c:1033](../src/main.c#L1033)), when in Compress images mode:
+2. In `probe_done()` ([main.c:1033](../../src/main.c#L1033)), when in Compress images mode:
 
 ```c
 if (it->probe != NULL && app.mode == VC_MODE_IMAGES && vc_image_too_large (it->probe)) {
@@ -100,7 +100,7 @@ if (it->probe != NULL && app.mode == VC_MODE_IMAGES && vc_image_too_large (it->p
 }
 ```
 
-3. Cap ImageMagick's disk cache: in `magick_in()` ([images.c:595](../src/images.c#L595)), add `"-limit", "disk", "8GiB"` before the input path. Update the expected argv arrays in `tests/test_images.c` (lines 152-215).
+3. Cap ImageMagick's disk cache: in `magick_in()` ([images.c:595](../../src/images.c#L595)), add `"-limit", "disk", "8GiB"` before the input path. Update the expected argv arrays in `tests/test_images.c` (lines 152-215).
 
 **Test:** a probe of 20000×20000 is too large; 6000×4000 is not.
 
@@ -213,7 +213,7 @@ sample_read (GObject *src, GAsyncResult *res, gpointer user_data)
 
 ## 10. Row redraws whose cost grows with the square of the row count
 
-1. In `render_actions()` ([main.c:408](../src/main.c#L408)), change `app.job != NULL || is_busy ()` to `app.job != NULL`. When no job is running, the play button really does start the item at once, so "Compress this video" is the correct tooltip. This makes `render_row()` cost the same however long the list is.
+1. In `render_actions()` ([main.c:408](../../src/main.c#L408)), change `app.job != NULL || is_busy ()` to `app.job != NULL`. When no job is running, the play button really does start the item at once, so "Compress this video" is the correct tooltip. This makes `render_row()` cost the same however long the list is.
 2. Add this to the top of `update_speed_guide()`:
 
 ```c

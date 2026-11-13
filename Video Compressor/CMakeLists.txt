@@ -8,7 +8,7 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(GTK4 REQUIRED IMPORTED_TARGET gtk4)
 pkg_check_modules(GLIB REQUIRED IMPORTED_TARGET glib-2.0)
 
-# The installed app is a release build (cmake --install --strip); Debug is the test build (HANDOFF.md).
+# The installed app is a release build (cmake --install --strip); Debug is the test build (docs/HANDOFF.md).
 if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE RelWithDebInfo)
 endif()

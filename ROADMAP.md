@@ -3,7 +3,13 @@
 > Applies to every tool in this repo, now and later. Video Compressor (Media Tools) goes first.
 > Goals: any Linux user can install a tool with one click, any developer can build and contribute, and the work holds up
 > in a job interview. These tools are not a business. They stay open source.
-> Market context for Video Compressor: [Video Compressor/MARKET-RESEARCH.md](Video%20Compressor/MARKET-RESEARCH.md).
+> Market context for Video Compressor: [Video Compressor/docs/MARKET-RESEARCH.md](Video%20Compressor/docs/MARKET-RESEARCH.md).
+
+**Status (2026-11-13):** Phase 0 is done (READMEs, CONTRIBUTING, issue and PR templates, design docs in `docs/`, not
+committed yet). Media Tools has its license, app ID, icon and metainfo, and a Flatpak manifest that builds,
+installs and runs every mode inside the sandbox. Committed (`caa7b10`), not tagged yet. Next: tag
+`media-tools-v0.1.0`, test the sandbox on the real desktop (Phase 1 list), then choose how updates reach users before
+Flathub (Open decision 5).
 
 ## Decision: Flatpak on Flathub
 
@@ -40,38 +46,44 @@ LICENSE
   README.md          what it does, screenshots, install, build
   CMakeLists.txt
   src/  tests/
-  data/              <appid>.desktop.in, <appid>.metainfo.xml, icons/hicolor/scalable/apps/<appid>.svg
-  packaging/         <appid>.json (Flatpak manifest)
+  data/              <appid>.desktop, <appid>.metainfo.xml, icons/hicolor/scalable/apps/<appid>.svg, screenshots/
+  packaging/         <appid>.json (Flatpak manifest), generated dependency sources
   docs/              SPEC, LOG, research: design history, kept out of the way of the code
 ```
 
 ## Blockers to fix before the first public release
 
-- [x] **App ID.** Now `io.github.Tharindu_Dasantha.MediaTools` (2026-11-13). It was `io.github.dasantha.VideoCompressor`, but the GitHub user is `Tharindu-Dasantha`. Flathub
-      checks `io.github.<user>` against your GitHub account, so it must be `io.github.Tharindu_Dasantha.<AppName>`
-      (the hyphen becomes `_`). **The ID can't change after release**, because users would stop getting updates.
-      Used in: `data/*.desktop.in`, `data/resources.gresource.xml` (resource prefixes), `CMakeLists.txt`, the
-      application ID in `src/main.c`.
-- [x] **LICENSE.** GPL-3.0-or-later, at the repo root (2026-11-13). There was none, so the code isn't legally open source yet, and Flathub won't accept it.
-- [x] **Icon.** Done: `data/icons/hicolor/scalable/apps/<appid>.svg` (no symbolic version yet). The desktop file used the generic `video-x-generic`. Flathub requires your own icon (scalable SVG, plus a
-      symbolic version).
-- [x] **AppStream metainfo** (`<appid>.metainfo.xml`): summary, description, screenshots, release notes, content rating
-      (OARS), license, homepage. Flathub requires it, and app stores display it.
-- [ ] **`graphify-out/` is committed to git.** Add it to `.gitignore` and remove it from git.
+- [x] **App ID** (2026-11-13): `io.github.Tharindu_Dasantha.MediaTools`, was `io.github.dasantha.VideoCompressor`.
+      Flathub checks `io.github.<user>` against the GitHub account `Tharindu-Dasantha` (the hyphen becomes `_`).
+      **The ID can't change after release**, because users would stop getting updates. Used in: the desktop file name,
+      `data/resources.gresource.xml` (resource prefixes), `CMakeLists.txt` (`APP_ID`), the application ID in `src/main.c`.
+      The old native install (`~/.local/share/applications/io.github.dasantha.VideoCompressor.desktop`) is stale.
+- [x] **LICENSE** (2026-11-13): GPL-3.0-or-later, at the repo root, installed to `share/licenses/<appid>/`.
+- [x] **Icon** (2026-11-13): `data/icons/hicolor/scalable/apps/<appid>.svg`, a video frame squeezed by two arrows in the
+      app's accent blue. Still open: a symbolic version (optional for Flathub).
+- [x] **AppStream metainfo** (2026-11-13): `data/<appid>.metainfo.xml` with name "Media Tools", summary, description,
+      one screenshot, release 0.1.0, OARS rating, branding colours, homepage/bugtracker/VCS links, developer ID
+      `io.github.tharindu_dasantha` (appstream rejects uppercase there). Passes `appstreamcli validate`; the only
+      warning is that the screenshot URL 404s until tag `media-tools-v0.1.0` is pushed.
+- [x] **`graphify-out/` is committed to git** (2026-11-13): ignored in the root `.gitignore` (any depth, so future
+      tools too) and removed from the index; the local copy stays for graphify.
 - [ ] **Repo name.** `Personal-Tools` reads as private. Consider renaming it (GitHub redirects the old URL).
 
 ## Phase 0: make the repo presentable (about a weekend)
 
 - [x] Add `LICENSE`.
-- [ ] Root `README.md`: what the repo is, a table of tools, install instructions, build instructions.
-- [ ] `Video Compressor/README.md` with 2–3 screenshots.
-- [ ] `CONTRIBUTING.md`: dependencies (`gtk4-devel`, `cmake`, `ffmpeg` with libx265, `pngquant`, `ImageMagick`),
+- [x] Root `README.md`: what the repo is, a table of tools, install instructions, build instructions.
+- [x] `Video Compressor/README.md` with 3 screenshots (2026-11-13, Xvfb, generated test clips; the README says so):
+      `data/screenshots/estimates.png`, `results.png`, `web-video-dark.png`. The metainfo still uses `main.png` (Phase 2).
+- [x] `CONTRIBUTING.md`: dependencies (`gtk4-devel`, `cmake`, `ffmpeg` with libx265, `pngquant`, `ImageMagick`),
       the build and test commands from SPEC.md, the ASan debug build, and how to run the fixtures script.
-- [ ] Issue templates (bug, feature) and a PR template.
+- [x] Issue templates (bug, feature; GitHub issue forms in `.github/ISSUE_TEMPLATE/`) and a PR template.
 - [x] Rename the app ID everywhere (see Blockers). The app name is "Media Tools".
 - [x] Add the icon and metainfo, and have CMake install them (`share/icons/hicolor/...`, `share/metainfo/`).
-- [x] Desktop file: `Exec=video-compressor` (not an absolute path), `Icon=<appid>`.
-- [ ] Clean up `.gitignore`. Move SPEC, LOG, PERFORMANCE, TEST, HANDOFF, `research/` and `review/` into `docs/`.
+- [x] Desktop file: `Exec=video-compressor` (not an absolute path), `Icon=<appid>`, name "Media Tools". It is no longer
+      a CMake template (`.desktop.in`), and passes `desktop-file-validate`.
+- [x] Clean up `.gitignore` (one root file: `graphify-out/`, `build/`, `build-*/`, `.flatpak-builder/`, `*.flatpak`).
+      Moved SPEC, LOG, PERFORMANCE, TEST, HANDOFF, MARKET-RESEARCH, `research/` and `review/` into `docs/`.
 
 **Done when:** a stranger can clone the repo, read the README, build the app and run its tests without asking anything.
 
@@ -83,27 +95,39 @@ LICENSE
       Build: `flatpak run --env=FLATPAK_USER_DIR=$HOME/.local/share/flatpak --command=flatpak-builder org.flatpak.Builder
       --user --install --force-clean --repo=<dir>/repo <dir>/build packaging/<appid>.json` (dirs under `$HOME`: the
       builder's sandbox can't see `/tmp`).
-  - Modules: x265, then ffmpeg (`--enable-libx265 --enable-gpl`, plus VA-API), pngquant, ImageMagick, then the app.
-    Use HandBrake's Flathub manifest as the reference for x265 and ffmpeg.
+  - Modules: zimg, x264, x265, ffmpeg (`--enable-gpl`, x264, x265, libwebp, zimg, dav1d, VA-API), ImageMagick,
+    pngquant, then the app. libwebp, libtiff, lcms2, libjpeg, libpng, dav1d and libva come from the GNOME SDK.
+  - x265 4.1 sets two CMake policies to OLD, which CMake 4 refuses; a `sed` in the manifest deletes those lines
+    (CMP0025 only matters for Apple's compiler; CMP0054's new behaviour is the safer one).
+  - `flatpak-builder-lint`: the manifest passes except `appid-url-not-reachable` (the ID names a repo that doesn't
+    exist, see Phase 2) and the screenshot 404 (fixed by the tag).
   - `finish-args`: `--share=ipc`, `--socket=wayland`, `--socket=fallback-x11`, `--device=dri` (VA-API),
     `--filesystem=home` (shortcut: simplest way for folders and `compressed/` output to work; tightened in Phase 3),
     `--filesystem=/run/media` and `/media` (external drives).
 - [ ] Test inside the sandbox, since this is where it can behave differently from a normal install:
-  - [ ] Choose Folder, Choose Files and drag-and-drop
-  - [x] Every mode's real commands run inside the sandbox on the fixtures (2026-11-13, headless driver over `vc_core`):
-        x265 incl. 10-bit HDR, web video incl. HDR tonemap, frames JPG/WebP, all image types, unicode names
+  - [x] The app starts in the sandbox (2026-11-13, Xvfb): bundled ffmpeg, ImageMagick and pngquant are found (no
+        missing-tool banner), and the embedded Inter font and icons load from the renamed resource path.
+  - [x] Every mode's real commands run inside the sandbox on the fixtures (2026-11-13, a throwaway headless driver over
+        `vc_core`): x265 incl. 10-bit HDR, the GPU encoder, web video incl. HDR tonemap, frames JPG/WebP (60 frames each),
+        all image types (JPEG, PNG, alpha, BMP, TIFF, WebP, twins), unicode and quote characters in names; fake files fail
+        the probe as they should.
+  - [x] Installing from the `.flatpak` bundle file works; the GNOME runtime comes from Flathub automatically.
+  - [ ] Choose Folder, Choose Files and drag-and-drop (go through the portals; can't be automated here)
   - [ ] Writing to `compressed/`, and cleaning up leftover `.part` files
   - [ ] Move to Trash (should go through the Trash portal)
   - [ ] Show in Files
   - [ ] The GPU (VA-API) test at startup, on Intel and AMD (a hevc_vaapi encode works in the sandbox on this Intel machine)
   - [ ] Run in Background, notifications and the suspend inhibitor
-  - [ ] HDR / 10-bit fixtures, phone metadata kept
+  - [ ] Phone metadata kept (HDR / 10-bit encodes already pass, above)
   - [ ] Process priority (`setpriority` and `ioprio_set` in `main.c`) still works
 - [ ] CI (`.github/workflows/`):
   - [ ] On every PR: CMake build, `ctest`, and an ASan/UBSan build (Fedora container).
   - [ ] On a tag `<tool>-v*`: build the Flatpak with `flatpak/flatpak-github-actions` and attach the `.flatpak`
         bundle to the GitHub Release.
 - [ ] CI badges in the README.
+- [x] Commit (`65876e3`, `caa7b10`).
+- [ ] Tag `media-tools-v0.1.0` (the metainfo screenshot URL points at that tag).
+- [ ] Updates before Flathub: a bundle installed from a file never updates. See Open decision 5.
 
 **Done when:** a user downloads the `.flatpak` from GitHub Releases, double-clicks it, and the app installs and works with
 nothing else installed.
@@ -121,6 +145,8 @@ nothing else installed.
   - **App ID vs. repo:** for `io.github.*` the last part should match the repo (`.../Personal-Tools`). A monorepo ID
     like `MediaTools` needs a reviewer exception, which the rules allow. Ask in the PR.
   - Screenshot URLs must point at a tag or commit, not a branch. The metainfo and desktop file need complete English.
+- [ ] Replace the screenshot with a real one: files in the list, window shadow and rounded corners, 1000×700 or smaller.
+      Today's `data/screenshots/main.png` is the empty start screen from Xvfb.
 - [ ] Submit a PR to `flathub/flathub`. Review can take weeks. Reviewers may question `--filesystem=home`: either explain
       why it's needed (batch processing of whole folders) or tighten it first.
 - [ ] After acceptance, updates are PRs to the `flathub/<appid>` repo (Flathub's bot can open them for new tags).
@@ -163,15 +189,17 @@ What counts isn't the feature list. It's being able to show:
 
 ## Open decisions
 
-| # | Decision | Recommendation |
+| # | Decision | Status |
 |---|---|---|
-| 1 | License | **GPL-3.0-or-later**: the GNOME-ecosystem default, and forks stay open. MIT if you want maximum reuse, including in closed-source software. |
-| 2 | Final app name and ID | e.g. `io.github.Tharindu_Dasantha.MediaTools` |
-| 3 | Rename the repo | Yes, to something public-facing (e.g. `linux-tools`) |
-| 4 | Sandbox for v1 | `--filesystem=home` now, portals only in Phase 3 |
+| 1 | License | **Decided 2026-11-13: GPL-3.0-or-later.** |
+| 2 | Final app name and ID | **Decided 2026-11-13: "Media Tools", `io.github.Tharindu_Dasantha.MediaTools`**, kept in this monorepo (a separate `MediaTools` repo was considered and dropped). |
+| 3 | Rename the repo | Open. Recommendation: yes, to something public-facing (e.g. `linux-tools`). Renaming changes the metainfo URLs. |
+| 4 | Sandbox for v1 | **Decided: `--filesystem=home`** plus `/run/media` and `/media`; portals only in Phase 3. |
+| 5 | Updates before Flathub | Open. Recommendation: a self-hosted Flatpak repo on GitHub Pages, built by CI on each tag and signed with your own GPG key. Users add it once and get updates in GNOME Software. Without it, the `.flatpak` bundle from Releases installs but never updates. |
 
 ## Unverified (check before relying on it)
 
-- Sandbox behaviour (Trash portal, VA-API inside Flatpak, background running): no Flatpak has been built yet.
-- Flathub's exact rules, the app ID verification format, and review times come from memory. Check the current docs at
-  <https://docs.flathub.org>.
+- Sandbox behaviour on the real desktop: file chooser and drag-and-drop portals, the Trash portal, Show in Files,
+  notifications, background running, process priority. Commands and startup were checked only on Xvfb.
+- VA-API inside the Flatpak on AMD (only tested on this Intel machine).
+- Flathub review times. The rules themselves were read from <https://docs.flathub.org> on 2026-11-13 (Phase 2).
