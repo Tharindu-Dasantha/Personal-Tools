@@ -123,7 +123,7 @@ LICENSE
   - [ ] Run in Background, notifications and the suspend inhibitor
   - [ ] Phone metadata kept (HDR / 10-bit encodes already pass, above)
   - [x] Process priority (2026-11-13): the seccomp filter allows both; inside the sandbox `nice -n 10` gives nice 10
-        and `ionice -c3` gives class idle, the same calls `main.c` makes for each encode.
+        and `ionice -c3` gives class idle, the same calls `jobs.c` makes for each encode.
 - [x] CI (`.github/workflows/`, 2026-11-13; runs once pushed):
   - [x] `ci.yml`, on every PR and push to `main`: Debug build (`-Werror`), `ctest`, and an ASan/UBSan build with its
         own `ctest` (leak checks on), in `fedora:44`. A matrix over tool folders; add new tools there. The same steps
@@ -175,7 +175,10 @@ nothing else installed.
 Ordered roughly by value. Each item is a release on its own.
 
 - [ ] **Tighter sandbox:** use only the file chooser and document portals, and drop `--filesystem=home`.
-- [ ] **Split `src/main.c`** (about 4,470 lines) into per-mode and per-widget files. Contributors won't touch a file that size.
+- [x] **Split `src/main.c`** (2026-11-13): 4,470 lines became 11 files of 120 to 830 lines sharing `src/app.h`
+      (only functions used across files are non-static). Done by a script that checks every original line lands
+      in exactly one file; the sorted lines match the old file apart from declarations. Debug `-Werror`, ctest and
+      the ASan/UBSan build pass, and the ASan app compressed a folder end to end in a headless GNOME Shell.
 - [ ] **Libadwaita look** and the GNOME Human Interface Guidelines.
 - [ ] **Translations** (gettext and a `po/` folder), so contributors can add languages.
 - [ ] **Apply to GNOME Circle** once the two items above are done. It's the strongest credibility signal on Linux.

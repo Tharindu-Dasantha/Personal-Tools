@@ -41,7 +41,7 @@ ctest --test-dir "Video Compressor/build" --output-on-failure
 
 `ctest` should finish with `100% tests passed, 0 tests failed out of 5`. The unit tests need no display and no video
 files: all the decisions (which file is a video, which settings it gets, the exact ffmpeg arguments) live in GTK-free
-code in `src/*.c` (the `vc_core` library) and are tested there. `src/main.c` is the GTK window.
+code in `src/*.c` (the `vc_core` library) and are tested there. `src/app.h` and the UI files (`main.c` startup, `widgets.c` and `inspector.c` build the window, `row.c` and `status.c` draw it, `source.c` lists files, `jobs.c` runs encodes, `handlers.c` reacts to clicks, `style.c` holds the CSS) are the GTK window.
 
 Debug builds use `-Werror`, so a new warning fails the build. Run the tests before every commit.
 
@@ -102,7 +102,7 @@ The first build compiles ffmpeg, x265 and ImageMagick and takes a while; later b
 - External tools always run through `GSubprocess` with an **argv array, never a shell string**.
 - Never overwrite or change an original file. Output goes to a `.part` file that is renamed when finished.
 - Comments explain *why*, not *what*.
-- New logic goes into `vc_core` with a unit test in `tests/`, not into `main.c`.
+- New logic goes into `vc_core` with a unit test in `tests/`, not into the UI files.
 
 ## 4. Sending a change
 
@@ -115,7 +115,7 @@ The first build compiles ffmpeg, x265 and ImageMagick and takes a while; later b
 
 ```
 <Tool>/
-  src/          app code (main.c is the GTK window, the rest is testable logic)
+  src/          app code (app.h and its UI files are the GTK window; compress, modes, web_video, frames, images are testable logic)
   tests/        unit tests and make-fixtures.sh
   data/         desktop file, AppStream metainfo, icons, screenshots, embedded fonts
   packaging/    Flatpak manifest

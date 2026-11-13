@@ -28,7 +28,10 @@ add_custom_command(
   COMMAND ${GLIB_COMPILE_RESOURCES} --generate-source --target=${CMAKE_CURRENT_BINARY_DIR}/resources.c
           --sourcedir=${CMAKE_CURRENT_SOURCE_DIR}/data ${CMAKE_CURRENT_SOURCE_DIR}/data/resources.gresource.xml
   DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/data/resources.gresource.xml ${VC_ICONS})
-add_executable(video-compressor src/main.c ${CMAKE_CURRENT_BINARY_DIR}/resources.c)
+# The GTK app: one file per area, sharing src/app.h.
+add_executable(video-compressor src/main.c src/common.c src/row.c src/status.c src/source.c src/jobs.c
+               src/handlers.c src/tools.c src/style.c src/widgets.c src/inspector.c
+               ${CMAKE_CURRENT_BINARY_DIR}/resources.c)
 target_link_libraries(video-compressor PRIVATE vc_core PkgConfig::GTK4)
 
 enable_testing()

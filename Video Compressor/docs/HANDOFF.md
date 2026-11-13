@@ -109,7 +109,8 @@ cmake -S "Video Compressor" -B "Video Compressor/build/san" -DCMAKE_BUILD_TYPE=D
 - `src/modes.c/.h` (Phase 7): `VcMode`, `VcStep`, per-mode filter/out dir/trash/tool check, and `vc_mode_steps()`, which
   builds an item's steps (only Compress video has a builder so far; it also does the existing-output skip).
   `vc_remove_part()` is the only delete in `src/`. Options stay in `compress.h`'s `VcOptions`.
-- `src/main.c`: UI plus async process wiring. There is one global `App app` (the SPEC allows this).
+- UI (split out of `main.c` on 2026-11-13, see `src/app.h`): UI plus async process wiring. There is one global
+  `App app` (the SPEC allows this), defined in `main.c` and declared in `app.h`.
   - Probing runs one ffprobe at a time (`probe_step` → `probe_done`). When a new folder is chosen,
     `app.probe_cancel` is cancelled. A cancelled callback returns **before** touching `app.items`.
   - **Per-item state** (`State` enum): NEW → QUEUED → ACTIVE → DONE/TRASHED, plus HELD (paused while queued) and CHECKING
