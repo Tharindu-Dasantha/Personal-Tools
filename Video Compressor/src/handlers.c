@@ -337,6 +337,9 @@ make_row (Item *it)
     set_tip (it->b_trash, "Move original to Trash", NULL, trash_body);
     GtkWidget *actions = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 6);
     gtk_widget_set_halign (actions, GTK_ALIGN_END);
+    /* room for the most buttons a row shows at once (play or pause, stop, show), so hover
+     * reveals them without shifting the row: 3 x 26px + 2 x 6px spacing */
+    gtk_widget_set_size_request (actions, 90, -1);
     GtkWidget *b[] = { it->b_play, it->b_pause, it->b_stop, it->b_show, it->b_trash };
     for (gsize i = 0; i < G_N_ELEMENTS (b); i++)
         gtk_box_append (GTK_BOX (actions), b[i]);

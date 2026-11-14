@@ -37,7 +37,7 @@ render_actions (Item *it)
 {
     gboolean job = it->state == ST_ACTIVE;
     gboolean run = it->hover || job || it->state == ST_HELD;
-    gtk_widget_set_visible (it->b_play, run && (can_start (it) || it->state == ST_QUEUED));
+    gtk_widget_set_visible (it->b_play, run && can_start (it));
     gtk_widget_set_visible (it->b_pause, run && can_pause (it));
     gtk_widget_set_visible (it->b_stop, run && can_stop (it));
     gtk_widget_set_visible (it->b_show, it->hover && it->out != NULL);
